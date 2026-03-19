@@ -11,7 +11,7 @@ import (
 
 // SystemInfo holds detected CPU and memory resources.
 type SystemInfo struct {
-	CPUMillis    int
+	CPUMillis     int
 	MemoryTotalMB int
 }
 
@@ -25,7 +25,7 @@ func DetectSystem() (SystemInfo, error) {
 	}
 
 	return SystemInfo{
-		CPUMillis:    cpuMillis,
+		CPUMillis:     cpuMillis,
 		MemoryTotalMB: memMB,
 	}, nil
 }

@@ -42,7 +42,7 @@ func TestParseAndNext(t *testing.T) {
 			name: "weekly Sunday midnight",
 			expr: "0 0 * * 0",
 			from: time.Date(2025, 6, 15, 0, 0, 0, 0, loc), // Sunday
-			want: time.Date(2025, 6, 22, 0, 0, 0, 0, loc),  // next Sunday
+			want: time.Date(2025, 6, 22, 0, 0, 0, 0, loc), // next Sunday
 		},
 		{
 			name: "weekly Sunday midnight from Wednesday",

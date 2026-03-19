@@ -16,9 +16,9 @@ type Resources struct {
 
 // ResourceTracker tracks total, allocatable, and allocated resources on a node.
 type ResourceTracker struct {
-	mu            sync.Mutex
-	allocatable   Resources
-	allocations   map[string]manifest.ResourceList
+	mu          sync.Mutex
+	allocatable Resources
+	allocations map[string]manifest.ResourceList
 }
 
 // NewResourceTracker creates a tracker with total resources and system reserve.

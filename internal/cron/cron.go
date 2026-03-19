@@ -9,11 +9,11 @@ import (
 
 // Schedule represents a parsed cron schedule that can compute the next trigger time.
 type Schedule struct {
-	minutes    []bool // 0-59
-	hours      []bool // 0-23
+	minutes     []bool // 0-59
+	hours       []bool // 0-23
 	daysOfMonth []bool // 1-31 (index 0 unused)
-	months     []bool // 1-12 (index 0 unused)
-	daysOfWeek []bool // 0-6, 0=Sunday
+	months      []bool // 1-12 (index 0 unused)
+	daysOfWeek  []bool // 0-6, 0=Sunday
 }
 
 // Parse parses a standard 5-field cron expression (minute hour day-of-month month day-of-week).
@@ -49,11 +49,11 @@ func Parse(expr string) (Schedule, error) {
 	}
 
 	s := Schedule{
-		minutes:    make([]bool, 60),
-		hours:      make([]bool, 24),
+		minutes:     make([]bool, 60),
+		hours:       make([]bool, 24),
 		daysOfMonth: make([]bool, 32),
-		months:     make([]bool, 13),
-		daysOfWeek: make([]bool, 7),
+		months:      make([]bool, 13),
+		daysOfWeek:  make([]bool, 7),
 	}
 
 	for _, v := range minutes {

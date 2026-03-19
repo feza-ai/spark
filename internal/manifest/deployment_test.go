@@ -218,11 +218,11 @@ spec:
 
 func TestParseDeploymentResourceParsing(t *testing.T) {
 	tests := []struct {
-		name     string
-		cpu      string
-		wantCPU  int
-		mem      string
-		wantMem  int
+		name    string
+		cpu     string
+		wantCPU int
+		mem     string
+		wantMem int
 	}{
 		{"whole cpu", "2", 2000, "8Gi", 8192},
 		{"milli cpu", "500m", 500, "512Mi", 512},

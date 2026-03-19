@@ -7,8 +7,8 @@ import (
 
 func TestDetectSystem(t *testing.T) {
 	tests := []struct {
-		name    string
-		check   func(t *testing.T, info SystemInfo)
+		name  string
+		check func(t *testing.T, info SystemInfo)
 	}{
 		{
 			name: "CPU millicores are positive",

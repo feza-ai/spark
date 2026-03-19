@@ -14,13 +14,13 @@ import (
 
 // stubExecutor implements executor.Executor for testing.
 type stubExecutor struct {
-	mu          sync.Mutex
-	creates     []string
-	stops       []string
-	removes     []string
-	statuses    map[string]executor.Status
-	createErr   error
-	statusErr   error
+	mu        sync.Mutex
+	creates   []string
+	stops     []string
+	removes   []string
+	statuses  map[string]executor.Status
+	createErr error
+	statusErr error
 }
 
 func newStubExecutor() *stubExecutor {

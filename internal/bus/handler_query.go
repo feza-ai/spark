@@ -14,14 +14,14 @@ type GetRequest struct {
 
 // GetResponse is the full detail response for a single pod.
 type GetResponse struct {
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	Priority   int       `json:"priority"`
-	StartedAt  string    `json:"startedAt,omitempty"`
-	FinishedAt string    `json:"finishedAt,omitempty"`
-	Restarts   int       `json:"restarts"`
+	Name       string      `json:"name"`
+	Status     string      `json:"status"`
+	Priority   int         `json:"priority"`
+	StartedAt  string      `json:"startedAt,omitempty"`
+	FinishedAt string      `json:"finishedAt,omitempty"`
+	Restarts   int         `json:"restarts"`
 	Events     []EventInfo `json:"events"`
-	Error      string    `json:"error,omitempty"`
+	Error      string      `json:"error,omitempty"`
 }
 
 // EventInfo describes a single pod lifecycle event.
