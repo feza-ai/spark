@@ -18,6 +18,30 @@ archives:
       - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
+nfpms:
+  - id: spark
+    package_name: spark
+    vendor: feza-ai
+    maintainer: feza-ai
+    description: Single-binary pod orchestrator for GPU hosts. Accepts Kubernetes manifests and runs workloads via podman.
+    license: Proprietary
+    formats:
+      - deb
+    bindir: /usr/local/bin
+    contents:
+      - src: deploy/spark.service
+        dst: /etc/systemd/system/spark.service
+      - src: deploy/registry.service
+        dst: /etc/systemd/system/registry.service
+      - src: deploy/spark.env
+        dst: /etc/spark/spark.env
+        type: config
+      - dst: /etc/spark/manifests/
+        type: dir
+    scripts:
+      postinstall: deploy/nfpm/postinstall.sh
+      preremove: deploy/nfpm/preremove.sh
+
 changelog:
   sort: asc
   filters:
