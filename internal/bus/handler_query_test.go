@@ -75,6 +75,27 @@ func TestGetHandler_MissingPod(t *testing.T) {
 	}
 }
 
+func TestListHandler_EmptyStore(t *testing.T) {
+	store := state.NewPodStore()
+	bus := NewStubBus()
+	RegisterListHandler(bus, store)
+
+	reqData, _ := json.Marshal(ListRequest{})
+	reply, err := bus.Request(context.Background(), "req.spark.list", reqData)
+	if err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+
+	var resp ListResponse
+	if err := json.Unmarshal(reply, &resp); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if len(resp.Pods) != 0 {
+		t.Fatalf("expected 0 pods, got %d", len(resp.Pods))
+	}
+}
+
 func TestListHandler_AllPods(t *testing.T) {
 	store := state.NewPodStore()
 	store.Apply(manifest.PodSpec{Name: "web-1", Priority: 10})

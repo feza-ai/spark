@@ -97,6 +97,68 @@ spec:
 	}
 }
 
+func TestApplyHandler_MissingKind(t *testing.T) {
+	resp := registerAndApply(t, `
+apiVersion: v1
+metadata:
+  name: no-kind-pod
+spec:
+  containers:
+  - name: main
+    image: nginx
+`)
+	if resp.Error == "" {
+		t.Fatal("expected error for manifest without kind, got none")
+	}
+}
+
+func TestApplyHandler_UnsupportedKind(t *testing.T) {
+	// Unknown kinds are silently ignored by Parse, so the response
+	// should have no pods and no error.
+	resp := registerAndApply(t, `
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-config
+data:
+  key: value
+`)
+	if resp.Error != "" {
+		t.Errorf("unexpected error for unsupported kind: %s", resp.Error)
+	}
+	if len(resp.Pods) != 0 {
+		t.Errorf("expected 0 pods for unsupported kind, got %d", len(resp.Pods))
+	}
+}
+
+func TestApplyHandler_CronJob(t *testing.T) {
+	resp := registerAndApply(t, `
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: my-cron
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: worker
+            image: busybox
+          restartPolicy: Never
+`)
+	if resp.Error != "" {
+		t.Errorf("unexpected error: %s", resp.Error)
+	}
+	if len(resp.CronJobs) != 1 {
+		t.Fatalf("expected 1 cronJob, got %d", len(resp.CronJobs))
+	}
+	if resp.CronJobs[0] != "my-cron" {
+		t.Errorf("cronJob name = %q, want %q", resp.CronJobs[0], "my-cron")
+	}
+}
+
 func TestApplyHandler_Job(t *testing.T) {
 	resp := registerAndApply(t, `
 apiVersion: batch/v1
