@@ -1,0 +1,21 @@
+# Binary output
+/spark
+*.exe
+*.test
+
+# Test coverage
+coverage.out
+
+# OS files
+.DS_Store
+
+# Go build cache
+*.o
+*.a
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
