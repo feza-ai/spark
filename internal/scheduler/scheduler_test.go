@@ -206,6 +206,41 @@ func TestSchedule_AntiThrash(t *testing.T) {
 	}
 }
 
+func TestRemovePod_ReleasesResources(t *testing.T) {
+	tracker := newTracker(2000, 4096, 8000)
+	s := NewScheduler(tracker)
+
+	spec := podSpec("pod-a", 5, 2000, 4096, 8000)
+	result := s.Schedule(spec)
+	if result.Action != Scheduled {
+		t.Fatalf("expected Scheduled, got %d", result.Action)
+	}
+	s.AddPod(PodInfo{
+		Name:      "pod-a",
+		Priority:  5,
+		Resources: manifest.ResourceList{CPUMillis: 2000, MemoryMB: 4096, GPUMemoryMB: 8000},
+		StartTime: time.Now(),
+	})
+
+	// Resources are fully consumed — same request should not fit.
+	if tracker.CanFit(spec.TotalRequests()) {
+		t.Fatal("expected resources to be fully consumed")
+	}
+
+	// Remove the pod — resources should be released.
+	s.RemovePod("pod-a")
+
+	// Same resource request should now fit.
+	if !tracker.CanFit(spec.TotalRequests()) {
+		t.Fatal("expected resources to be available after RemovePod")
+	}
+
+	// Verify pod is no longer tracked.
+	if _, ok := tracker.AllocatedBy("pod-a"); ok {
+		t.Fatal("expected pod-a allocation to be released")
+	}
+}
+
 func TestSchedule_MultipleVictimsNeeded(t *testing.T) {
 	tracker := newTracker(4000, 8192, 16000)
 	s := NewScheduler(tracker)

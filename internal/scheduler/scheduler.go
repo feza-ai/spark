@@ -140,6 +140,7 @@ func (s *Scheduler) AddPod(info PodInfo) {
 func (s *Scheduler) RemovePod(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.tracker.Release(name)
 	delete(s.pods, name)
 }
 
