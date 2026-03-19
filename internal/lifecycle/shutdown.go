@@ -51,6 +51,14 @@ func (sc *ShutdownCoordinator) Drain(ctx context.Context) error {
 			gracePeriod := int(sc.timeout.Seconds())
 			if err := sc.executor.StopPod(drainCtx, name, gracePeriod); err != nil {
 				slog.Error("failed to stop pod during drain", "pod", name, "err", err)
+				// If the drain context expired, mark as failed and force remove.
+				if drainCtx.Err() != nil {
+					sc.executor.RemovePod(context.Background(), name)
+					sc.store.UpdateStatus(name, state.StatusFailed, "force-killed during shutdown timeout")
+					sc.scheduler.RemovePod(name)
+					slog.Info("pod drained", "pod", name)
+					return
+				}
 				if err := sc.executor.RemovePod(drainCtx, name); err != nil {
 					slog.Error("failed to force remove pod", "pod", name, "err", err)
 				}
@@ -69,15 +77,19 @@ func (sc *ShutdownCoordinator) Drain(ctx context.Context) error {
 
 	select {
 	case <-done:
+		// Check if any pod ended up failed (due to timeout in goroutine).
+		for _, pod := range pods {
+			rec, ok := sc.store.Get(pod.Spec.Name)
+			if ok && rec.Status == state.StatusFailed {
+				return context.DeadlineExceeded
+			}
+		}
 		slog.Info("all pods drained successfully")
 		return nil
 	case <-drainCtx.Done():
 		slog.Warn("drain timeout reached, force-killing remaining pods")
-		for _, pod := range sc.store.List(state.StatusRunning) {
-			sc.executor.RemovePod(context.Background(), pod.Spec.Name)
-			sc.store.UpdateStatus(pod.Spec.Name, state.StatusFailed, "force-killed during shutdown timeout")
-			sc.scheduler.RemovePod(pod.Spec.Name)
-		}
+		// Wait for goroutines to finish their cleanup.
+		<-done
 		return drainCtx.Err()
 	}
 }
