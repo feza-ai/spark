@@ -48,7 +48,22 @@ func main() {
 	)
 
 	// 1. Detect resources.
-	gpuInfo, gpuErr := gpu.Detect()
+	sysInfo, err := gpu.DetectSystem()
+	if err != nil {
+		slog.Error("system detection failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("system resources",
+		"cpu_millis", sysInfo.CPUMillis,
+		"memory_mb", sysInfo.MemoryTotalMB,
+	)
+
+	// Use system memory as fallback for unified-memory GPUs (e.g. NVIDIA GB10)
+	// where nvidia-smi reports [N/A] for dedicated memory fields.
+	fallbackMemory := func() (int, error) {
+		return sysInfo.MemoryTotalMB, nil
+	}
+	gpuInfo, gpuErr := gpu.DetectWithFallback(fallbackMemory)
 	if gpuErr != nil && !errors.Is(gpuErr, gpu.ErrNoGPU) {
 		slog.Error("gpu detection failed", "error", gpuErr)
 		os.Exit(1)
@@ -62,16 +77,6 @@ func main() {
 			"count", gpuInfo.GPUCount,
 		)
 	}
-
-	sysInfo, err := gpu.DetectSystem()
-	if err != nil {
-		slog.Error("system detection failed", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("system resources",
-		"cpu_millis", sysInfo.CPUMillis,
-		"memory_mb", sysInfo.MemoryTotalMB,
-	)
 
 	// 2. Create spark-net.
 	if err := executor.EnsureNetwork(context.Background(), executor.DefaultNetwork); err != nil {
