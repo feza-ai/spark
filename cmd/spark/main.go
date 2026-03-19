@@ -5,15 +5,18 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/feza-ai/spark/internal/api"
 	"github.com/feza-ai/spark/internal/bus"
 	"github.com/feza-ai/spark/internal/cron"
 	"github.com/feza-ai/spark/internal/executor"
 	"github.com/feza-ai/spark/internal/gpu"
+	"github.com/feza-ai/spark/internal/lifecycle"
 	"github.com/feza-ai/spark/internal/manifest"
 	"github.com/feza-ai/spark/internal/reconciler"
 	"github.com/feza-ai/spark/internal/scheduler"
@@ -33,6 +36,9 @@ func main() {
 	systemReserveMem := flag.Int("system-reserve-memory", 4096, "MB of RAM reserved for system")
 	stateDB := flag.String("state-db", "/var/lib/spark/state.db", "path to SQLite database file")
 	podRetention := flag.Duration("pod-retention", 168*time.Hour, "retention for completed/failed pods")
+	httpAddr := flag.String("http-addr", ":8080", "HTTP listen address")
+	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "max time to drain pods on shutdown")
+	reconcileResourcesInterval := flag.Duration("reconcile-resources-interval", 60*time.Second, "resource reconciliation interval")
 	flag.Parse()
 
 	slog.Info("spark starting",
@@ -79,7 +85,6 @@ func main() {
 		slog.Error("failed to connect to NATS", "error", err)
 		os.Exit(1)
 	}
-	defer b.Close()
 	slog.Info("connected to NATS", "url", *natsURL)
 
 	// 4. Create state store.
@@ -91,8 +96,6 @@ func main() {
 		slog.Error("failed to open state database", "error", err)
 		os.Exit(1)
 	}
-	defer sqlStore.Close()
-
 	persisted, err := sqlStore.LoadAll()
 	if err != nil {
 		slog.Error("failed to load persisted state", "error", err)
@@ -195,7 +198,22 @@ func main() {
 	go rec.Run(ctx)
 	slog.Info("reconciler started", "interval", *reconcileInterval)
 
-	// 11c. Start prune loop.
+	// 12. Start HTTP API server.
+	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore)
+	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
+	go func() {
+		slog.Info("HTTP server starting", "addr", *httpAddr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP server error", "error", err)
+		}
+	}()
+
+	// 13. Start resource reconciler.
+	resReconciler := reconciler.NewResourceReconciler(store, exec, tracker, *reconcileResourcesInterval)
+	go resReconciler.Run(ctx)
+	slog.Info("resource reconciler started", "interval", *reconcileResourcesInterval)
+
+	// 13a. Start prune loop.
 	go func() {
 		pruneTicker := time.NewTicker(10 * time.Minute)
 		defer pruneTicker.Stop()
@@ -217,18 +235,18 @@ func main() {
 		}
 	}()
 
-	// 12. Start cron scheduler.
+	// 14. Start cron scheduler.
 	cronSched := cron.NewCronScheduler(store)
 	go cronSched.Run(ctx)
 	slog.Info("cron scheduler started")
 
-	// 13. Start heartbeat publisher.
+	// 15. Start heartbeat publisher.
 	hb := bus.NewHeartbeatPublisher(b, *nodeID, tracker, store,
 		gpuInfo.Model, gpuMemMB, sysInfo.CPUMillis, sysInfo.MemoryTotalMB)
 	go hb.Run(ctx, *heartbeatInterval)
 	slog.Info("heartbeat publisher started", "interval", *heartbeatInterval)
 
-	// 14. Start directory watcher.
+	// 16. Start directory watcher.
 	go watcher.Watch(ctx, *manifestDir, func(event watcher.WatchEvent) {
 		switch event.Type {
 		case watcher.Added, watcher.Modified:
@@ -261,24 +279,43 @@ func main() {
 
 	slog.Info("spark ready")
 
-	// 15. Block on OS signal.
+	// Block on OS signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig)
 
-	// Stop all log streams before cancelling context.
+	// 1. Stop accepting new pods.
+	store.SetReadOnly(true)
+	slog.Info("store set to read-only")
+
+	// 2. Shut down HTTP server gracefully.
+	httpShutdownCtx, httpShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer httpShutdownCancel()
+	if err := httpServer.Shutdown(httpShutdownCtx); err != nil {
+		slog.Error("HTTP server shutdown error", "error", err)
+	}
+	slog.Info("HTTP server stopped")
+
+	// 3. Stop log streams.
 	logStreamer.StopAll()
 
-	// Cancel context to stop reconciler, watcher, heartbeat, cron.
+	// 4. Cancel context to stop reconciler, watcher, heartbeat, cron, resource reconciler.
 	cancel()
 
-	// Give goroutines time to finish.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-	<-shutdownCtx.Done()
+	// 5. Drain running pods.
+	sc := lifecycle.NewShutdownCoordinator(store, exec, sched, *shutdownTimeout)
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), *shutdownTimeout)
+	defer drainCancel()
+	if err := sc.Drain(drainCtx); err != nil {
+		slog.Error("pod drain error", "error", err)
+	}
 
-	// Disconnect NATS last.
+	// 6. Close SQLite.
+	sqlStore.Close()
+	slog.Info("state database closed")
+
+	// 7. Disconnect NATS.
 	b.Close()
 	slog.Info("spark stopped")
 }
