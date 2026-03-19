@@ -99,6 +99,18 @@ func (rt *ResourceTracker) AllocatedBy(name string) (manifest.ResourceList, bool
 	return r, ok
 }
 
+// Allocatable returns the total allocatable resources (total minus system reserve).
+func (rt *ResourceTracker) Allocatable() Resources {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	return Resources{
+		CPUMillis:   rt.allocatable.CPUMillis,
+		MemoryMB:    rt.allocatable.MemoryMB,
+		GPUMemoryMB: rt.allocatable.GPUMemoryMB,
+	}
+}
+
 func (rt *ResourceTracker) availableLocked() Resources {
 	alloc := rt.allocatedLocked()
 	return Resources{

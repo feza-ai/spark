@@ -169,6 +169,29 @@ func TestAllocated(t *testing.T) {
 	}
 }
 
+func TestAllocatable(t *testing.T) {
+	rt := newTestTracker()
+	alloc := rt.Allocatable()
+
+	// total = {4000, 8192, 16384}, reserve = {500, 512, 0}
+	if alloc.CPUMillis != 3500 {
+		t.Errorf("expected 3500 CPU millis allocatable, got %d", alloc.CPUMillis)
+	}
+	if alloc.MemoryMB != 7680 {
+		t.Errorf("expected 7680 MB memory allocatable, got %d", alloc.MemoryMB)
+	}
+	if alloc.GPUMemoryMB != 16384 {
+		t.Errorf("expected 16384 MB GPU memory allocatable, got %d", alloc.GPUMemoryMB)
+	}
+
+	// Allocatable should not change after allocating resources.
+	rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 1000, MemoryMB: 1024, GPUMemoryMB: 0})
+	alloc2 := rt.Allocatable()
+	if alloc2 != alloc {
+		t.Errorf("allocatable changed after allocation: %+v vs %+v", alloc2, alloc)
+	}
+}
+
 func TestConcurrentAllocateRelease(t *testing.T) {
 	rt := NewResourceTracker(
 		Resources{CPUMillis: 100000, MemoryMB: 100000, GPUMemoryMB: 100000},
