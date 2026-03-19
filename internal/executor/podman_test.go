@@ -196,6 +196,49 @@ func TestListPodsEmptyOutput(t *testing.T) {
 	}
 }
 
+func TestPodStatsParseOutput(t *testing.T) {
+	data := []byte(`[{"cpu_percent":"25.5%","mem_usage":"256.0MiB / 512.0MiB"},{"cpu_percent":"10.2%","mem_usage":"128.0MiB / 256.0MiB"}]`)
+	stats, err := parsePodStats(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.CPUPercent != 35.7 {
+		t.Fatalf("expected CPU 35.7%%, got %.1f%%", stats.CPUPercent)
+	}
+	if stats.MemoryMB != 384 {
+		t.Fatalf("expected 384MB, got %d", stats.MemoryMB)
+	}
+}
+
+func TestPodStatsEmptyOutput(t *testing.T) {
+	data := []byte(`[]`)
+	stats, err := parsePodStats(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.CPUPercent != 0 || stats.MemoryMB != 0 {
+		t.Fatalf("expected zero usage, got cpu=%.1f mem=%d", stats.CPUPercent, stats.MemoryMB)
+	}
+}
+
+func TestParseMemUsage(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want int
+	}{
+		{"256.0MiB / 512.0MiB", 256},
+		{"1.5GiB / 4.0GiB", 1536},
+		{"512.0KiB / 1024.0KiB", 0},
+		{"", 0},
+	}
+	for _, tt := range tests {
+		got := parseMemUsage(tt.raw)
+		if got != tt.want {
+			t.Errorf("parseMemUsage(%q) = %d, want %d", tt.raw, got, tt.want)
+		}
+	}
+}
+
 func TestBuildRunArgs_PodAndContainerName(t *testing.T) {
 	container := manifest.ContainerSpec{
 		Name:  "worker",

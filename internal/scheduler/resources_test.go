@@ -169,6 +169,72 @@ func TestAllocated(t *testing.T) {
 	}
 }
 
+func TestAllocatable(t *testing.T) {
+	rt := newTestTracker()
+	alloc := rt.Allocatable()
+
+	// total = {4000, 8192, 16384}, reserve = {500, 512, 0}
+	if alloc.CPUMillis != 3500 {
+		t.Errorf("expected 3500 CPU millis allocatable, got %d", alloc.CPUMillis)
+	}
+	if alloc.MemoryMB != 7680 {
+		t.Errorf("expected 7680 MB memory allocatable, got %d", alloc.MemoryMB)
+	}
+	if alloc.GPUMemoryMB != 16384 {
+		t.Errorf("expected 16384 MB GPU memory allocatable, got %d", alloc.GPUMemoryMB)
+	}
+
+	// Allocatable should not change after allocating resources.
+	rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 1000, MemoryMB: 1024, GPUMemoryMB: 0})
+	alloc2 := rt.Allocatable()
+	if alloc2 != alloc {
+		t.Errorf("allocatable changed after allocation: %+v vs %+v", alloc2, alloc)
+	}
+}
+
+func TestUpdateAllocation(t *testing.T) {
+	rt := newTestTracker()
+
+	// Allocate a pod with 1000 CPUMillis, 2048 MemoryMB
+	req := manifest.ResourceList{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 0}
+	if err := rt.Allocate("pod-a", req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	alloc := rt.Allocated()
+	if alloc.CPUMillis != 1000 {
+		t.Fatalf("expected 1000 CPU millis allocated, got %d", alloc.CPUMillis)
+	}
+
+	// Update with actual usage: lower CPU, higher memory
+	actual := manifest.ResourceList{CPUMillis: 500, MemoryMB: 3000, GPUMemoryMB: 0}
+	rt.UpdateAllocation("pod-a", actual)
+
+	alloc = rt.Allocated()
+	if alloc.CPUMillis != 500 {
+		t.Errorf("expected 500 CPU millis after update, got %d", alloc.CPUMillis)
+	}
+	if alloc.MemoryMB != 3000 {
+		t.Errorf("expected 3000 MB memory after update, got %d", alloc.MemoryMB)
+	}
+
+	// Verify AllocatedBy returns the updated values
+	got, ok := rt.AllocatedBy("pod-a")
+	if !ok {
+		t.Fatal("expected pod-a to still be tracked")
+	}
+	if got != actual {
+		t.Errorf("expected %+v, got %+v", actual, got)
+	}
+
+	// UpdateAllocation on nonexistent pod is a no-op
+	rt.UpdateAllocation("nonexistent", manifest.ResourceList{CPUMillis: 9999})
+	alloc = rt.Allocated()
+	if alloc.CPUMillis != 500 {
+		t.Errorf("expected no change from nonexistent update, got %d CPU millis", alloc.CPUMillis)
+	}
+}
+
 func TestConcurrentAllocateRelease(t *testing.T) {
 	rt := NewResourceTracker(
 		Resources{CPUMillis: 100000, MemoryMB: 100000, GPUMemoryMB: 100000},

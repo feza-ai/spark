@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/feza-ai/spark/internal/manifest"
@@ -23,6 +24,12 @@ type PodListEntry struct {
 	Running bool
 }
 
+// PodResourceUsage represents actual resource usage of a running pod.
+type PodResourceUsage struct {
+	CPUPercent float64
+	MemoryMB   int
+}
+
 // Executor defines the interface for pod lifecycle management.
 type Executor interface {
 	CreatePod(ctx context.Context, spec manifest.PodSpec) error
@@ -30,6 +37,7 @@ type Executor interface {
 	PodStatus(ctx context.Context, name string) (Status, error)
 	RemovePod(ctx context.Context, name string) error
 	ListPods(ctx context.Context) ([]PodListEntry, error)
+	PodStats(ctx context.Context, name string) (PodResourceUsage, error)
 }
 
 // PodmanExecutor implements Executor using podman CLI.
@@ -186,6 +194,60 @@ func (p *PodmanExecutor) ListPods(ctx context.Context) ([]PodListEntry, error) {
 		return nil, fmt.Errorf("podman pod ls: %w: %s", err, out)
 	}
 	return parsePodsJSON(out)
+}
+
+// PodStats queries resource usage for a running pod.
+func (p *PodmanExecutor) PodStats(ctx context.Context, name string) (PodResourceUsage, error) {
+	args := []string{"pod", "stats", "--no-stream", "--format", "json", name}
+	slog.Info("querying pod stats", "cmd", "podman", "args", args)
+	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	if err != nil {
+		return PodResourceUsage{}, fmt.Errorf("podman pod stats: %w: %s", err, out)
+	}
+	return parsePodStats(out)
+}
+
+// parsePodStats parses the JSON output of podman pod stats.
+func parsePodStats(data []byte) (PodResourceUsage, error) {
+	var containers []struct {
+		CPU    string `json:"cpu_percent"`
+		MemRaw string `json:"mem_usage"`
+	}
+	if err := json.Unmarshal(data, &containers); err != nil {
+		return PodResourceUsage{}, fmt.Errorf("parse pod stats: %w", err)
+	}
+	var totalCPU float64
+	var totalMemMB int
+	for _, c := range containers {
+		cpuStr := strings.TrimSuffix(c.CPU, "%")
+		cpu, _ := strconv.ParseFloat(cpuStr, 64)
+		totalCPU += cpu
+		totalMemMB += parseMemUsage(c.MemRaw)
+	}
+	return PodResourceUsage{CPUPercent: totalCPU, MemoryMB: totalMemMB}, nil
+}
+
+// parseMemUsage extracts memory in MB from a "used / limit" string.
+func parseMemUsage(raw string) int {
+	parts := strings.Split(raw, "/")
+	if len(parts) == 0 {
+		return 0
+	}
+	used := strings.TrimSpace(parts[0])
+	used = strings.ToLower(used)
+	if strings.HasSuffix(used, "gib") {
+		val, _ := strconv.ParseFloat(strings.TrimSuffix(used, "gib"), 64)
+		return int(val * 1024)
+	}
+	if strings.HasSuffix(used, "mib") {
+		val, _ := strconv.ParseFloat(strings.TrimSuffix(used, "mib"), 64)
+		return int(val)
+	}
+	if strings.HasSuffix(used, "kib") {
+		val, _ := strconv.ParseFloat(strings.TrimSuffix(used, "kib"), 64)
+		return int(val / 1024)
+	}
+	return 0
 }
 
 // parsePodsJSON parses the JSON output of podman pod ls.

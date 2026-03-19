@@ -295,6 +295,34 @@ func TestPrune_RemovesOldFailed(t *testing.T) {
 	}
 }
 
+func TestSetReadOnly(t *testing.T) {
+	s := NewPodStore()
+	s.Apply(podSpec("before"))
+
+	s.SetReadOnly(true)
+	s.Apply(podSpec("rejected"))
+
+	if _, ok := s.Get("before"); !ok {
+		t.Fatal("expected 'before' to exist")
+	}
+	if _, ok := s.Get("rejected"); ok {
+		t.Fatal("expected 'rejected' to be rejected in read-only mode")
+	}
+
+	// UpdateStatus still works in read-only mode.
+	s.UpdateStatus("before", StatusRunning, "started")
+	rec, _ := s.Get("before")
+	if rec.Status != StatusRunning {
+		t.Fatalf("expected Running, got %s", rec.Status)
+	}
+
+	// Delete still works in read-only mode.
+	s.Delete("before")
+	if _, ok := s.Get("before"); ok {
+		t.Fatal("expected delete to work in read-only mode")
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewPodStore()
 	var wg sync.WaitGroup

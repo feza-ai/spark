@@ -99,6 +99,30 @@ func (rt *ResourceTracker) AllocatedBy(name string) (manifest.ResourceList, bool
 	return r, ok
 }
 
+// Allocatable returns the total allocatable resources (total minus system reserve).
+func (rt *ResourceTracker) Allocatable() Resources {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	return Resources{
+		CPUMillis:   rt.allocatable.CPUMillis,
+		MemoryMB:    rt.allocatable.MemoryMB,
+		GPUMemoryMB: rt.allocatable.GPUMemoryMB,
+	}
+}
+
+// UpdateAllocation updates the tracked allocation for a pod with actual resource values.
+// Only updates if the pod exists in the allocation map.
+func (rt *ResourceTracker) UpdateAllocation(name string, actual manifest.ResourceList) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if _, ok := rt.allocations[name]; !ok {
+		return
+	}
+	rt.allocations[name] = actual
+}
+
 func (rt *ResourceTracker) availableLocked() Resources {
 	alloc := rt.allocatedLocked()
 	return Resources{
