@@ -1,0 +1,22 @@
+[Unit]
+Description=Spark Pod Orchestrator
+After=network-online.target nats.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/spark/spark.env
+ExecStart=/usr/local/bin/spark \
+    -nats ${SPARK_NATS_URL} \
+    -node-id ${SPARK_NODE_ID} \
+    -manifest-dir ${SPARK_MANIFEST_DIR} \
+    -gpu-max ${SPARK_GPU_MAX} \
+    -heartbeat-interval ${SPARK_HEARTBEAT_INTERVAL} \
+    -reconcile-interval ${SPARK_RECONCILE_INTERVAL} \
+    -system-reserve-cpu ${SPARK_SYSTEM_RESERVE_CPU} \
+    -system-reserve-memory ${SPARK_SYSTEM_RESERVE_MEMORY}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

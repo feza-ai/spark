@@ -23,7 +23,7 @@ func buildPullArgs(imageRef string) []string {
 func EnsureImage(ctx context.Context, imageRef string) error {
 	args := buildImageExistsArgs(imageRef)
 	slog.Info("checking image", "cmd", "podman", "args", args)
-	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	_, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
 	if err == nil {
 		slog.Info("image already present", "image", imageRef)
 		return nil
@@ -32,7 +32,7 @@ func EnsureImage(ctx context.Context, imageRef string) error {
 	// Image not present locally, pull it.
 	pullArgs := buildPullArgs(imageRef)
 	slog.Info("pulling image", "cmd", "podman", "args", pullArgs)
-	out, err = exec.CommandContext(ctx, "podman", pullArgs...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "podman", pullArgs...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("podman pull %s: %w: %s", imageRef, err, strings.TrimSpace(string(out)))
 	}

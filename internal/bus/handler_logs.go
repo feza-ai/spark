@@ -61,8 +61,8 @@ func (ls *LogStreamer) StartStream(podName string, logSource func(ctx context.Co
 		}()
 
 		const (
-			maxBatch    = 10
-			flushDelay  = 100 * time.Millisecond
+			maxBatch   = 10
+			flushDelay = 100 * time.Millisecond
 		)
 
 		var batch []string

@@ -18,9 +18,9 @@ type publishedMsg struct {
 
 // StubBus implements Bus for testing.
 type StubBus struct {
-	mu        sync.Mutex
-	published []publishedMsg
-	handlers  map[string]func(data []byte)
+	mu          sync.Mutex
+	published   []publishedMsg
+	handlers    map[string]func(data []byte)
 	reqHandlers map[string]Handler
 }
 
