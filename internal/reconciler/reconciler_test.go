@@ -22,6 +22,8 @@ type stubExecutor struct {
 	statuses  map[string]executor.Status
 	createErr error
 	statusErr error
+	listPods  []executor.PodListEntry
+	listErr   error
 }
 
 func newStubExecutor() *stubExecutor {
@@ -69,6 +71,22 @@ func (s *stubExecutor) RemovePod(_ context.Context, name string) error {
 	s.removes = append(s.removes, name)
 	delete(s.statuses, name)
 	return nil
+}
+
+func (s *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	if s.listPods != nil {
+		return s.listPods, nil
+	}
+	var result []executor.PodListEntry
+	for name, st := range s.statuses {
+		result = append(result, executor.PodListEntry{Name: name, Running: st.Running})
+	}
+	return result, nil
 }
 
 func (s *stubExecutor) setStatus(name string, st executor.Status) {
@@ -686,5 +704,92 @@ func TestPreemptionReschedulesPendingPod(t *testing.T) {
 	rec2, _ = store.Get("low2")
 	if rec1.Status != state.StatusPreempted || rec2.Status != state.StatusPreempted {
 		t.Fatalf("expected both victims Preempted, got %s and %s", rec1.Status, rec2.Status)
+	}
+}
+
+func TestRecoverPods_PodInBothStoreAndPodman(t *testing.T) {
+	// Pod is Running in both store and podman -> no-op
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("web", "Always", 0)
+	store.Apply(spec)
+	store.UpdateStatus("web", state.StatusRunning, "running")
+
+	exec.listPods = []executor.PodListEntry{{Name: "web", Running: true}}
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, _ := store.Get("web")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running, got %s", rec.Status)
+	}
+}
+
+func TestRecoverPods_PodInStoreNotPodman(t *testing.T) {
+	// Pod Running in store but not in podman -> mark Failed
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("ghost", "Always", 0)
+	store.Apply(spec)
+	store.UpdateStatus("ghost", state.StatusRunning, "was running")
+
+	exec.listPods = []executor.PodListEntry{} // empty, pod not in podman
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, _ := store.Get("ghost")
+	if rec.Status != state.StatusFailed {
+		t.Fatalf("expected Failed, got %s", rec.Status)
+	}
+}
+
+func TestRecoverPods_PodInPodmanNotStore(t *testing.T) {
+	// Pod in podman but not in store -> log as orphan, don't adopt
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	exec.listPods = []executor.PodListEntry{{Name: "orphan", Running: true}}
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, ok := store.Get("orphan")
+	if ok {
+		t.Fatal("orphaned pod should not be adopted into store")
+	}
+}
+
+func TestRecoverPods_StoreStatusMismatch(t *testing.T) {
+	// Pod is Pending in store but Running in podman -> update to Running
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("mismatch", "Always", 0)
+	store.Apply(spec) // status is Pending
+
+	exec.listPods = []executor.PodListEntry{{Name: "mismatch", Running: true}}
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, _ := store.Get("mismatch")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running after recovery, got %s", rec.Status)
 	}
 }

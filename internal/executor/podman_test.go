@@ -168,6 +168,34 @@ func TestBuildRemoveArgs(t *testing.T) {
 	}
 }
 
+func TestListPodsParseOutput(t *testing.T) {
+	data := []byte(`[{"Name":"web","Status":"Running"},{"Name":"batch","Status":"Exited"}]`)
+	pods, err := parsePodsJSON(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(pods) != 2 {
+		t.Fatalf("expected 2 pods, got %d", len(pods))
+	}
+	if pods[0].Name != "web" || !pods[0].Running {
+		t.Errorf("expected web running, got %+v", pods[0])
+	}
+	if pods[1].Name != "batch" || pods[1].Running {
+		t.Errorf("expected batch not running, got %+v", pods[1])
+	}
+}
+
+func TestListPodsEmptyOutput(t *testing.T) {
+	data := []byte(`[]`)
+	pods, err := parsePodsJSON(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(pods) != 0 {
+		t.Fatalf("expected 0 pods, got %d", len(pods))
+	}
+}
+
 func TestBuildRunArgs_PodAndContainerName(t *testing.T) {
 	container := manifest.ContainerSpec{
 		Name:  "worker",

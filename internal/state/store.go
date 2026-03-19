@@ -170,6 +170,23 @@ func (s *PodStore) IncrementRetry(name string) bool {
 	return true
 }
 
+// Prune removes completed or failed pods whose FinishedAt is older than the given duration.
+// Returns the number of pods pruned.
+func (s *PodStore) Prune(olderThan time.Duration) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().Add(-olderThan)
+	pruned := 0
+	for name, rec := range s.pods {
+		if (rec.Status == StatusCompleted || rec.Status == StatusFailed) && !rec.FinishedAt.IsZero() && rec.FinishedAt.Before(cutoff) {
+			delete(s.pods, name)
+			pruned++
+		}
+	}
+	return pruned
+}
+
 // Names returns all pod names.
 func (s *PodStore) Names() []string {
 	s.mu.RLock()

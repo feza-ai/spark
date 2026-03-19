@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -16,12 +17,19 @@ type Status struct {
 	ExitCode int
 }
 
+// PodListEntry represents a pod discovered from podman.
+type PodListEntry struct {
+	Name    string
+	Running bool
+}
+
 // Executor defines the interface for pod lifecycle management.
 type Executor interface {
 	CreatePod(ctx context.Context, spec manifest.PodSpec) error
 	StopPod(ctx context.Context, name string, gracePeriod int) error
 	PodStatus(ctx context.Context, name string) (Status, error)
 	RemovePod(ctx context.Context, name string) error
+	ListPods(ctx context.Context) ([]PodListEntry, error)
 }
 
 // PodmanExecutor implements Executor using podman CLI.
@@ -167,4 +175,34 @@ func (p *PodmanExecutor) RemovePod(ctx context.Context, name string) error {
 		return fmt.Errorf("podman pod rm: %w: %s", err, out)
 	}
 	return nil
+}
+
+// ListPods returns all pods known to podman.
+func (p *PodmanExecutor) ListPods(ctx context.Context) ([]PodListEntry, error) {
+	args := []string{"pod", "ls", "--format", "json"}
+	slog.Info("listing pods", "cmd", "podman", "args", args)
+	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("podman pod ls: %w: %s", err, out)
+	}
+	return parsePodsJSON(out)
+}
+
+// parsePodsJSON parses the JSON output of podman pod ls.
+func parsePodsJSON(data []byte) ([]PodListEntry, error) {
+	var raw []struct {
+		Name   string `json:"Name"`
+		Status string `json:"Status"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse pod list: %w", err)
+	}
+	result := make([]PodListEntry, len(raw))
+	for i, r := range raw {
+		result[i] = PodListEntry{
+			Name:    r.Name,
+			Running: r.Status == "Running",
+		}
+	}
+	return result, nil
 }
