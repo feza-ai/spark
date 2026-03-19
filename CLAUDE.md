@@ -43,3 +43,7 @@ Pod, Job, CronJob, Deployment, StatefulSet
 - Small, logical commits — one package per commit.
 - Conventional Commits (e.g., `feat(runtime): add pod lifecycle hooks`).
 - Rebase and merge (not squash, not merge commits).
+
+# DGX Spark
+DGX Spark GPU available at `ssh ndungu@192.168.86.250`
+podman running on the DGX
