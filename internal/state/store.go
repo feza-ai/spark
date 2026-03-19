@@ -88,9 +88,7 @@ func (s *PodStore) Get(name string) (PodRecord, bool) {
 	}
 	cp := *rec
 	cp.Events = make([]PodEvent, len(rec.Events))
-	for i, e := range rec.Events {
-		cp.Events[i] = e
-	}
+	copy(cp.Events, rec.Events)
 	return cp, true
 }
 
@@ -107,9 +105,7 @@ func (s *PodStore) List(status PodStatus) []PodRecord {
 		}
 		cp := *rec
 		cp.Events = make([]PodEvent, len(rec.Events))
-		for i, e := range rec.Events {
-			cp.Events[i] = e
-		}
+		copy(cp.Events, rec.Events)
 		result = append(result, cp)
 	}
 	return result
