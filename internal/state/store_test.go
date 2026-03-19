@@ -3,6 +3,7 @@ package state
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
 )
@@ -227,6 +228,70 @@ func TestGetReturnsCopy(t *testing.T) {
 	original, _ := s.Get("pod-a")
 	if len(original.Events) != 1 {
 		t.Fatalf("expected internal events unmodified (1), got %d", len(original.Events))
+	}
+}
+
+func TestPrune_RemovesOldCompleted(t *testing.T) {
+	s := NewPodStore()
+	s.Apply(podSpec("old-pod"))
+	s.UpdateStatus("old-pod", StatusCompleted, "done")
+
+	// Manually set FinishedAt to 2 hours ago
+	s.mu.Lock()
+	s.pods["old-pod"].FinishedAt = time.Now().Add(-2 * time.Hour)
+	s.mu.Unlock()
+
+	pruned := s.Prune(1 * time.Hour)
+	if pruned != 1 {
+		t.Fatalf("expected 1 pruned, got %d", pruned)
+	}
+	if _, ok := s.Get("old-pod"); ok {
+		t.Fatal("expected old-pod to be pruned")
+	}
+}
+
+func TestPrune_KeepsRecent(t *testing.T) {
+	s := NewPodStore()
+	s.Apply(podSpec("recent-pod"))
+	s.UpdateStatus("recent-pod", StatusCompleted, "done")
+	// FinishedAt is set to now by UpdateStatus
+
+	pruned := s.Prune(1 * time.Hour)
+	if pruned != 0 {
+		t.Fatalf("expected 0 pruned, got %d", pruned)
+	}
+	if _, ok := s.Get("recent-pod"); !ok {
+		t.Fatal("expected recent-pod to be kept")
+	}
+}
+
+func TestPrune_KeepsRunning(t *testing.T) {
+	s := NewPodStore()
+	s.Apply(podSpec("running-pod"))
+	s.UpdateStatus("running-pod", StatusRunning, "running")
+
+	// Even if we set a fake old StartedAt, Running pods should not be pruned
+	pruned := s.Prune(0) // zero duration = prune everything terminal
+	if pruned != 0 {
+		t.Fatalf("expected 0 pruned for running pod, got %d", pruned)
+	}
+	if _, ok := s.Get("running-pod"); !ok {
+		t.Fatal("expected running-pod to be kept")
+	}
+}
+
+func TestPrune_RemovesOldFailed(t *testing.T) {
+	s := NewPodStore()
+	s.Apply(podSpec("failed-pod"))
+	s.UpdateStatus("failed-pod", StatusFailed, "error")
+
+	s.mu.Lock()
+	s.pods["failed-pod"].FinishedAt = time.Now().Add(-2 * time.Hour)
+	s.mu.Unlock()
+
+	pruned := s.Prune(1 * time.Hour)
+	if pruned != 1 {
+		t.Fatalf("expected 1 pruned, got %d", pruned)
 	}
 }
 

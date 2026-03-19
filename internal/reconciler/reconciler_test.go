@@ -22,6 +22,8 @@ type stubExecutor struct {
 	statuses  map[string]executor.Status
 	createErr error
 	statusErr error
+	listPods  []executor.PodListEntry
+	listErr   error
 }
 
 func newStubExecutor() *stubExecutor {
@@ -74,6 +76,12 @@ func (s *stubExecutor) RemovePod(_ context.Context, name string) error {
 func (s *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	if s.listPods != nil {
+		return s.listPods, nil
+	}
 	var result []executor.PodListEntry
 	for name, st := range s.statuses {
 		result = append(result, executor.PodListEntry{Name: name, Running: st.Running})
