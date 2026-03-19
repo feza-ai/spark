@@ -85,6 +85,14 @@ func (s *stubExecutor) getCreates() []string {
 	return cp
 }
 
+func (s *stubExecutor) getStops() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]string, len(s.stops))
+	copy(cp, s.stops)
+	return cp
+}
+
 // newTestScheduler creates a scheduler with enough resources for testing.
 func newTestScheduler() *scheduler.Scheduler {
 	tracker := scheduler.NewResourceTracker(
@@ -497,5 +505,186 @@ func TestReconcileRunningExitCodes(t *testing.T) {
 				t.Fatalf("expected RetryCount=%d, got %d", tt.wantRetry, rec.RetryCount)
 			}
 		})
+	}
+}
+
+func TestOnStatusChangeCallback(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	type statusEvent struct {
+		podName string
+		status  string
+		message string
+	}
+	var events []statusEvent
+
+	r.SetOnStatusChange(func(podName, status, message string) {
+		events = append(events, statusEvent{podName, status, message})
+	})
+
+	spec := testPodSpec("cb-pod", "Never", 0)
+	store.Apply(spec)
+
+	// Tick 1: schedule and create -> scheduled + running.
+	r.reconcileOnce(context.Background())
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events after scheduling, got %d", len(events))
+	}
+	if events[0].status != "scheduled" {
+		t.Fatalf("expected first event status 'scheduled', got %q", events[0].status)
+	}
+	if events[1].status != "running" {
+		t.Fatalf("expected second event status 'running', got %q", events[1].status)
+	}
+	if events[0].podName != "cb-pod" || events[1].podName != "cb-pod" {
+		t.Fatal("expected all events for 'cb-pod'")
+	}
+
+	// Simulate clean exit.
+	exec.setStatus("cb-pod", executor.Status{Running: false, ExitCode: 0})
+
+	// Tick 2: detect exit -> completed.
+	r.reconcileOnce(context.Background())
+
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events total, got %d", len(events))
+	}
+	if events[2].status != "completed" {
+		t.Fatalf("expected third event status 'completed', got %q", events[2].status)
+	}
+}
+
+// testPodSpecWithPriority creates a PodSpec with a specific priority and resource request.
+func testPodSpecWithPriority(name string, priority, cpuMillis, memoryMB int) manifest.PodSpec {
+	return manifest.PodSpec{
+		Name:          name,
+		Priority:      priority,
+		RestartPolicy: "Never",
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:  "main",
+				Image: "test:latest",
+				Resources: manifest.ResourceRequirements{
+					Requests: manifest.ResourceList{CPUMillis: cpuMillis, MemoryMB: memoryMB},
+				},
+			},
+		},
+	}
+}
+
+// newTightScheduler creates a scheduler with limited resources to force preemption.
+func newTightScheduler(cpuMillis, memoryMB int) *scheduler.Scheduler {
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: cpuMillis, MemoryMB: memoryMB, GPUMemoryMB: 0},
+		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+	)
+	return scheduler.NewScheduler(tracker)
+}
+
+func TestPreemptionStopsVictims(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTightScheduler(1000, 1024)
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	// Schedule a low-priority pod that uses all resources.
+	lowSpec := testPodSpecWithPriority("low", 1000, 1000, 1024)
+	store.Apply(lowSpec)
+	r.reconcileOnce(context.Background())
+
+	rec, _ := store.Get("low")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected low-priority pod Running, got %s", rec.Status)
+	}
+
+	// Add a high-priority pod that needs the same resources.
+	highSpec := testPodSpecWithPriority("high", 100, 1000, 1024)
+	store.Apply(highSpec)
+	r.reconcileOnce(context.Background())
+
+	// Verify StopPod was called on the victim.
+	stops := exec.getStops()
+	if len(stops) != 1 || stops[0] != "low" {
+		t.Fatalf("expected StopPod called on 'low', got %v", stops)
+	}
+
+	// Verify the high-priority pod is now running.
+	rec, _ = store.Get("high")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected high-priority pod Running, got %s", rec.Status)
+	}
+}
+
+func TestPreemptionUpdatesVictimStatus(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTightScheduler(1000, 1024)
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	// Schedule a low-priority pod.
+	lowSpec := testPodSpecWithPriority("victim", 1000, 1000, 1024)
+	store.Apply(lowSpec)
+	r.reconcileOnce(context.Background())
+
+	// Add a high-priority pod.
+	highSpec := testPodSpecWithPriority("preemptor", 100, 1000, 1024)
+	store.Apply(highSpec)
+	r.reconcileOnce(context.Background())
+
+	// Verify victim status is Preempted.
+	rec, ok := store.Get("victim")
+	if !ok {
+		t.Fatal("victim pod not found in store")
+	}
+	if rec.Status != state.StatusPreempted {
+		t.Fatalf("expected victim status Preempted, got %s", rec.Status)
+	}
+}
+
+func TestPreemptionReschedulesPendingPod(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTightScheduler(2000, 2048)
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	// Schedule two low-priority pods.
+	low1 := testPodSpecWithPriority("low1", 1000, 1000, 1024)
+	low2 := testPodSpecWithPriority("low2", 1000, 1000, 1024)
+	store.Apply(low1)
+	store.Apply(low2)
+	r.reconcileOnce(context.Background())
+
+	rec1, _ := store.Get("low1")
+	rec2, _ := store.Get("low2")
+	if rec1.Status != state.StatusRunning || rec2.Status != state.StatusRunning {
+		t.Fatalf("expected both low-priority pods Running, got %s and %s", rec1.Status, rec2.Status)
+	}
+
+	// Add a high-priority pod that needs all the resources.
+	highSpec := testPodSpecWithPriority("high", 100, 2000, 2048)
+	store.Apply(highSpec)
+	r.reconcileOnce(context.Background())
+
+	// Verify both victims were stopped.
+	stops := exec.getStops()
+	if len(stops) != 2 {
+		t.Fatalf("expected 2 stops, got %d: %v", len(stops), stops)
+	}
+
+	// Verify the high-priority pod is running.
+	rec, _ := store.Get("high")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected high-priority pod Running after preemption, got %s", rec.Status)
+	}
+
+	// Verify both victims are preempted.
+	rec1, _ = store.Get("low1")
+	rec2, _ = store.Get("low2")
+	if rec1.Status != state.StatusPreempted || rec2.Status != state.StatusPreempted {
+		t.Fatalf("expected both victims Preempted, got %s and %s", rec1.Status, rec2.Status)
 	}
 }
