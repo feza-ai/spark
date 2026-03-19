@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os/exec"
 	"strconv"
@@ -22,6 +23,14 @@ type GPUInfo struct {
 
 // Detect runs nvidia-smi and returns aggregated GPU information.
 func Detect() (GPUInfo, error) {
+	return DetectWithFallback(nil)
+}
+
+// DetectWithFallback runs nvidia-smi and returns aggregated GPU information.
+// When memory values are unavailable (unified memory GPUs like NVIDIA GB10),
+// it calls fallbackMemoryMB to obtain total system memory. Pass nil to skip
+// the fallback.
+func DetectWithFallback(fallbackMemoryMB func() (int, error)) (GPUInfo, error) {
 	path, err := exec.LookPath("nvidia-smi")
 	if err != nil {
 		return GPUInfo{}, ErrNoGPU
@@ -36,7 +45,47 @@ func Detect() (GPUInfo, error) {
 		return GPUInfo{}, ErrNoGPU
 	}
 
-	return parseCSV(string(out))
+	info, err := parseCSV(string(out))
+	if err != nil {
+		return GPUInfo{}, err
+	}
+
+	// For unified-memory GPUs (e.g. NVIDIA GB10), memory.total reports [N/A].
+	// Fall back to system memory when GPU was detected but memory is unknown.
+	if info.GPUCount > 0 && info.MemoryTotalMB == 0 && fallbackMemoryMB != nil {
+		sysMB, fbErr := fallbackMemoryMB()
+		if fbErr != nil {
+			slog.Warn("gpu: fallback memory detection failed", "error", fbErr)
+		} else {
+			info.MemoryTotalMB = sysMB
+			slog.Info("gpu: using system memory for unified-memory GPU",
+				"memoryTotalMB", sysMB, "model", info.Model)
+		}
+	}
+
+	return info, nil
+}
+
+// isNA returns true when a nvidia-smi field value indicates the metric is
+// not available. Unified-memory GPUs such as the NVIDIA GB10 report "[N/A]"
+// for dedicated memory fields.
+func isNA(s string) bool {
+	v := strings.TrimSpace(s)
+	return v == "[N/A]" || v == "N/A" || strings.EqualFold(v, "not available")
+}
+
+// parseIntOrNA parses s as an integer. If the value is a recognized N/A
+// sentinel, it returns 0 and a nil error.
+func parseIntOrNA(s string) (int, error) {
+	v := strings.TrimSpace(s)
+	if isNA(v) {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("parse %q: %w", v, err)
+	}
+	return n, nil
 }
 
 // parseCSV parses nvidia-smi CSV output into GPUInfo.
@@ -61,17 +110,17 @@ func parseCSV(output string) (GPUInfo, error) {
 		}
 
 		name := strings.TrimSpace(fields[0])
-		memTotal, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+		memTotal, err := parseIntOrNA(fields[1])
 		if err != nil {
 			slog.Warn("gpu: failed to parse memory total", "value", fields[1], "error", err)
 			continue
 		}
-		memUsed, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+		memUsed, err := parseIntOrNA(fields[2])
 		if err != nil {
 			slog.Warn("gpu: failed to parse memory used", "value", fields[2], "error", err)
 			continue
 		}
-		util, err := strconv.Atoi(strings.TrimSpace(fields[3]))
+		util, err := parseIntOrNA(fields[3])
 		if err != nil {
 			slog.Warn("gpu: failed to parse utilization", "value", fields[3], "error", err)
 			continue

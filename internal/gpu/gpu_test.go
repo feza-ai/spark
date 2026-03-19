@@ -71,6 +71,50 @@ func TestParseCSV(t *testing.T) {
 				GPUCount:           1,
 			},
 		},
+		{
+			name:  "unified memory GPU with all N/A memory values",
+			input: "NVIDIA GB10, [N/A], [N/A], 0\n",
+			want: GPUInfo{
+				Model:              "NVIDIA GB10",
+				MemoryTotalMB:      0,
+				MemoryUsedMB:       0,
+				UtilizationPercent: 0,
+				GPUCount:           1,
+			},
+		},
+		{
+			name:  "N/A without brackets",
+			input: "NVIDIA GB10, N/A, N/A, 5\n",
+			want: GPUInfo{
+				Model:              "NVIDIA GB10",
+				MemoryTotalMB:      0,
+				MemoryUsedMB:       0,
+				UtilizationPercent: 5,
+				GPUCount:           1,
+			},
+		},
+		{
+			name:  "partial N/A with valid utilization",
+			input: "NVIDIA GB10, [N/A], [N/A], 42\n",
+			want: GPUInfo{
+				Model:              "NVIDIA GB10",
+				MemoryTotalMB:      0,
+				MemoryUsedMB:       0,
+				UtilizationPercent: 42,
+				GPUCount:           1,
+			},
+		},
+		{
+			name:  "mixed normal and unified memory GPUs",
+			input: "NVIDIA A100, 81920, 1024, 50\nNVIDIA GB10, [N/A], [N/A], 0\n",
+			want: GPUInfo{
+				Model:              "NVIDIA A100",
+				MemoryTotalMB:      81920,
+				MemoryUsedMB:       1024,
+				UtilizationPercent: 25,
+				GPUCount:           2,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,6 +133,52 @@ func TestParseCSV(t *testing.T) {
 				t.Errorf("parseCSV() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsNA(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"[N/A]", true},
+		{"N/A", true},
+		{" [N/A] ", true},
+		{" N/A ", true},
+		{"not available", true},
+		{"Not Available", true},
+		{"0", false},
+		{"1024", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isNA(tt.input); got != tt.want {
+			t.Errorf("isNA(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseIntOrNA(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    int
+		wantErr bool
+	}{
+		{"1024", 1024, false},
+		{"0", 0, false},
+		{"[N/A]", 0, false},
+		{"N/A", 0, false},
+		{"abc", 0, true},
+	}
+	for _, tt := range tests {
+		got, err := parseIntOrNA(tt.input)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("parseIntOrNA(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("parseIntOrNA(%q) = %d, want %d", tt.input, got, tt.want)
+		}
 	}
 }
 
