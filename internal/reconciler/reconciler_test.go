@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -285,5 +286,216 @@ func TestFailedJobWithExhaustedRetriesStaysFailed(t *testing.T) {
 	rec, _ = store.Get("job2")
 	if rec.Status != state.StatusFailed {
 		t.Fatalf("expected still Failed, got %s", rec.Status)
+	}
+}
+
+func TestDeletedPodIsRemovedFromStore(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("del", "Always", 0)
+	store.Apply(spec)
+
+	// Tick 1: schedule and create.
+	r.reconcileOnce(context.Background())
+	rec, ok := store.Get("del")
+	if !ok || rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running, got %s", rec.Status)
+	}
+
+	// Delete from store while running.
+	store.Delete("del")
+
+	_, ok = store.Get("del")
+	if ok {
+		t.Fatal("expected pod to be removed from store after Delete")
+	}
+
+	// Tick 2: reconciler should not crash with missing pod.
+	r.reconcileOnce(context.Background())
+
+	_, ok = store.Get("del")
+	if ok {
+		t.Fatal("deleted pod should not reappear after reconcile")
+	}
+}
+
+func TestCreatePodErrorReverts(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	exec.createErr = errors.New("podman create failed")
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("fail-create", "Always", 0)
+	store.Apply(spec)
+
+	r.reconcileOnce(context.Background())
+
+	rec, ok := store.Get("fail-create")
+	if !ok {
+		t.Fatal("pod not found in store")
+	}
+	if rec.Status != state.StatusPending {
+		t.Fatalf("expected Pending after create error, got %s", rec.Status)
+	}
+}
+
+func TestPodStatusErrorKeepsRunning(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("status-err", "Always", 0)
+	store.Apply(spec)
+
+	// Tick 1: schedule and create.
+	r.reconcileOnce(context.Background())
+
+	rec, _ := store.Get("status-err")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running, got %s", rec.Status)
+	}
+
+	// Inject status error.
+	exec.mu.Lock()
+	exec.statusErr = errors.New("inspect failed")
+	exec.mu.Unlock()
+
+	// Tick 2: status check fails, pod should remain Running.
+	r.reconcileOnce(context.Background())
+
+	rec, _ = store.Get("status-err")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running after status error, got %s", rec.Status)
+	}
+}
+
+func TestRunLoopStopsOnCancel(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, 10*time.Millisecond)
+
+	spec := testPodSpec("loop", "Always", 0)
+	store.Apply(spec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		r.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for at least one tick to process the pod.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not stop after context cancellation")
+	}
+
+	rec, ok := store.Get("loop")
+	if !ok {
+		t.Fatal("pod not found")
+	}
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running after loop, got %s", rec.Status)
+	}
+}
+
+func TestReconcileRunningExitCodes(t *testing.T) {
+	tests := []struct {
+		name          string
+		restartPolicy string
+		backoffLimit  int
+		exitCode      int
+		wantStatus    state.PodStatus
+		wantRetry     int
+	}{
+		{
+			name:          "Always/exit0 restarts",
+			restartPolicy: "Always",
+			exitCode:      0,
+			wantStatus:    state.StatusPending,
+		},
+		{
+			name:          "Always/exit1 restarts",
+			restartPolicy: "Always",
+			exitCode:      1,
+			wantStatus:    state.StatusPending,
+		},
+		{
+			name:          "Never/exit0 completes",
+			restartPolicy: "Never",
+			exitCode:      0,
+			wantStatus:    state.StatusCompleted,
+		},
+		{
+			name:          "Never/exit1 fails",
+			restartPolicy: "Never",
+			exitCode:      1,
+			wantStatus:    state.StatusFailed,
+		},
+		{
+			name:          "OnFailure/exit0 completes",
+			restartPolicy: "OnFailure",
+			backoffLimit:  3,
+			exitCode:      0,
+			wantStatus:    state.StatusCompleted,
+		},
+		{
+			name:          "OnFailure/exit1 retries",
+			restartPolicy: "OnFailure",
+			backoffLimit:  3,
+			exitCode:      1,
+			wantStatus:    state.StatusPending,
+			wantRetry:     1,
+		},
+		{
+			name:          "OnFailure/exit1 no retries left",
+			restartPolicy: "OnFailure",
+			backoffLimit:  0,
+			exitCode:      1,
+			wantStatus:    state.StatusFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := state.NewPodStore()
+			sched := newTestScheduler()
+			exec := newStubExecutor()
+			r := NewReconciler(store, sched, exec, time.Second)
+
+			spec := testPodSpec("pod-"+tt.name, tt.restartPolicy, tt.backoffLimit)
+			store.Apply(spec)
+
+			// Schedule and create.
+			r.reconcileOnce(context.Background())
+
+			// Simulate exit.
+			exec.setStatus("pod-"+tt.name, executor.Status{Running: false, ExitCode: tt.exitCode})
+
+			// Detect exit.
+			r.reconcileOnce(context.Background())
+
+			rec, ok := store.Get("pod-" + tt.name)
+			if !ok {
+				t.Fatal("pod not found")
+			}
+			if rec.Status != tt.wantStatus {
+				t.Fatalf("expected %s, got %s", tt.wantStatus, rec.Status)
+			}
+			if rec.RetryCount != tt.wantRetry {
+				t.Fatalf("expected RetryCount=%d, got %d", tt.wantRetry, rec.RetryCount)
+			}
+		})
 	}
 }
