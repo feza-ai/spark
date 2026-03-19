@@ -128,6 +128,46 @@ func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
 	}
 }
 
+func TestBuildStopArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		podName     string
+		gracePeriod int
+		want        []string
+	}{
+		{"default grace", "mypod", 10, []string{"pod", "stop", "--time", "10", "mypod"}},
+		{"zero grace", "web", 0, []string{"pod", "stop", "--time", "0", "web"}},
+		{"long grace", "worker-pod", 300, []string{"pod", "stop", "--time", "300", "worker-pod"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildStopArgs(tt.podName, tt.gracePeriod)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("buildStopArgs(%q, %d) = %v, want %v", tt.podName, tt.gracePeriod, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildRemoveArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		podName string
+		want    []string
+	}{
+		{"simple name", "mypod", []string{"pod", "rm", "mypod"}},
+		{"hyphenated name", "worker-pod", []string{"pod", "rm", "worker-pod"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRemoveArgs(tt.podName)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("buildRemoveArgs(%q) = %v, want %v", tt.podName, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildRunArgs_PodAndContainerName(t *testing.T) {
 	container := manifest.ContainerSpec{
 		Name:  "worker",
