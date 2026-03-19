@@ -2,6 +2,7 @@ package state
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
@@ -42,6 +43,12 @@ type PodStore struct {
 	mu       sync.RWMutex
 	pods     map[string]*PodRecord
 	OnDelete func(name string)
+	readOnly atomic.Bool
+}
+
+// SetReadOnly enables or disables read-only mode. When read-only, Apply is a no-op.
+func (s *PodStore) SetReadOnly(ro bool) {
+	s.readOnly.Store(ro)
 }
 
 // NewPodStore creates a new empty store.
@@ -61,7 +68,11 @@ func (s *PodStore) LoadFrom(pods map[string]*PodRecord) {
 }
 
 // Apply adds or updates a pod's desired state. If new, status is Pending.
+// In read-only mode, Apply is a no-op.
 func (s *PodStore) Apply(spec manifest.PodSpec) {
+	if s.readOnly.Load() {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
