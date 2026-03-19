@@ -76,11 +76,16 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	pods := r.store.List("")
 
 	for _, pod := range pods {
-		switch pod.Status {
+		// Re-read current status; a prior iteration may have changed it (e.g. preemption).
+		current, ok := r.store.Get(pod.Spec.Name)
+		if !ok {
+			continue
+		}
+		switch current.Status {
 		case state.StatusPending:
-			r.reconcilePending(ctx, pod)
+			r.reconcilePending(ctx, current)
 		case state.StatusRunning:
-			r.reconcileRunning(ctx, pod)
+			r.reconcileRunning(ctx, current)
 		}
 	}
 }
