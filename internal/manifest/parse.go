@@ -42,8 +42,24 @@ func Parse(data []byte, priorityClasses map[string]int) (ParseResult, error) {
 				return ParseResult{}, fmt.Errorf("parsing Job: %w", err)
 			}
 			result.Pods = append(result.Pods, pods...)
-		case "Deployment", "StatefulSet", "CronJob":
-			return ParseResult{}, fmt.Errorf("unsupported kind: %s", kind)
+		case "Deployment":
+			pods, err := parseDeployment(root, priorityClasses)
+			if err != nil {
+				return ParseResult{}, fmt.Errorf("parsing Deployment: %w", err)
+			}
+			result.Pods = append(result.Pods, pods...)
+		case "StatefulSet":
+			pods, err := parseStatefulSet(root, priorityClasses)
+			if err != nil {
+				return ParseResult{}, fmt.Errorf("parsing StatefulSet: %w", err)
+			}
+			result.Pods = append(result.Pods, pods...)
+		case "CronJob":
+			cj, err := parseCronJob(root, priorityClasses)
+			if err != nil {
+				return ParseResult{}, fmt.Errorf("parsing CronJob: %w", err)
+			}
+			result.CronJobs = append(result.CronJobs, cj)
 		case "":
 			return ParseResult{}, fmt.Errorf("missing kind field")
 		default:

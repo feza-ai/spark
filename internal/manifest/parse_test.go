@@ -328,19 +328,62 @@ spec:
 }
 
 func TestParse_UnsupportedKind(t *testing.T) {
-	kinds := []string{"Deployment", "StatefulSet", "CronJob"}
-	for _, kind := range kinds {
-		t.Run(kind, func(t *testing.T) {
-			yaml := "apiVersion: v1\nkind: " + kind + "\nmetadata:\n  name: test\n"
-			_, err := Parse([]byte(yaml), nil)
-			if err == nil {
-				t.Fatalf("expected error for kind %s", kind)
-			}
-			want := "unsupported kind: " + kind
-			if err.Error() != want {
-				t.Errorf("error = %q, want %q", err.Error(), want)
-			}
-		})
+	yaml := "apiVersion: v1\nkind: DaemonSet\nmetadata:\n  name: test\n"
+	_, err := Parse([]byte(yaml), nil)
+	if err != nil {
+		t.Fatalf("unknown kinds should be silently ignored, got error: %v", err)
+	}
+}
+
+func TestParse_DeploymentViaDispatch(t *testing.T) {
+	yaml := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-deploy
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: app
+          image: alpine:latest
+`
+	result, err := Parse([]byte(yaml), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Pods) != 2 {
+		t.Fatalf("expected 2 pods, got %d", len(result.Pods))
+	}
+	if result.Pods[0].Name != "my-deploy-0" {
+		t.Errorf("expected my-deploy-0, got %s", result.Pods[0].Name)
+	}
+}
+
+func TestParse_CronJobViaDispatch(t *testing.T) {
+	yaml := `apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: my-cron
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: worker
+              image: alpine:latest
+`
+	result, err := Parse([]byte(yaml), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.CronJobs) != 1 {
+		t.Fatalf("expected 1 cronjob, got %d", len(result.CronJobs))
+	}
+	if result.CronJobs[0].Schedule != "*/5 * * * *" {
+		t.Errorf("expected schedule */5 * * * *, got %s", result.CronJobs[0].Schedule)
 	}
 }
 
