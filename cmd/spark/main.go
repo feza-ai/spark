@@ -31,6 +31,8 @@ func main() {
 	reconcileInterval := flag.Duration("reconcile-interval", 5*time.Second, "reconciliation loop interval")
 	systemReserveCPU := flag.Int("system-reserve-cpu", 2000, "CPU millicores reserved for system")
 	systemReserveMem := flag.Int("system-reserve-memory", 4096, "MB of RAM reserved for system")
+	stateDB := flag.String("state-db", "/var/lib/spark/state.db", "path to SQLite database file")
+	podRetention := flag.Duration("pod-retention", 168*time.Hour, "retention for completed/failed pods")
 	flag.Parse()
 
 	slog.Info("spark starting",
@@ -83,6 +85,30 @@ func main() {
 	// 4. Create state store.
 	store := state.NewPodStore()
 
+	// 4a. Open SQLite and load persisted state.
+	sqlStore, err := state.OpenSQLite(*stateDB)
+	if err != nil {
+		slog.Error("failed to open state database", "error", err)
+		os.Exit(1)
+	}
+	defer sqlStore.Close()
+
+	persisted, err := sqlStore.LoadAll()
+	if err != nil {
+		slog.Error("failed to load persisted state", "error", err)
+		os.Exit(1)
+	}
+	if len(persisted) > 0 {
+		store.LoadFrom(persisted)
+		slog.Info("loaded persisted state", "pods", len(persisted))
+	}
+
+	store.OnDelete = func(name string) {
+		if err := sqlStore.DeletePod(name); err != nil {
+			slog.Error("failed to delete pod from SQLite", "pod", name, "error", err)
+		}
+	}
+
 	// 5. Create resource tracker and scheduler.
 	gpuMemMB := gpuInfo.MemoryTotalMB
 	_ = gpuMax // reserved for future GPU slot limiting
@@ -132,6 +158,18 @@ func main() {
 		if err := eventPub.Publish(podName, status, message); err != nil {
 			slog.Error("failed to publish lifecycle event", "pod", podName, "status", status, "error", err)
 		}
+		// Persist state change to SQLite.
+		if podRec, ok := store.Get(podName); ok {
+			if err := sqlStore.SavePod(&podRec); err != nil {
+				slog.Error("failed to persist pod state", "pod", podName, "error", err)
+			}
+			if len(podRec.Events) > 0 {
+				lastEvent := podRec.Events[len(podRec.Events)-1]
+				if err := sqlStore.SaveEvent(podName, lastEvent); err != nil {
+					slog.Error("failed to persist event", "pod", podName, "error", err)
+				}
+			}
+		}
 	})
 	rec.OnPodRunning(func(podName string) {
 		logStreamer.StartStream(podName, executor.StreamLogs)
@@ -139,8 +177,45 @@ func main() {
 	rec.OnPodStopped(func(podName string) {
 		logStreamer.StopStream(podName)
 	})
+	// 11a. Recover pods from podman.
+	if err := rec.RecoverPods(ctx); err != nil {
+		slog.Error("pod recovery failed", "error", err)
+	}
+
+	// 11b. Re-register recovered Running pods in scheduler.
+	for _, pod := range store.List(state.StatusRunning) {
+		sched.AddPod(scheduler.PodInfo{
+			Name:      pod.Spec.Name,
+			Priority:  pod.Spec.Priority,
+			Resources: pod.Spec.TotalRequests(),
+			StartTime: pod.StartedAt,
+		})
+	}
+
 	go rec.Run(ctx)
 	slog.Info("reconciler started", "interval", *reconcileInterval)
+
+	// 11c. Start prune loop.
+	go func() {
+		pruneTicker := time.NewTicker(10 * time.Minute)
+		defer pruneTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-pruneTicker.C:
+				cutoff := time.Now().Add(-*podRetention)
+				pruned := store.Prune(*podRetention)
+				if pruned > 0 {
+					sqlPruned, err := sqlStore.PruneBefore(cutoff)
+					if err != nil {
+						slog.Error("failed to prune SQLite", "error", err)
+					}
+					slog.Info("pruned old pods", "in-memory", pruned, "sqlite", sqlPruned)
+				}
+			}
+		}
+	}()
 
 	// 12. Start cron scheduler.
 	cronSched := cron.NewCronScheduler(store)
@@ -165,6 +240,11 @@ func main() {
 			for _, pod := range result.Pods {
 				store.Apply(pod)
 				slog.Info("applied pod from file", "pod", pod.Name, "path", event.Path)
+				if podRec, ok := store.Get(pod.Name); ok {
+					if err := sqlStore.SavePod(&podRec); err != nil {
+						slog.Error("failed to persist applied pod", "pod", pod.Name, "error", err)
+					}
+				}
 			}
 			for _, cj := range result.CronJobs {
 				if err := cronSched.Register(cj); err != nil {
