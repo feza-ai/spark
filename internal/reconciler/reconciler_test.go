@@ -71,6 +71,16 @@ func (s *stubExecutor) RemovePod(_ context.Context, name string) error {
 	return nil
 }
 
+func (s *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result []executor.PodListEntry
+	for name, st := range s.statuses {
+		result = append(result, executor.PodListEntry{Name: name, Running: st.Running})
+	}
+	return result, nil
+}
+
 func (s *stubExecutor) setStatus(name string, st executor.Status) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
