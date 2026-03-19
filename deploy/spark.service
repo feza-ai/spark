@@ -1,7 +1,8 @@
 [Unit]
 Description=Spark Pod Orchestrator
-After=network-online.target nats.service
+After=network-online.target nats-server.service
 Wants=network-online.target
+Requires=nats-server.service
 
 [Service]
 Type=simple
@@ -14,9 +15,15 @@ ExecStart=/usr/local/bin/spark \
     -heartbeat-interval ${SPARK_HEARTBEAT_INTERVAL} \
     -reconcile-interval ${SPARK_RECONCILE_INTERVAL} \
     -system-reserve-cpu ${SPARK_SYSTEM_RESERVE_CPU} \
-    -system-reserve-memory ${SPARK_SYSTEM_RESERVE_MEMORY}
-Restart=on-failure
+    -system-reserve-memory ${SPARK_SYSTEM_RESERVE_MEMORY} \
+    -state-db ${SPARK_STATE_DB} \
+    -pod-retention ${SPARK_POD_RETENTION} \
+    -http-addr ${SPARK_HTTP_ADDR} \
+    -shutdown-timeout ${SPARK_SHUTDOWN_TIMEOUT} \
+    -reconcile-resources-interval ${SPARK_RECONCILE_RESOURCES_INTERVAL}
+Restart=always
 RestartSec=5
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
