@@ -120,23 +120,40 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 9. Start reconciler.
+	// 9. Create event publisher.
+	eventPub := bus.NewEventPublisher(b)
+
+	// 10. Create log streamer.
+	logStreamer := bus.NewLogStreamer(b)
+
+	// 11. Start reconciler.
 	rec := reconciler.NewReconciler(store, sched, exec, *reconcileInterval)
+	rec.SetOnStatusChange(func(podName, status, message string) {
+		if err := eventPub.Publish(podName, status, message); err != nil {
+			slog.Error("failed to publish lifecycle event", "pod", podName, "status", status, "error", err)
+		}
+	})
+	rec.OnPodRunning(func(podName string) {
+		logStreamer.StartStream(podName, executor.StreamLogs)
+	})
+	rec.OnPodStopped(func(podName string) {
+		logStreamer.StopStream(podName)
+	})
 	go rec.Run(ctx)
 	slog.Info("reconciler started", "interval", *reconcileInterval)
 
-	// 10. Start cron scheduler.
+	// 12. Start cron scheduler.
 	cronSched := cron.NewCronScheduler(store)
 	go cronSched.Run(ctx)
 	slog.Info("cron scheduler started")
 
-	// 11. Start heartbeat publisher.
+	// 13. Start heartbeat publisher.
 	hb := bus.NewHeartbeatPublisher(b, *nodeID, tracker, store,
 		gpuInfo.Model, gpuMemMB, sysInfo.CPUMillis, sysInfo.MemoryTotalMB)
 	go hb.Run(ctx, *heartbeatInterval)
 	slog.Info("heartbeat publisher started", "interval", *heartbeatInterval)
 
-	// 12. Start directory watcher.
+	// 14. Start directory watcher.
 	go watcher.Watch(ctx, *manifestDir, func(event watcher.WatchEvent) {
 		switch event.Type {
 		case watcher.Added, watcher.Modified:
@@ -164,11 +181,14 @@ func main() {
 
 	slog.Info("spark ready")
 
-	// 13. Block on OS signal.
+	// 15. Block on OS signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig)
+
+	// Stop all log streams before cancelling context.
+	logStreamer.StopAll()
 
 	// Cancel context to stop reconciler, watcher, heartbeat, cron.
 	cancel()
