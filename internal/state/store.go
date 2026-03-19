@@ -161,6 +161,19 @@ func (s *PodStore) AddEvent(name string, eventType string, message string) bool 
 	return true
 }
 
+// IncrementRetry increments a pod's retry count. Returns false if not found.
+func (s *PodStore) IncrementRetry(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.pods[name]
+	if !ok {
+		return false
+	}
+	rec.RetryCount++
+	return true
+}
+
 // Names returns all pod names.
 func (s *PodStore) Names() []string {
 	s.mu.RLock()
