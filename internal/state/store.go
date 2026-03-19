@@ -39,14 +39,24 @@ type PodRecord struct {
 
 // PodStore is a thread-safe in-memory store for pod state.
 type PodStore struct {
-	mu   sync.RWMutex
-	pods map[string]*PodRecord
+	mu       sync.RWMutex
+	pods     map[string]*PodRecord
+	OnDelete func(name string)
 }
 
 // NewPodStore creates a new empty store.
 func NewPodStore() *PodStore {
 	return &PodStore{
 		pods: make(map[string]*PodRecord),
+	}
+}
+
+// LoadFrom populates the store with persisted records. Must be called before any concurrent access.
+func (s *PodStore) LoadFrom(pods map[string]*PodRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, rec := range pods {
+		s.pods[name] = rec
 	}
 }
 
@@ -68,13 +78,16 @@ func (s *PodStore) Apply(spec manifest.PodSpec) {
 // Delete removes a pod from the store. Returns false if not found.
 func (s *PodStore) Delete(name string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.pods[name]; !ok {
-		return false
+	_, ok := s.pods[name]
+	if ok {
+		delete(s.pods, name)
 	}
-	delete(s.pods, name)
-	return true
+	onDelete := s.OnDelete
+	s.mu.Unlock()
+	if ok && onDelete != nil {
+		onDelete(name)
+	}
+	return ok
 }
 
 // Get returns a copy of a pod record by name.
