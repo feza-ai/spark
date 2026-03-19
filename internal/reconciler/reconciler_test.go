@@ -706,3 +706,90 @@ func TestPreemptionReschedulesPendingPod(t *testing.T) {
 		t.Fatalf("expected both victims Preempted, got %s and %s", rec1.Status, rec2.Status)
 	}
 }
+
+func TestRecoverPods_PodInBothStoreAndPodman(t *testing.T) {
+	// Pod is Running in both store and podman -> no-op
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("web", "Always", 0)
+	store.Apply(spec)
+	store.UpdateStatus("web", state.StatusRunning, "running")
+
+	exec.listPods = []executor.PodListEntry{{Name: "web", Running: true}}
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, _ := store.Get("web")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running, got %s", rec.Status)
+	}
+}
+
+func TestRecoverPods_PodInStoreNotPodman(t *testing.T) {
+	// Pod Running in store but not in podman -> mark Failed
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("ghost", "Always", 0)
+	store.Apply(spec)
+	store.UpdateStatus("ghost", state.StatusRunning, "was running")
+
+	exec.listPods = []executor.PodListEntry{} // empty, pod not in podman
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, _ := store.Get("ghost")
+	if rec.Status != state.StatusFailed {
+		t.Fatalf("expected Failed, got %s", rec.Status)
+	}
+}
+
+func TestRecoverPods_PodInPodmanNotStore(t *testing.T) {
+	// Pod in podman but not in store -> log as orphan, don't adopt
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	exec.listPods = []executor.PodListEntry{{Name: "orphan", Running: true}}
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, ok := store.Get("orphan")
+	if ok {
+		t.Fatal("orphaned pod should not be adopted into store")
+	}
+}
+
+func TestRecoverPods_StoreStatusMismatch(t *testing.T) {
+	// Pod is Pending in store but Running in podman -> update to Running
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("mismatch", "Always", 0)
+	store.Apply(spec) // status is Pending
+
+	exec.listPods = []executor.PodListEntry{{Name: "mismatch", Running: true}}
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, _ := store.Get("mismatch")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running after recovery, got %s", rec.Status)
+	}
+}

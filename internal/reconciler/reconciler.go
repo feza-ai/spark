@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -53,6 +54,59 @@ func (r *Reconciler) updateStatus(podName string, status state.PodStatus, messag
 	if r.onStatusChange != nil {
 		r.onStatusChange(podName, string(status), message)
 	}
+}
+
+// RecoverPods reconciles the store with the actual podman state after a restart.
+func (r *Reconciler) RecoverPods(ctx context.Context) error {
+	// 1. Call executor.ListPods(ctx) to get all podman pods.
+	podmanPods, err := r.executor.ListPods(ctx)
+	if err != nil {
+		return fmt.Errorf("list pods: %w", err)
+	}
+
+	// Build a set of podman pod names for fast lookup.
+	podmanSet := make(map[string]bool, len(podmanPods))
+	for _, p := range podmanPods {
+		podmanSet[p.Name] = p.Running
+	}
+
+	// 2. For each podman pod, check if it exists in store.
+	for _, p := range podmanPods {
+		rec, ok := r.store.Get(p.Name)
+		if !ok {
+			// Not in store: orphaned pod. Log warning, don't adopt.
+			slog.Warn("orphaned pod discovered in podman", "pod", p.Name)
+			continue
+		}
+		if rec.Status == state.StatusRunning {
+			// Already tracked as running, no action needed.
+			continue
+		}
+		if p.Running {
+			// Pod is running in podman but store says otherwise. Update store.
+			r.store.UpdateStatus(p.Name, state.StatusRunning, "recovered: pod found running in podman after restart")
+			// Re-register in scheduler.
+			r.scheduler.AddPod(scheduler.PodInfo{
+				Name:      rec.Spec.Name,
+				Priority:  rec.Spec.Priority,
+				Resources: rec.Spec.TotalRequests(),
+				StartTime: rec.StartedAt,
+			})
+			slog.Info("recovered pod", "pod", p.Name, "previousStatus", rec.Status)
+		}
+	}
+
+	// 3. For each pod in store with status Running, check if in podman.
+	for _, rec := range r.store.List(state.StatusRunning) {
+		if _, inPodman := podmanSet[rec.Spec.Name]; !inPodman {
+			// Running in store but not in podman: pod was lost.
+			r.store.UpdateStatus(rec.Spec.Name, state.StatusFailed, "pod not found in podman after restart")
+			r.scheduler.RemovePod(rec.Spec.Name)
+			slog.Warn("pod marked failed: not found in podman", "pod", rec.Spec.Name)
+		}
+	}
+
+	return nil
 }
 
 // Run starts the reconciliation loop. Blocks until ctx is cancelled.
