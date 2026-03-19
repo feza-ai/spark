@@ -41,6 +41,10 @@ func (e *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, err
 	return nil, nil
 }
 
+func (e *stubExecutor) PodStats(_ context.Context, _ string) (executor.PodResourceUsage, error) {
+	return executor.PodResourceUsage{}, nil
+}
+
 func TestDeleteHandler_ExistingPod(t *testing.T) {
 	bus := NewStubBus()
 	store := state.NewPodStore()

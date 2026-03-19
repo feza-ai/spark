@@ -15,15 +15,17 @@ import (
 
 // stubExecutor implements executor.Executor for testing.
 type stubExecutor struct {
-	mu        sync.Mutex
-	creates   []string
-	stops     []string
-	removes   []string
-	statuses  map[string]executor.Status
-	createErr error
-	statusErr error
-	listPods  []executor.PodListEntry
-	listErr   error
+	mu          sync.Mutex
+	creates     []string
+	stops       []string
+	removes     []string
+	statuses    map[string]executor.Status
+	createErr   error
+	statusErr   error
+	listPods    []executor.PodListEntry
+	listErr     error
+	podStats    map[string]executor.PodResourceUsage
+	podStatsErr error
 }
 
 func newStubExecutor() *stubExecutor {
@@ -87,6 +89,20 @@ func (s *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, err
 		result = append(result, executor.PodListEntry{Name: name, Running: st.Running})
 	}
 	return result, nil
+}
+
+func (s *stubExecutor) PodStats(_ context.Context, name string) (executor.PodResourceUsage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.podStatsErr != nil {
+		return executor.PodResourceUsage{}, s.podStatsErr
+	}
+	if s.podStats != nil {
+		if stats, ok := s.podStats[name]; ok {
+			return stats, nil
+		}
+	}
+	return executor.PodResourceUsage{}, nil
 }
 
 func (s *stubExecutor) setStatus(name string, st executor.Status) {
