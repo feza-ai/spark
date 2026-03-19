@@ -105,13 +105,33 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 	return args
 }
 
-// StopPod stops a pod with the given grace period in seconds.
+// buildStopArgs constructs the arguments for a podman pod stop command.
+func buildStopArgs(name string, gracePeriod int) []string {
+	return []string{"pod", "stop", "--time", fmt.Sprintf("%d", gracePeriod), name}
+}
+
+// buildRemoveArgs constructs the arguments for a podman pod rm command.
+func buildRemoveArgs(name string) []string {
+	return []string{"pod", "rm", name}
+}
+
+// StopPod stops a pod with the given grace period in seconds and removes it.
 func (p *PodmanExecutor) StopPod(ctx context.Context, name string, gracePeriod int) error {
-	args := []string{"pod", "stop", "--time", fmt.Sprintf("%d", gracePeriod), name}
+	args := buildStopArgs(name, gracePeriod)
 	slog.Info("stopping pod", "cmd", "podman", "args", args)
 	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("podman pod stop: %w: %s", err, out)
+	}
+
+	rmArgs := buildRemoveArgs(name)
+	slog.Info("removing pod", "cmd", "podman", "args", rmArgs)
+	out, err = exec.CommandContext(ctx, "podman", rmArgs...).CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "no such pod") {
+			return nil
+		}
+		return fmt.Errorf("podman pod rm: %w: %s", err, out)
 	}
 	return nil
 }
