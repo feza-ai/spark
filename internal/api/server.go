@@ -31,6 +31,7 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 	s.registerHealthRoutes()
 	s.registerResourceRoutes()
 	s.registerPodQueryRoutes()
+	s.registerPodMutateRoutes()
 	return s
 }
 
