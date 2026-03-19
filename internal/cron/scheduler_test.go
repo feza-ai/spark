@@ -202,6 +202,249 @@ func TestHistoryPruning(t *testing.T) {
 	}
 }
 
+func TestTriggerFiresAtCorrectTime(t *testing.T) {
+	tests := []struct {
+		name     string
+		schedule string
+		lastRun  time.Time
+		tickAt   time.Time
+		wantFire bool
+	}{
+		{
+			name:     "every minute fires after 1 min",
+			schedule: "* * * * *",
+			lastRun:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			tickAt:   time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC),
+			wantFire: true,
+		},
+		{
+			name:     "every minute does not fire at same minute",
+			schedule: "* * * * *",
+			lastRun:  time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC),
+			tickAt:   time.Date(2026, 1, 1, 0, 5, 30, 0, time.UTC),
+			wantFire: false,
+		},
+		{
+			name:     "hourly fires at top of next hour",
+			schedule: "0 * * * *",
+			lastRun:  time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+			tickAt:   time.Date(2026, 1, 1, 2, 0, 0, 0, time.UTC),
+			wantFire: true,
+		},
+		{
+			name:     "hourly does not fire mid-hour",
+			schedule: "0 * * * *",
+			lastRun:  time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+			tickAt:   time.Date(2026, 1, 1, 1, 30, 0, 0, time.UTC),
+			wantFire: false,
+		},
+		{
+			name:     "specific day of week fires on matching day",
+			schedule: "0 9 * * 1",
+			lastRun:  time.Date(2026, 1, 4, 9, 0, 0, 0, time.UTC), // Sunday
+			tickAt:   time.Date(2026, 1, 5, 9, 0, 0, 0, time.UTC), // Monday
+			wantFire: true,
+		},
+		{
+			name:     "specific day of week skips non-matching day",
+			schedule: "0 9 * * 1",
+			lastRun:  time.Date(2026, 1, 4, 9, 0, 0, 0, time.UTC), // Sunday
+			tickAt:   time.Date(2026, 1, 6, 9, 0, 0, 0, time.UTC), // Tuesday
+			wantFire: true, // Next after Sunday is Monday 9:00, which is before Tuesday 9:00
+		},
+		{
+			name:     "zero lastRun fires immediately",
+			schedule: "30 2 * * *",
+			lastRun:  time.Time{},
+			tickAt:   time.Date(2026, 6, 15, 3, 0, 0, 0, time.UTC),
+			wantFire: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := state.NewPodStore()
+			cs := NewCronScheduler(store)
+
+			spec := newTestSpec("trigger-test", tt.schedule, "Allow")
+			if err := cs.Register(spec); err != nil {
+				t.Fatal(err)
+			}
+
+			// Set lastRun directly.
+			cs.mu.Lock()
+			cs.jobs["trigger-test"].lastRun = tt.lastRun
+			cs.mu.Unlock()
+
+			cs.tick(tt.tickAt)
+
+			pods := store.List("")
+			fired := len(pods) > 0
+			if fired != tt.wantFire {
+				t.Fatalf("wantFire=%v but fired=%v (pods=%d)", tt.wantFire, fired, len(pods))
+			}
+		})
+	}
+}
+
+func TestForbidPolicyResumesAfterCompletion(t *testing.T) {
+	store := state.NewPodStore()
+	cs := NewCronScheduler(store)
+
+	if err := cs.Register(newTestSpec("job-forbid", "* * * * *", "Forbid")); err != nil {
+		t.Fatal(err)
+	}
+
+	// First tick creates a job.
+	t1 := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
+	cs.tick(t1)
+
+	pods := store.List("")
+	if len(pods) != 1 {
+		t.Fatalf("expected 1 pod after first tick, got %d", len(pods))
+	}
+
+	// Second tick skips because job is still active.
+	t2 := t1.Add(2 * time.Minute)
+	cs.tick(t2)
+
+	pods = store.List("")
+	if len(pods) != 1 {
+		t.Fatalf("expected 1 pod (Forbid skipped), got %d", len(pods))
+	}
+
+	// Mark the active job as completed.
+	store.UpdateStatus("job-forbid-1", state.StatusCompleted, "done")
+
+	// Third tick should now create a new job since no active job exists.
+	t3 := t2.Add(2 * time.Minute)
+	cs.tick(t3)
+
+	pods = store.List("")
+	var found bool
+	for _, p := range pods {
+		if p.Spec.Name == "job-forbid-2" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected job-forbid-2 to be created after active job completed")
+	}
+}
+
+func TestReplacePolicyDeletesMultipleActiveJobs(t *testing.T) {
+	store := state.NewPodStore()
+	cs := NewCronScheduler(store)
+
+	// Use Allow first to create multiple active pods, then switch to Replace.
+	if err := cs.Register(newTestSpec("job-replace", "* * * * *", "Allow")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two jobs with Allow policy.
+	t1 := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
+	cs.tick(t1)
+	t2 := t1.Add(2 * time.Minute)
+	cs.tick(t2)
+
+	pods := store.List("")
+	if len(pods) != 2 {
+		t.Fatalf("expected 2 pods, got %d", len(pods))
+	}
+
+	// Mark one as running, leave other as pending -- both are active.
+	store.UpdateStatus("job-replace-1", state.StatusRunning, "running")
+
+	// Switch to Replace policy and tick again.
+	cs.mu.Lock()
+	cs.jobs["job-replace"].spec.ConcurrencyPolicy = "Replace"
+	cs.mu.Unlock()
+
+	t3 := t2.Add(2 * time.Minute)
+	cs.tick(t3)
+
+	// Both active jobs should be deleted, only the new one should remain.
+	pods = store.List("")
+	if len(pods) != 1 {
+		t.Fatalf("expected 1 pod after replace, got %d", len(pods))
+	}
+	if pods[0].Spec.Name != "job-replace-3" {
+		t.Fatalf("expected job-replace-3, got %s", pods[0].Spec.Name)
+	}
+}
+
+func TestFailedJobsHistoryPruning(t *testing.T) {
+	store := state.NewPodStore()
+	cs := NewCronScheduler(store)
+
+	spec := newTestSpec("job-fail-prune", "* * * * *", "Allow")
+	spec.SuccessfulJobsHistoryLimit = 3
+	spec.FailedJobsHistoryLimit = 1
+
+	if err := cs.Register(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Create 3 jobs, marking each as failed before the next tick.
+	for i := 0; i < 3; i++ {
+		tickTime := base.Add(time.Duration(i+1) * 2 * time.Minute)
+
+		for _, p := range store.List("") {
+			if p.Status == state.StatusPending {
+				store.UpdateStatus(p.Spec.Name, state.StatusFailed, "error")
+			}
+		}
+
+		cs.tick(tickTime)
+	}
+
+	// Mark the last pending pod as failed.
+	for _, p := range store.List("") {
+		if p.Status == state.StatusPending {
+			store.UpdateStatus(p.Spec.Name, state.StatusFailed, "error")
+		}
+	}
+
+	// One more tick to trigger final pruning.
+	cs.tick(base.Add(8 * time.Minute))
+
+	var failed int
+	for _, p := range store.List("") {
+		if p.Status == state.StatusFailed {
+			failed++
+		}
+	}
+	if failed > spec.FailedJobsHistoryLimit {
+		t.Fatalf("expected at most %d failed pods, got %d", spec.FailedJobsHistoryLimit, failed)
+	}
+}
+
+func TestBackoffLimitPropagation(t *testing.T) {
+	store := state.NewPodStore()
+	cs := NewCronScheduler(store)
+
+	spec := newTestSpec("job-backoff", "* * * * *", "Allow")
+	spec.BackoffLimit = 7
+
+	if err := cs.Register(spec); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)
+	cs.tick(now)
+
+	pods := store.List("")
+	if len(pods) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(pods))
+	}
+	if pods[0].Spec.BackoffLimit != 7 {
+		t.Fatalf("expected BackoffLimit 7, got %d", pods[0].Spec.BackoffLimit)
+	}
+}
+
 func TestUnregister(t *testing.T) {
 	store := state.NewPodStore()
 	cs := NewCronScheduler(store)
