@@ -1,0 +1,15 @@
+[Unit]
+Description=Spark OCI Registry (podman)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/podman rm -f spark-registry
+ExecStart=/usr/bin/podman run --rm -p 5000:5000 --name spark-registry docker.io/library/registry:2
+ExecStop=/usr/bin/podman stop spark-registry
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
