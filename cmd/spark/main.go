@@ -237,7 +237,7 @@ func main() {
 	metricsCollector := metrics.NewCollector(store, tracker, sched)
 
 	// 13. Start HTTP API server.
-	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, cronSched, apiToken, sched)
+	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, cronSched, apiToken, sched, nil, nil)
 	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
 	go func() {
 		slog.Info("HTTP server starting", "addr", *httpAddr)
