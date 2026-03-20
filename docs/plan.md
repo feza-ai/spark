@@ -141,7 +141,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
   - Create tests: parse ports, default protocol, missing hostPort (use containerPort).
   - Acceptance: `go test -race ./internal/manifest/` passes. Ports are parsed correctly.
 
-- [ ] T35.2 Wire port mapping into executor CreatePod  Owner: TBD  Est: 30m  verifies: [UC-033]
+- [x] T35.2 Wire port mapping into executor CreatePod  Owner: TBD  Est: 30m  verifies: [UC-033]
   - Depends on: T35.1.
   - Update `executor.buildRunArgs`: for each port in container.Ports:
     - Add `--publish <hostPort>:<containerPort>/<protocol>` to podman args.
@@ -165,7 +165,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
   - Create tests: parse init containers, empty init containers, init + main containers.
   - Acceptance: `go test -race ./internal/manifest/` passes.
 
-- [ ] T36.2 Execute init containers sequentially in CreatePod  Owner: TBD  Est: 45m  verifies: [UC-034]
+- [x] T36.2 Execute init containers sequentially in CreatePod  Owner: TBD  Est: 45m  verifies: [UC-034]
   - Depends on: T36.1.
   - Update `PodmanExecutor.CreatePod`:
     1. After pod create, run each init container sequentially (not in background, use `podman run` without `-d`).
@@ -199,7 +199,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
   - Create tests: allocate GPU, release GPU, exceed gpuMax, multi-device assignment.
   - Acceptance: `go test -race ./internal/scheduler/` passes.
 
-- [ ] T37.3 Set NVIDIA_VISIBLE_DEVICES in executor  Owner: TBD  Est: 30m  verifies: [UC-035]
+- [x] T37.3 Set NVIDIA_VISIBLE_DEVICES in executor  Owner: TBD  Est: 30m  verifies: [UC-035]
   - Depends on: T37.2.
   - Update `executor.CreatePod` to accept an optional `gpuDevices []int` parameter (or read from a context/spec).
   - In `buildRunArgs`: if GPU devices are assigned, add `--env NVIDIA_VISIBLE_DEVICES=<comma-separated IDs>` instead of `--device nvidia.com/gpu=all`.
@@ -222,7 +222,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
   - Create tests with stub.
   - Acceptance: `go test -race ./internal/executor/` passes.
 
-- [ ] T38.2 Add image management HTTP endpoints  Owner: TBD  Est: 30m  verifies: [UC-036]
+- [x] T38.2 Add image management HTTP endpoints  Owner: TBD  Est: 30m  verifies: [UC-036]
   - Depends on: T38.1.
   - Create `internal/api/images.go`:
     - `GET /api/v1/images` handler: calls `executor.ListImages()`, returns JSON array.
@@ -233,7 +233,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 
 ### E39: Integration Wiring
 
-- [ ] T39.1 Wire GPU device assignment into main.go and reconciler  Owner: TBD  Est: 45m  verifies: [UC-032, UC-033, UC-034, UC-035, UC-036]
+- [x] T39.1 Wire GPU device assignment into main.go and reconciler  Owner: TBD  Est: 45m  verifies: [UC-032, UC-033, UC-034, UC-035, UC-036]
   - Depends on: T34.1, T34.2, T35.1, T35.2, T36.1, T36.2, T37.1, T37.2, T37.3, T38.1, T38.2.
   - Update `cmd/spark/main.go`:
     - Pass GPU device IDs and `*gpuMax` to `NewResourceTracker`.
@@ -242,13 +242,13 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
   - Ensure all new HTTP routes are registered.
   - Acceptance: `go build ./...` and `go vet ./...` pass.
 
-- [ ] T39.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
+- [x] T39.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
   - Depends on: T39.1.
   - Run `go test ./... -race -timeout 120s`. Zero failures.
   - Run `go vet ./...`. Zero warnings.
   - Acceptance: All tests pass, zero lint warnings.
 
-- [ ] T39.3 Update README and design docs for v1.4.0  Owner: TBD  Est: 30m  verifies: [infrastructure]
+- [x] T39.3 Update README and design docs for v1.4.0  Owner: TBD  Est: 30m  verifies: [infrastructure]
   - Depends on: T39.2.
   - Update README.md: add exec, ports, init containers, GPU device assignment, image management sections.
   - Update docs/design.md: add new interfaces and invariants.
@@ -281,15 +281,15 @@ Sync point: T39.1 requires all tracks to complete before wiring.
 - [x] T34.2 Add pod exec HTTP endpoint in internal/api  verifies: [UC-032]
 
 ### Wave 2: Dependent Components (4 agents)
-- [ ] T35.2 Wire port mapping into executor CreatePod  verifies: [UC-033]
-- [ ] T36.2 Execute init containers sequentially in CreatePod  verifies: [UC-034]
-- [ ] T37.3 Set NVIDIA_VISIBLE_DEVICES in executor  verifies: [UC-035]
-- [ ] T38.2 Add image management HTTP endpoints  verifies: [UC-036]
+- [x] T35.2 Wire port mapping into executor CreatePod  verifies: [UC-033]
+- [x] T36.2 Execute init containers sequentially in CreatePod  verifies: [UC-034]
+- [x] T37.3 Set NVIDIA_VISIBLE_DEVICES in executor  verifies: [UC-035]
+- [x] T38.2 Add image management HTTP endpoints  verifies: [UC-036]
 
 ### Wave 3: Integration and Verification (3 agents)
-- [ ] T39.1 Wire GPU device assignment into main.go and reconciler  verifies: [UC-032, UC-033, UC-034, UC-035, UC-036]
-- [ ] T39.2 Run full test suite and lint  verifies: [infrastructure]
-- [ ] T39.3 Update README and design docs for v1.4.0  verifies: [infrastructure]
+- [x] T39.1 Wire GPU device assignment into main.go and reconciler  verifies: [UC-032, UC-033, UC-034, UC-035, UC-036]
+- [x] T39.2 Run full test suite and lint  verifies: [infrastructure]
+- [x] T39.3 Update README and design docs for v1.4.0  verifies: [infrastructure]
 
 Note: T34.2 depends on T34.1 but can run in Wave 1 if assigned to the same agent sequentially. T35.2 depends on T35.1. T36.2 depends on T36.1. T37.3 depends on T37.2. T38.2 depends on T38.1. Wave 3 tasks depend on all prior waves.
 
