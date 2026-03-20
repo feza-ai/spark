@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/feza-ai/spark/internal/executor"
 	"github.com/feza-ai/spark/internal/manifest"
@@ -64,6 +65,10 @@ func (e *stubExecutor) ListImages(_ context.Context) ([]executor.ImageInfo, erro
 
 func (e *stubExecutor) PullImage(_ context.Context, _ string) error {
 	return nil
+}
+
+func (e *stubExecutor) ExecProbe(_ context.Context, _ string, _ string, _ []string, _ time.Duration) (int, error) {
+	return 0, nil
 }
 
 // stubPodRemover implements PodRemover for testing.
