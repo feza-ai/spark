@@ -151,6 +151,9 @@ func main() {
 	// 6. Create executor.
 	exec := executor.NewPodmanExecutor(executor.DefaultNetwork)
 
+	// 6a. Create cron scheduler (needed by NATS and HTTP handlers).
+	cronSched := cron.NewCronScheduler(store)
+
 	// 7. Register NATS handlers.
 	priorityClasses := map[string]int{
 		"system-critical": 0,
@@ -159,8 +162,8 @@ func main() {
 		"low":             10000,
 		"batch":           20000,
 	}
-	bus.RegisterApplyHandler(b, store, priorityClasses)
-	bus.RegisterDeleteHandler(b, store, exec, nil) // scheduler wired in T48.1
+	bus.RegisterApplyHandler(b, store, priorityClasses, cronSched)
+	bus.RegisterDeleteHandler(b, store, exec, sched)
 	bus.RegisterGetHandler(b, store)
 	bus.RegisterListHandler(b, store)
 	slog.Info("NATS handlers registered")
@@ -234,7 +237,7 @@ func main() {
 	metricsCollector := metrics.NewCollector(store, tracker, sched)
 
 	// 13. Start HTTP API server.
-	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, nil, apiToken, nil)
+	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, cronSched, apiToken, sched)
 	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
 	go func() {
 		slog.Info("HTTP server starting", "addr", *httpAddr)
@@ -271,7 +274,6 @@ func main() {
 	}()
 
 	// 14. Start cron scheduler.
-	cronSched := cron.NewCronScheduler(store)
 	go cronSched.Run(ctx)
 	slog.Info("cron scheduler started")
 
