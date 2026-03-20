@@ -15,6 +15,7 @@ import (
 type Heartbeat struct {
 	NodeID       string `json:"nodeId"`
 	GPUModel     string `json:"gpuModel,omitempty"`
+	GPUCount     int    `json:"gpuCount,omitempty"`
 	GPUMemoryMB  int    `json:"gpuMemoryMB,omitempty"`
 	CPUTotal     int    `json:"cpuTotal"`
 	CPUAvailable int    `json:"cpuAvailable"`
@@ -33,6 +34,7 @@ type HeartbeatPublisher struct {
 	tracker  *scheduler.ResourceTracker
 	store    *state.PodStore
 	gpuModel string
+	gpuCount int
 	gpuMem   int
 	cpuTotal int
 	ramTotal int
@@ -40,13 +42,14 @@ type HeartbeatPublisher struct {
 }
 
 // NewHeartbeatPublisher creates a HeartbeatPublisher.
-func NewHeartbeatPublisher(b Bus, nodeID string, tracker *scheduler.ResourceTracker, store *state.PodStore, gpuModel string, gpuMem, cpuTotal, ramTotal int) *HeartbeatPublisher {
+func NewHeartbeatPublisher(b Bus, nodeID string, tracker *scheduler.ResourceTracker, store *state.PodStore, gpuModel string, gpuCount, gpuMem, cpuTotal, ramTotal int) *HeartbeatPublisher {
 	return &HeartbeatPublisher{
 		bus:      b,
 		nodeID:   nodeID,
 		tracker:  tracker,
 		store:    store,
 		gpuModel: gpuModel,
+		gpuCount: gpuCount,
 		gpuMem:   gpuMem,
 		cpuTotal: cpuTotal,
 		ramTotal: ramTotal,
@@ -81,6 +84,7 @@ func (hp *HeartbeatPublisher) publishOnce() error {
 	hb := Heartbeat{
 		NodeID:       hp.nodeID,
 		GPUModel:     hp.gpuModel,
+		GPUCount:     hp.gpuCount,
 		GPUMemoryMB:  hp.gpuMem,
 		CPUTotal:     hp.cpuTotal,
 		CPUAvailable: avail.CPUMillis,

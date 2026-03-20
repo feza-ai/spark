@@ -130,3 +130,52 @@ func TestResourceReconciler_RunStopsOnCancel(t *testing.T) {
 		t.Fatal("Run did not stop after context cancellation")
 	}
 }
+
+func TestResourceReconciler_GPUCountPreserved(t *testing.T) {
+	tests := []struct {
+		name     string
+		gpuCount int
+		gpuMem   int
+	}{
+		{name: "single-gpu", gpuCount: 1, gpuMem: 16384},
+		{name: "multi-gpu", gpuCount: 4, gpuMem: 65536},
+		{name: "no-gpu", gpuCount: 0, gpuMem: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := state.NewPodStore()
+			exec := newStubExecutor()
+			tracker := scheduler.NewResourceTracker(
+				scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, GPUCount: tt.gpuCount, GPUMemoryMB: tt.gpuMem},
+				scheduler.Resources{},
+				nil, 0,
+			)
+
+			spec := testPodSpec("gpu-pod", "Always", 0)
+			spec.Containers[0].Resources.Requests.GPUCount = tt.gpuCount
+			spec.Containers[0].Resources.Requests.GPUMemoryMB = tt.gpuMem
+			store.Apply(spec)
+			store.UpdateStatus("gpu-pod", state.StatusRunning, "running")
+			tracker.Allocate("gpu-pod", spec.TotalRequests())
+
+			exec.podStats = map[string]executor.PodResourceUsage{
+				"gpu-pod": {CPUPercent: 10.0, MemoryMB: 256},
+			}
+
+			rr := NewResourceReconciler(store, exec, tracker, time.Second)
+			rr.ReconcileOnce(context.Background())
+
+			alloc := tracker.Allocated()
+			if alloc.GPUCount != tt.gpuCount {
+				t.Errorf("GPUCount = %d, want %d", alloc.GPUCount, tt.gpuCount)
+			}
+			if alloc.GPUMemoryMB != tt.gpuMem {
+				t.Errorf("GPUMemoryMB = %d, want %d", alloc.GPUMemoryMB, tt.gpuMem)
+			}
+			if alloc.MemoryMB != 256 {
+				t.Errorf("MemoryMB = %d, want 256", alloc.MemoryMB)
+			}
+		})
+	}
+}

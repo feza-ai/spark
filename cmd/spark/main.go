@@ -279,7 +279,7 @@ func main() {
 
 	// 15. Start heartbeat publisher.
 	hb := bus.NewHeartbeatPublisher(b, *nodeID, tracker, store,
-		gpuInfo.Model, gpuMemMB, sysInfo.CPUMillis, sysInfo.MemoryTotalMB)
+		gpuInfo.Model, gpuInfo.GPUCount, gpuMemMB, sysInfo.CPUMillis, sysInfo.MemoryTotalMB)
 	go hb.Run(ctx, *heartbeatInterval)
 	slog.Info("heartbeat publisher started", "interval", *heartbeatInterval)
 

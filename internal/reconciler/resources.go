@@ -61,6 +61,12 @@ func (rr *ResourceReconciler) ReconcileOnce(ctx context.Context) {
 				)
 			}
 		}
+		if allocated.GPUCount > 0 && gpuInfo.GPUCount != allocated.GPUCount {
+			slog.Warn("GPU count drift detected",
+				"allocated_count", allocated.GPUCount,
+				"actual_count", gpuInfo.GPUCount,
+			)
+		}
 		if gpuInfo.UtilizationPercent > 90 {
 			slog.Warn("GPU utilization high", "percent", gpuInfo.UtilizationPercent)
 		}
@@ -91,6 +97,7 @@ func (rr *ResourceReconciler) ReconcileOnce(ctx context.Context) {
 		actual := manifest.ResourceList{
 			CPUMillis:   requested.CPUMillis,
 			MemoryMB:    stats.MemoryMB,
+			GPUCount:    requested.GPUCount,
 			GPUMemoryMB: requested.GPUMemoryMB,
 		}
 		rr.tracker.UpdateAllocation(pod.Spec.Name, actual)

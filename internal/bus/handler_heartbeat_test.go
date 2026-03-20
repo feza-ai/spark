@@ -14,11 +14,11 @@ func TestPublishOnceProducesCorrectJSON(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16000},
 		scheduler.Resources{CPUMillis: 200, MemoryMB: 512, GPUMemoryMB: 0},
-	nil, 0,
+		nil, 0,
 	)
 	store := state.NewPodStore()
 
-	hp := NewHeartbeatPublisher(stub, "node-1", tracker, store, "GH200", 16000, 4000, 8192)
+	hp := NewHeartbeatPublisher(stub, "node-1", tracker, store, "GH200", 1, 16000, 4000, 8192)
 
 	if err := hp.publishOnce(); err != nil {
 		t.Fatalf("publishOnce() error = %v", err)
@@ -43,6 +43,9 @@ func TestPublishOnceProducesCorrectJSON(t *testing.T) {
 	}
 	if hb.GPUModel != "GH200" {
 		t.Errorf("GPUModel = %q, want %q", hb.GPUModel, "GH200")
+	}
+	if hb.GPUCount != 1 {
+		t.Errorf("GPUCount = %d, want %d", hb.GPUCount, 1)
 	}
 	if hb.GPUMemoryMB != 16000 {
 		t.Errorf("GPUMemoryMB = %d, want %d", hb.GPUMemoryMB, 16000)
@@ -74,7 +77,7 @@ func TestPublishOncePodCounts(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
-	nil, 0,
+		nil, 0,
 	)
 	store := state.NewPodStore()
 
@@ -89,7 +92,7 @@ func TestPublishOncePodCounts(t *testing.T) {
 	store.Apply(manifest.PodSpec{Name: "pend-2"})
 	store.Apply(manifest.PodSpec{Name: "pend-3"})
 
-	hp := NewHeartbeatPublisher(stub, "node-2", tracker, store, "", 0, 4000, 8192)
+	hp := NewHeartbeatPublisher(stub, "node-2", tracker, store, "", 0, 0, 4000, 8192)
 
 	if err := hp.publishOnce(); err != nil {
 		t.Fatalf("publishOnce() error = %v", err)
@@ -116,7 +119,63 @@ func TestPublishOncePodCounts(t *testing.T) {
 	if hb.GPUModel != "" {
 		t.Errorf("GPUModel = %q, want empty", hb.GPUModel)
 	}
+	if hb.GPUCount != 0 {
+		t.Errorf("GPUCount = %d, want 0", hb.GPUCount)
+	}
 	if hb.GPUMemoryMB != 0 {
 		t.Errorf("GPUMemoryMB = %d, want 0", hb.GPUMemoryMB)
+	}
+}
+
+func TestPublishOnceGPUCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		gpuCount int
+		gpuMem   int
+		wantJSON bool
+	}{
+		{name: "multi-gpu", gpuCount: 4, gpuMem: 64000, wantJSON: true},
+		{name: "single-gpu", gpuCount: 1, gpuMem: 16000, wantJSON: true},
+		{name: "no-gpu", gpuCount: 0, gpuMem: 0, wantJSON: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := NewStubBus()
+			tracker := scheduler.NewResourceTracker(
+				scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, GPUCount: tt.gpuCount, GPUMemoryMB: tt.gpuMem},
+				scheduler.Resources{},
+				nil, 0,
+			)
+			store := state.NewPodStore()
+
+			hp := NewHeartbeatPublisher(stub, "node-gpu", tracker, store, "GH200", tt.gpuCount, tt.gpuMem, 4000, 8192)
+			if err := hp.publishOnce(); err != nil {
+				t.Fatalf("publishOnce() error = %v", err)
+			}
+
+			msgs := stub.Published()
+			if len(msgs) != 1 {
+				t.Fatalf("expected 1 message, got %d", len(msgs))
+			}
+
+			var hb Heartbeat
+			if err := json.Unmarshal(msgs[0].Data, &hb); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if hb.GPUCount != tt.gpuCount {
+				t.Errorf("GPUCount = %d, want %d", hb.GPUCount, tt.gpuCount)
+			}
+
+			// Verify omitempty: gpuCount should not appear in JSON when zero.
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(msgs[0].Data, &raw); err != nil {
+				t.Fatalf("unmarshal raw: %v", err)
+			}
+			_, present := raw["gpuCount"]
+			if present != tt.wantJSON {
+				t.Errorf("gpuCount in JSON = %v, want %v", present, tt.wantJSON)
+			}
+		})
 	}
 }
