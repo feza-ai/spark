@@ -70,6 +70,14 @@ func (s *stubExecutor) ExecPod(_ context.Context, _ string, _ string, _ []string
 	return nil, nil, 0, nil
 }
 
+func (s *stubExecutor) ListImages(_ context.Context) ([]executor.ImageInfo, error) {
+	return nil, nil
+}
+
+func (s *stubExecutor) PullImage(_ context.Context, _ string) error {
+	return nil
+}
+
 func (s *stubExecutor) getStopCalls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

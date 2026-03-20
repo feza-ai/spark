@@ -58,6 +58,14 @@ func (e *stubExecutor) ExecPod(_ context.Context, _ string, _ string, _ []string
 	return nil, nil, 0, nil
 }
 
+func (e *stubExecutor) ListImages(_ context.Context) ([]executor.ImageInfo, error) {
+	return nil, nil
+}
+
+func (e *stubExecutor) PullImage(_ context.Context, _ string) error {
+	return nil
+}
+
 func TestDeleteHandler_ExistingPod(t *testing.T) {
 	bus := NewStubBus()
 	store := state.NewPodStore()

@@ -68,6 +68,14 @@ func (e *stubExecutor) ExecPod(_ context.Context, _ string, _ string, _ []string
 	return nil, nil, 0, nil
 }
 
+func (e *stubExecutor) ListImages(_ context.Context) ([]executor.ImageInfo, error) {
+	return nil, nil
+}
+
+func (e *stubExecutor) PullImage(_ context.Context, _ string) error {
+	return nil
+}
+
 func newMutateTestServer(t *testing.T) (*Server, *state.PodStore, *stubExecutor) {
 	t.Helper()
 	store := state.NewPodStore()
