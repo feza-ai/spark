@@ -211,6 +211,19 @@ func (s *PodStore) Prune(olderThan time.Duration) int {
 	return pruned
 }
 
+// BackdateLastEvent shifts the last event's timestamp back by the given duration.
+// Intended for testing staleness checks.
+func (s *PodStore) BackdateLastEvent(name string, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.pods[name]
+	if !ok || len(rec.Events) == 0 {
+		return
+	}
+	rec.Events[len(rec.Events)-1].Time = rec.Events[len(rec.Events)-1].Time.Add(-d)
+}
+
 // Names returns all pod names.
 func (s *PodStore) Names() []string {
 	s.mu.RLock()
