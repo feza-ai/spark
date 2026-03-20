@@ -76,16 +76,27 @@ func (e *stubExecutor) PullImage(_ context.Context, _ string) error {
 	return nil
 }
 
+type stubScheduler struct {
+	mu      sync.Mutex
+	removed []string
+}
+
+func (s *stubScheduler) RemovePod(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removed = append(s.removed, name)
+}
+
 func newMutateTestServer(t *testing.T) (*Server, *state.PodStore, *stubExecutor) {
 	t.Helper()
 	store := state.NewPodStore()
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
-	nil, 0,
+		nil, 0,
 	)
 	exec := &stubExecutor{}
-	srv := NewServer(store, tracker, exec, nil, nil, nil, "")
+	srv := NewServer(store, tracker, exec, nil, nil, nil, "", nil)
 	return srv, store, exec
 }
 
@@ -159,7 +170,6 @@ func TestApplyInvalidYAML(t *testing.T) {
 func TestDeletePod(t *testing.T) {
 	srv, store, exec := newMutateTestServer(t)
 
-	// First apply a pod.
 	store.Apply(manifest.PodSpec{Name: "test-pod"})
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/pods/test-pod", nil)
@@ -222,5 +232,60 @@ func TestDeletePodNotFound(t *testing.T) {
 	}
 	if body.Error == "" {
 		t.Error("expected non-empty error")
+	}
+}
+
+func TestDeletePodSchedulerRemove(t *testing.T) {
+	tests := []struct {
+		name      string
+		sched     PodRemover
+		wantCalls int
+	}{
+		{
+			name:      "scheduler receives RemovePod call",
+			sched:     &stubScheduler{},
+			wantCalls: 1,
+		},
+		{
+			name:      "nil scheduler does not panic",
+			sched:     nil,
+			wantCalls: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := state.NewPodStore()
+			tracker := scheduler.NewResourceTracker(
+				scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
+				scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+				nil, 0,
+			)
+			exec := &stubExecutor{}
+			srv := NewServer(store, tracker, exec, nil, nil, nil, "", tt.sched)
+
+			store.Apply(manifest.PodSpec{Name: "sched-pod"})
+
+			req := httptest.NewRequest(http.MethodDelete, "/api/v1/pods/sched-pod", nil)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+
+			if tt.sched == nil {
+				return
+			}
+			ss := tt.sched.(*stubScheduler)
+			ss.mu.Lock()
+			defer ss.mu.Unlock()
+			if len(ss.removed) != tt.wantCalls {
+				t.Errorf("expected %d RemovePod calls, got %d", tt.wantCalls, len(ss.removed))
+			}
+			if tt.wantCalls > 0 && ss.removed[0] != "sched-pod" {
+				t.Errorf("expected RemovePod called with sched-pod, got %q", ss.removed[0])
+			}
+		})
 	}
 }

@@ -39,7 +39,7 @@ func newImageTestServer(t *testing.T, exec *imageStubExecutor) *Server {
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
 		nil, 0,
 	)
-	return NewServer(store, tracker, exec, nil, nil, nil, "")
+	return NewServer(store, tracker, exec, nil, nil, nil, "", nil)
 }
 
 func TestListImages(t *testing.T) {

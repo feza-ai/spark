@@ -9,6 +9,11 @@ import (
 	"github.com/feza-ai/spark/internal/state"
 )
 
+// PodRemover releases scheduler resources for a removed pod.
+type PodRemover interface {
+	RemovePod(name string)
+}
+
 // Server provides HTTP endpoints for health, resources, and pod management.
 type Server struct {
 	store           *state.PodStore
@@ -19,12 +24,13 @@ type Server struct {
 	collector       *metrics.Collector
 	mux             *http.ServeMux
 	handler         http.Handler
+	scheduler       PodRemover
 }
 
 // NewServer creates a Server and registers all HTTP routes.
 // If token is non-empty, all routes (except /healthz and /metrics) require
 // Bearer token authentication.
-func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, token string) *Server {
+func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, token string, sched PodRemover) *Server {
 	s := &Server{
 		store:           store,
 		tracker:         tracker,
@@ -33,6 +39,7 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 		sqlStore:        sqlStore,
 		collector:       collector,
 		mux:             http.NewServeMux(),
+		scheduler:       sched,
 	}
 	s.registerHealthRoutes()
 	s.registerResourceRoutes()
