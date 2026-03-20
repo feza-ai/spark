@@ -384,6 +384,22 @@ func (p *PodmanExecutor) PodLogs(ctx context.Context, name string, tail int) ([]
 	return out, nil
 }
 
+// cmdReadCloser wraps a command's stdout pipe so that closing it also
+// calls cmd.Wait(), preventing zombie processes.
+type cmdReadCloser struct {
+	io.ReadCloser
+	cmd *exec.Cmd
+}
+
+func (c *cmdReadCloser) Close() error {
+	readErr := c.ReadCloser.Close()
+	waitErr := c.cmd.Wait()
+	if readErr != nil {
+		return readErr
+	}
+	return waitErr
+}
+
 // StreamPodLogs returns a streaming reader for pod logs.
 // The caller must close the returned reader; cancelling the context stops the process.
 func (p *PodmanExecutor) StreamPodLogs(ctx context.Context, name string, tail int) (io.ReadCloser, error) {
@@ -397,7 +413,7 @@ func (p *PodmanExecutor) StreamPodLogs(ctx context.Context, name string, tail in
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("podman pod logs start: %w", err)
 	}
-	return stdout, nil
+	return &cmdReadCloser{ReadCloser: stdout, cmd: cmd}, nil
 }
 
 // buildExecArgs constructs the arguments for a podman exec command.
