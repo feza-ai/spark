@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -266,5 +267,80 @@ func TestSchedule_MultipleVictimsNeeded(t *testing.T) {
 	}
 	if len(result.Victims) != 2 {
 		t.Fatalf("expected 2 victims, got %d: %v", len(result.Victims), result.Victims)
+	}
+}
+
+func TestScheduleAttempts(t *testing.T) {
+	tests := []struct {
+		name     string
+		attempts int
+	}{
+		{"single attempt", 1},
+		{"five attempts", 5},
+		{"ten attempts", 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := newTracker(100000, 100000, 100000)
+			s := NewScheduler(tracker)
+
+			for i := 0; i < tt.attempts; i++ {
+				s.Schedule(podSpec("pod", 5, 1, 1, 1))
+			}
+
+			if got := s.ScheduleAttempts(); got != int64(tt.attempts) {
+				t.Fatalf("expected %d schedule attempts, got %d", tt.attempts, got)
+			}
+		})
+	}
+}
+
+func TestPreemptionCount(t *testing.T) {
+	noopStop := func(ctx context.Context, podName string, gracePeriod int) error {
+		return nil
+	}
+
+	tests := []struct {
+		name           string
+		victimCount    int
+		wantPreemption int64
+	}{
+		{"single preemption", 1, 1},
+		{"two preemptions", 2, 2},
+		{"three preemptions", 3, 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := newTracker(100000, 100000, 100000)
+			s := NewScheduler(tracker)
+
+			// Register victim pods.
+			victims := make([]string, tt.victimCount)
+			podStates := make(map[string]PodInfo)
+			for i := 0; i < tt.victimCount; i++ {
+				name := "victim-" + string(rune('a'+i))
+				victims[i] = name
+				tracker.Allocate(name, manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 100})
+				info := PodInfo{
+					Name:      name,
+					Priority:  10,
+					Resources: manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 100},
+					StartTime: time.Now(),
+				}
+				s.AddPod(info)
+				podStates[name] = info
+			}
+
+			_, err := s.Preempt(context.Background(), victims, podStates, noopStop, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if got := s.PreemptionCount(); got != tt.wantPreemption {
+				t.Fatalf("expected %d preemptions, got %d", tt.wantPreemption, got)
+			}
+		})
 	}
 }

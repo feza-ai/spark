@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 )
 
 // PreemptFunc is called to stop a victim pod. Returns error if stop fails.
@@ -27,6 +28,7 @@ func (s *Scheduler) Preempt(ctx context.Context, victims []string, podStates map
 
 		s.tracker.Release(victim)
 		s.RemovePod(victim)
+		atomic.AddInt64(&s.preemptionCount, 1)
 
 		if onEvicted != nil {
 			onEvicted(victim)
