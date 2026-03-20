@@ -109,7 +109,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 ### E27: Prometheus Metrics
 
-- [ ] T27.1 Create metrics collector and text renderer in internal/metrics  Owner: TBD  Est: 60m  verifies: [UC-026]
+- [x] T27.1 Create metrics collector and text renderer in internal/metrics  Owner: TBD  Est: 60m  verifies: [UC-026]
   - Create `internal/metrics/collector.go`:
     - `type Collector struct` with `store *state.PodStore`, `tracker *scheduler.ResourceTracker`, `scheduler *scheduler.Scheduler`.
     - `NewCollector(store, tracker, scheduler) *Collector`.
@@ -139,7 +139,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
     - TestRender_LabelEscaping: verify special characters in label values are escaped.
   - Acceptance: `go test -race ./internal/metrics/` passes. Rendered output parses with promtool if available.
 
-- [ ] T27.2 Add scheduling and preemption counters to scheduler  Owner: TBD  Est: 30m  verifies: [UC-026]
+- [x] T27.2 Add scheduling and preemption counters to scheduler  Owner: TBD  Est: 30m  verifies: [UC-026]
   - Add atomic counters to `scheduler.Scheduler`:
     - `scheduleAttempts int64`: incremented on every `Schedule()` call.
     - `preemptionCount int64`: incremented on every successful preemption.
@@ -151,7 +151,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
     - TestPreemptionCount: trigger preemptions, verify counter.
   - Acceptance: `go test -race ./internal/scheduler/` passes. Counters are thread-safe.
 
-- [ ] T27.3 Add /metrics HTTP handler in internal/api  Owner: TBD  Est: 30m  verifies: [UC-026]
+- [x] T27.3 Add /metrics HTTP handler in internal/api  Owner: TBD  Est: 30m  verifies: [UC-026]
   - Add `internal/api/metrics.go`:
     - `GET /metrics` handler: calls `collector.Collect()`, renders with `metrics.Render()`, writes `text/plain; version=0.0.4; charset=utf-8`.
   - Extend `api.Server` struct to hold `*metrics.Collector`.
@@ -164,7 +164,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 ### E28: HTTP Authentication
 
-- [ ] T28.1 Create bearer token auth middleware in internal/api  Owner: TBD  Est: 45m  verifies: [UC-027]
+- [x] T28.1 Create bearer token auth middleware in internal/api  Owner: TBD  Est: 45m  verifies: [UC-027]
   - Create `internal/api/auth.go`:
     - `type AuthMiddleware struct { token string }`.
     - `NewAuthMiddleware(token string) *AuthMiddleware`.
@@ -195,7 +195,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 ### E29: Pod Logs via HTTP
 
-- [ ] T29.1 Add PodLogs method to executor  Owner: TBD  Est: 30m  verifies: [UC-028]
+- [x] T29.1 Add PodLogs method to executor  Owner: TBD  Est: 30m  verifies: [UC-028]
   - Add to `executor.Executor` interface: `PodLogs(ctx context.Context, name string, tail int) ([]byte, error)`.
   - Implement in `PodmanExecutor`:
     - Run `podman pod logs --tail N NAME` (if tail > 0) or `podman pod logs NAME` (all logs).
@@ -234,7 +234,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 ### E30: Pod Events via HTTP
 
-- [ ] T30.1 Add ListEvents query to SQLiteStore  Owner: TBD  Est: 30m  verifies: [UC-029]
+- [x] T30.1 Add ListEvents query to SQLiteStore  Owner: TBD  Est: 30m  verifies: [UC-029]
   - Add to `state.SQLiteStore`:
     - `ListEvents(podName string, since time.Time) ([]Event, error)`.
     - `type Event struct { PodName string; Time time.Time; Type string; Message string }`.
@@ -265,7 +265,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 ### E31: Structured JSON Logging
 
-- [ ] T31.1 Add --log-format flag and JSON handler setup  Owner: TBD  Est: 30m  verifies: [UC-030]
+- [x] T31.1 Add --log-format flag and JSON handler setup  Owner: TBD  Est: 30m  verifies: [UC-030]
   - Update `cmd/spark/main.go`:
     - Add `--log-format` flag (string, default "text"): "text" or "json".
     - Before any slog calls, configure the default logger:
@@ -280,7 +280,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 ### E32: EmptyDir Volume Support
 
-- [ ] T32.1 Add emptyDir tmpfs mount support to executor  Owner: TBD  Est: 45m  verifies: [UC-031]
+- [x] T32.1 Add emptyDir tmpfs mount support to executor  Owner: TBD  Est: 45m  verifies: [UC-031]
   - Update `executor.buildRunArgs` in `internal/executor/podman.go`:
     - When a VolumeMount references a volume with `EmptyDir: true`:
       - Use `--mount type=tmpfs,destination=<mountPath>` instead of `--volume`.
@@ -343,14 +343,14 @@ Sync point: T33.1 requires all tracks to complete before wiring.
 ### Waves
 
 ### Wave 1: Independent Components (8 agents)
-- [ ] T27.1 Create metrics collector and text renderer in internal/metrics  verifies: [UC-026]
-- [ ] T27.2 Add scheduling and preemption counters to scheduler  verifies: [UC-026]
-- [ ] T28.1 Create bearer token auth middleware in internal/api  verifies: [UC-027]
-- [ ] T29.1 Add PodLogs method to executor  verifies: [UC-028]
-- [ ] T30.1 Add ListEvents query to SQLiteStore  verifies: [UC-029]
-- [ ] T31.1 Add --log-format flag and JSON handler setup  verifies: [UC-030]
-- [ ] T32.1 Add emptyDir tmpfs mount support to executor  verifies: [UC-031]
-- [ ] T27.3 Add /metrics HTTP handler in internal/api  verifies: [UC-026]
+- [x] T27.1 Create metrics collector and text renderer in internal/metrics  verifies: [UC-026]
+- [x] T27.2 Add scheduling and preemption counters to scheduler  verifies: [UC-026]
+- [x] T28.1 Create bearer token auth middleware in internal/api  verifies: [UC-027]
+- [x] T29.1 Add PodLogs method to executor  verifies: [UC-028]
+- [x] T30.1 Add ListEvents query to SQLiteStore  verifies: [UC-029]
+- [x] T31.1 Add --log-format flag and JSON handler setup  verifies: [UC-030]
+- [x] T32.1 Add emptyDir tmpfs mount support to executor  verifies: [UC-031]
+- [x] T27.3 Add /metrics HTTP handler in internal/api  verifies: [UC-026]
 
 ### Wave 2: HTTP Handlers and Wiring (4 agents)
 - [ ] T28.2 Wire auth middleware into server  verifies: [UC-027]
