@@ -323,6 +323,60 @@ func TestSetReadOnly(t *testing.T) {
 	}
 }
 
+func TestIncrementRestarts(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(s *PodStore)
+		podName    string
+		wantOK     bool
+		wantCount  int
+	}{
+		{
+			name: "increments existing pod",
+			setup: func(s *PodStore) {
+				s.Apply(podSpec("pod-a"))
+			},
+			podName:   "pod-a",
+			wantOK:    true,
+			wantCount: 1,
+		},
+		{
+			name: "increments twice",
+			setup: func(s *PodStore) {
+				s.Apply(podSpec("pod-a"))
+				s.IncrementRestarts("pod-a")
+			},
+			podName:   "pod-a",
+			wantOK:    true,
+			wantCount: 2,
+		},
+		{
+			name:      "returns false for missing pod",
+			setup:     func(s *PodStore) {},
+			podName:   "missing",
+			wantOK:    false,
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewPodStore()
+			tt.setup(s)
+			ok := s.IncrementRestarts(tt.podName)
+			if ok != tt.wantOK {
+				t.Fatalf("IncrementRestarts() = %v, want %v", ok, tt.wantOK)
+			}
+			if tt.wantOK {
+				rec, _ := s.Get(tt.podName)
+				if rec.Restarts != tt.wantCount {
+					t.Fatalf("Restarts = %d, want %d", rec.Restarts, tt.wantCount)
+				}
+			}
+		})
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := NewPodStore()
 	var wg sync.WaitGroup
