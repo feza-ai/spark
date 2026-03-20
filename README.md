@@ -25,6 +25,11 @@ Single-binary Go pod orchestrator for GPU hosts. Accepts Kubernetes manifests an
 - **Pod events via HTTP** -- lifecycle event history with time filtering (v1.3.0)
 - **Structured JSON logging** -- configurable log format for aggregation (v1.3.0)
 - **EmptyDir volumes** -- tmpfs-backed scratch volumes for pods (v1.3.0)
+- **Pod exec** -- execute commands inside running containers via HTTP (v1.4.0)
+- **Container port mapping** -- expose container ports to the host via podman --publish (v1.4.0)
+- **Init containers** -- sequential initialization containers before main containers (v1.4.0)
+- **GPU device assignment** -- per-pod GPU device isolation via NVIDIA_VISIBLE_DEVICES (v1.4.0)
+- **Image management** -- list and pull container images via HTTP API (v1.4.0)
 
 ## Quick Start
 
@@ -147,6 +152,32 @@ curl http://localhost:8080/api/v1/pods/myapp/events
 ```
 
 Returns pod lifecycle events as JSON. Use `?since=2026-03-19T00:00:00Z` to filter by time.
+
+### Pod Exec
+
+```bash
+curl -X POST http://localhost:8080/api/v1/pods/myapp/exec \
+  -H "Content-Type: application/json" \
+  -d '{"command":["ls","-la"]}'
+```
+
+```json
+{"stdout":"total 0\ndrwxr-xr-x ...","stderr":"","exit_code":0}
+```
+
+### List Images
+
+```bash
+curl http://localhost:8080/api/v1/images
+```
+
+### Pull Image
+
+```bash
+curl -X POST http://localhost:8080/api/v1/images/pull \
+  -H "Content-Type: application/json" \
+  -d '{"image":"localhost:5000/mymodel:latest"}'
+```
 
 ## Authentication
 
