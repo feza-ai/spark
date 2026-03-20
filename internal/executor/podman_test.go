@@ -1,8 +1,12 @@
 package executor
 
 import (
+	"context"
+	"io"
+	"os/exec"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
 )
@@ -510,6 +514,69 @@ func TestBuildStreamPodLogsArgs(t *testing.T) {
 	}
 	if !slices.Contains(got, "--follow") {
 		t.Errorf("expected --follow flag in args, got %v", got)
+	}
+}
+
+func TestCmdReadCloser_WaitsOnProcess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "echo", "hello")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	rc := &cmdReadCloser{ReadCloser: stdout, cmd: cmd}
+
+	buf, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if got := string(buf); got != "hello\n" {
+		t.Errorf("got %q, want %q", got, "hello\n")
+	}
+
+	if err := rc.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+
+	if cmd.ProcessState == nil {
+		t.Error("cmd.ProcessState is nil after Close; process was not waited on")
+	}
+}
+
+func TestCmdReadCloser_ContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cmd := exec.CommandContext(ctx, "sleep", "60")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	rc := &cmdReadCloser{ReadCloser: stdout, cmd: cmd}
+
+	cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- rc.Close() }()
+
+	select {
+	case <-done:
+		// Error from killed process is expected.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return within 5s after context cancel")
+	}
+
+	if cmd.ProcessState == nil {
+		t.Error("cmd.ProcessState is nil after Close; zombie process not reaped")
 	}
 }
 
