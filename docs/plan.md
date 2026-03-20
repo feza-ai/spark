@@ -102,7 +102,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 
 ### E34: Pod Exec
 
-- [ ] T34.1 Add ExecPod method to executor  Owner: TBD  Est: 45m  verifies: [UC-032]
+- [x] T34.1 Add ExecPod method to executor  Owner: TBD  Est: 45m  verifies: [UC-032]
   - Add to `executor.Executor` interface: `ExecPod(ctx context.Context, podName string, containerName string, command []string) ([]byte, []byte, int, error)` returning (stdout, stderr, exitCode, err).
   - Implement in `PodmanExecutor`: run `podman exec <podName>-<containerName> <command...>`.
   - Capture stdout and stderr separately using `cmd.StdoutPipe()` and `cmd.StderrPipe()`.
@@ -111,7 +111,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
   - Create tests with stub command runner.
   - Acceptance: `go test -race ./internal/executor/` passes.
 
-- [ ] T34.2 Add pod exec HTTP endpoint in internal/api  Owner: TBD  Est: 45m  verifies: [UC-032]
+- [x] T34.2 Add pod exec HTTP endpoint in internal/api  Owner: TBD  Est: 45m  verifies: [UC-032]
   - Depends on: T34.1.
   - Create `internal/api/pods_exec.go`:
     - `POST /api/v1/pods/{name}/exec` handler.
@@ -126,7 +126,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 
 ### E35: Container Port Mapping
 
-- [ ] T35.1 Add port types to manifest and parse from YAML  Owner: TBD  Est: 45m  verifies: [UC-033]
+- [x] T35.1 Add port types to manifest and parse from YAML  Owner: TBD  Est: 45m  verifies: [UC-033]
   - Add to `manifest.ContainerSpec`:
     - `Ports []ContainerPort`
   - Define `type ContainerPort struct { ContainerPort int; HostPort int; Protocol string }`.
@@ -150,7 +150,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
   - Create tests: verify --publish args in pod create command.
   - Acceptance: `go test -race ./internal/executor/` passes.
 
-- [ ] T35.3 Expose ports in pod detail API response  Owner: TBD  Est: 15m  verifies: [UC-033]
+- [x] T35.3 Expose ports in pod detail API response  Owner: TBD  Est: 15m  verifies: [UC-033]
   - Depends on: T35.1.
   - Update the pod detail JSON response in `pods_query.go` to include ports from the pod spec.
   - No new endpoint -- extend existing GET /api/v1/pods/{name} response.
@@ -159,7 +159,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 
 ### E36: Init Containers
 
-- [ ] T36.1 Add InitContainers field to PodSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-034]
+- [x] T36.1 Add InitContainers field to PodSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-034]
   - Add to `manifest.PodSpec`: `InitContainers []ContainerSpec`.
   - Update Pod parser to extract `initContainers` from the YAML spec (same structure as `containers`).
   - Create tests: parse init containers, empty init containers, init + main containers.
@@ -179,7 +179,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 
 ### E37: GPU Device Assignment
 
-- [ ] T37.1 Add GPU device enumeration to gpu package  Owner: TBD  Est: 30m  verifies: [UC-035]
+- [x] T37.1 Add GPU device enumeration to gpu package  Owner: TBD  Est: 30m  verifies: [UC-035]
   - Update `gpu.GPUInfo` to include `DeviceIDs []int` field (e.g., [0, 1, 2, 3]).
   - Update `gpu.Detect()` / `gpu.DetectWithFallback()` to populate device IDs by parsing nvidia-smi output.
   - For single-GPU hosts like DGX Spark, DeviceIDs = [0].
@@ -187,7 +187,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
   - Create tests with stub nvidia-smi output.
   - Acceptance: `go test -race ./internal/gpu/` passes.
 
-- [ ] T37.2 Add GPU device slot tracking to scheduler  Owner: TBD  Est: 45m  verifies: [UC-035]
+- [x] T37.2 Add GPU device slot tracking to scheduler  Owner: TBD  Est: 45m  verifies: [UC-035]
   - Add to `ResourceTracker`:
     - `gpuDevices []int`: list of all GPU device IDs.
     - `gpuMax int`: max concurrent GPU pods (from --gpu-max flag).
@@ -210,7 +210,7 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 
 ### E38: Image Management API
 
-- [ ] T38.1 Add image list and pull methods to executor  Owner: TBD  Est: 30m  verifies: [UC-036]
+- [x] T38.1 Add image list and pull methods to executor  Owner: TBD  Est: 30m  verifies: [UC-036]
   - Add to `executor.Executor` interface:
     - `ListImages(ctx context.Context) ([]ImageInfo, error)`.
     - `PullImage(ctx context.Context, name string) error`.
@@ -271,14 +271,14 @@ Sync point: T39.1 requires all tracks to complete before wiring.
 ### Waves
 
 ### Wave 1: Independent Components (8 agents)
-- [ ] T34.1 Add ExecPod method to executor  verifies: [UC-032]
-- [ ] T35.1 Add port types to manifest and parse from YAML  verifies: [UC-033]
-- [ ] T36.1 Add InitContainers field to PodSpec and parse from YAML  verifies: [UC-034]
-- [ ] T37.1 Add GPU device enumeration to gpu package  verifies: [UC-035]
-- [ ] T37.2 Add GPU device slot tracking to scheduler  verifies: [UC-035]
-- [ ] T38.1 Add image list and pull methods to executor  verifies: [UC-036]
-- [ ] T35.3 Expose ports in pod detail API response  verifies: [UC-033]
-- [ ] T34.2 Add pod exec HTTP endpoint in internal/api  verifies: [UC-032]
+- [x] T34.1 Add ExecPod method to executor  verifies: [UC-032]
+- [x] T35.1 Add port types to manifest and parse from YAML  verifies: [UC-033]
+- [x] T36.1 Add InitContainers field to PodSpec and parse from YAML  verifies: [UC-034]
+- [x] T37.1 Add GPU device enumeration to gpu package  verifies: [UC-035]
+- [x] T37.2 Add GPU device slot tracking to scheduler  verifies: [UC-035]
+- [x] T38.1 Add image list and pull methods to executor  verifies: [UC-036]
+- [x] T35.3 Expose ports in pod detail API response  verifies: [UC-033]
+- [x] T34.2 Add pod exec HTTP endpoint in internal/api  verifies: [UC-032]
 
 ### Wave 2: Dependent Components (4 agents)
 - [ ] T35.2 Wire port mapping into executor CreatePod  verifies: [UC-033]
