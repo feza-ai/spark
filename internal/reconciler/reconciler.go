@@ -241,11 +241,13 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 	switch {
 	case policy == "Always":
 		// Service-style: always restart.
+		r.store.IncrementRestarts(pod.Spec.Name)
 		r.updateStatus(pod.Spec.Name, state.StatusPending, "restarting (policy=Always)")
 		slog.Info("pod rescheduled", "pod", pod.Spec.Name, "reason", "restart-always")
 
 	case policy == "OnFailure" && st.ExitCode != 0 && pod.RetryCount < pod.Spec.BackoffLimit:
 		// Job with retries remaining.
+		r.store.IncrementRestarts(pod.Spec.Name)
 		r.store.IncrementRetry(pod.Spec.Name)
 		r.updateStatus(pod.Spec.Name, state.StatusPending, "retrying after failure")
 		slog.Info("pod retry scheduled", "pod", pod.Spec.Name, "retry", pod.RetryCount+1, "limit", pod.Spec.BackoffLimit)
