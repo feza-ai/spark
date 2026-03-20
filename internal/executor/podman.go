@@ -94,11 +94,19 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 		if !ok {
 			continue
 		}
-		mount := vol.HostPath + ":" + m.MountPath
-		if m.ReadOnly {
-			mount += ":ro"
+		if vol.EmptyDir {
+			mount := "type=tmpfs,destination=" + m.MountPath
+			if m.ReadOnly {
+				mount += ",ro"
+			}
+			args = append(args, "--mount", mount)
+		} else {
+			mount := vol.HostPath + ":" + m.MountPath
+			if m.ReadOnly {
+				mount += ":ro"
+			}
+			args = append(args, "--volume", mount)
 		}
-		args = append(args, "--volume", mount)
 	}
 
 	limits := container.Resources.Limits
