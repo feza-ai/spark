@@ -134,7 +134,6 @@ func main() {
 
 	// 5. Create resource tracker and scheduler.
 	gpuMemMB := gpuInfo.MemoryTotalMB
-	_ = gpuMax // reserved for future GPU slot limiting
 
 	total := scheduler.Resources{
 		CPUMillis:   sysInfo.CPUMillis,
@@ -145,7 +144,7 @@ func main() {
 		CPUMillis: *systemReserveCPU,
 		MemoryMB:  *systemReserveMem,
 	}
-	tracker := scheduler.NewResourceTracker(total, reserve, nil, 0)
+	tracker := scheduler.NewResourceTracker(total, reserve, gpuInfo.DeviceIDs, *gpuMax)
 	sched := scheduler.NewScheduler(tracker)
 
 	// 6. Create executor.
