@@ -7,9 +7,10 @@ Single-binary Go pod orchestrator for single-node GPU hosts. Reads K8s-compatibl
 ```
 cmd/spark/          Entry point: flags, startup, signal handling
 internal/
-  api/              HTTP REST API handlers (health, resources, pod CRUD)
+  api/              HTTP REST API handlers (health, resources, pod CRUD, logs, events, metrics, auth)
   bus/              NATS bus abstraction, protocol handlers, event/log publishers
   cron/             Cron expression parser and scheduled job trigger
+  metrics/          Prometheus metrics collector and text renderer
   executor/         Podman interface: pod create, stop, logs, image pull, stats
   gpu/              GPU detection (nvidia-smi) and system resource detection
   lifecycle/        Graceful shutdown coordinator with pod draining
@@ -40,7 +41,7 @@ internal/
 
 ## Interfaces
 
-- **HTTP**: GET /healthz, GET /api/v1/resources, GET /api/v1/pods, GET /api/v1/pods/{name}, POST /api/v1/pods, DELETE /api/v1/pods/{name}
+- **HTTP**: GET /healthz, GET /metrics, GET /api/v1/resources, GET /api/v1/pods, GET /api/v1/pods/{name}, GET /api/v1/pods/{name}/logs, GET /api/v1/pods/{name}/events, POST /api/v1/pods, DELETE /api/v1/pods/{name}. Bearer token auth middleware (optional via --api-token-file; /healthz and /metrics exempt).
 - **NATS**: req.spark.{apply,delete,get,list}, evt.spark.{event}.{pod}, log.spark.{pod}, heartbeat.spark.{node}
 - **Filesystem**: manifest directory watch (poll every 5s, SHA-256 checksums)
 - **Podman CLI**: pod create, pod stop, pod rm, pod logs, pod stats, image exists, image pull, network create
@@ -57,3 +58,5 @@ See docs/adr/ for rationale:
 - ADR-007: Ubuntu deb packaging via goreleaser and nfpm
 - ADR-008: SQLite state persistence (modernc.org/sqlite, WAL mode)
 - ADR-009: HTTP API design (net/http.ServeMux, Go 1.22+ patterns)
+- ADR-010: Prometheus metrics via stdlib (text exposition format, no client_golang)
+- ADR-011: HTTP bearer token authentication (file-based token, exempt /healthz and /metrics)
