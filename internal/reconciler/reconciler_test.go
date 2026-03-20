@@ -126,6 +126,10 @@ func (s *stubExecutor) PullImage(_ context.Context, _ string) error {
 	return nil
 }
 
+func (s *stubExecutor) ExecProbe(_ context.Context, _ string, _ string, _ []string, _ time.Duration) (int, error) {
+	return 0, nil
+}
+
 func (s *stubExecutor) setStatus(name string, st executor.Status) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
