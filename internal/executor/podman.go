@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
 )
@@ -52,6 +53,8 @@ type Executor interface {
 	ExecPod(ctx context.Context, podName string, containerName string, command []string) ([]byte, []byte, int, error)
 	ListImages(ctx context.Context) ([]ImageInfo, error)
 	PullImage(ctx context.Context, name string) error
+	ExecProbe(ctx context.Context, podName string, containerName string, command []string, timeout time.Duration) (int, error)
+	HTTPProbe(ctx context.Context, port int, path string, timeout time.Duration) error
 }
 
 // PodmanExecutor implements Executor using podman CLI.
