@@ -40,16 +40,26 @@ type VolumeSpec struct {
 	EmptyDir bool
 }
 
+// SecurityContext holds security configuration for a container.
+type SecurityContext struct {
+	RunAsUser    int
+	RunAsNonRoot bool
+	Privileged   bool
+	AddCaps      []string // from capabilities.add
+	DropCaps     []string // from capabilities.drop
+}
+
 // ContainerSpec describes a single container within a pod.
 type ContainerSpec struct {
-	Name         string
-	Image        string
-	Command      []string
-	Args         []string
-	Env          []EnvVar
-	Ports        []ContainerPort
-	VolumeMounts []VolumeMount
-	Resources    ResourceRequirements
+	Name            string
+	Image           string
+	Command         []string
+	Args            []string
+	Env             []EnvVar
+	Ports           []ContainerPort
+	VolumeMounts    []VolumeMount
+	Resources       ResourceRequirements
+	SecurityContext *SecurityContext
 }
 
 // PodSpec is the internal representation of a schedulable pod.
