@@ -449,6 +449,108 @@ spec:
 	}
 }
 
+func TestParsePorts(t *testing.T) {
+	yaml := `apiVersion: v1
+kind: Pod
+metadata:
+  name: port-test
+spec:
+  containers:
+    - name: web
+      image: nginx:latest
+      ports:
+        - containerPort: 80
+          hostPort: 8080
+          protocol: tcp
+        - containerPort: 443
+          hostPort: 8443
+          protocol: udp
+`
+	result, err := Parse([]byte(yaml), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	c := result.Pods[0].Containers[0]
+	if len(c.Ports) != 2 {
+		t.Fatalf("expected 2 ports, got %d", len(c.Ports))
+	}
+	if c.Ports[0].ContainerPort != 80 {
+		t.Errorf("ports[0].containerPort = %d, want 80", c.Ports[0].ContainerPort)
+	}
+	if c.Ports[0].HostPort != 8080 {
+		t.Errorf("ports[0].hostPort = %d, want 8080", c.Ports[0].HostPort)
+	}
+	if c.Ports[0].Protocol != "tcp" {
+		t.Errorf("ports[0].protocol = %q, want %q", c.Ports[0].Protocol, "tcp")
+	}
+	if c.Ports[1].ContainerPort != 443 {
+		t.Errorf("ports[1].containerPort = %d, want 443", c.Ports[1].ContainerPort)
+	}
+	if c.Ports[1].HostPort != 8443 {
+		t.Errorf("ports[1].hostPort = %d, want 8443", c.Ports[1].HostPort)
+	}
+	if c.Ports[1].Protocol != "udp" {
+		t.Errorf("ports[1].protocol = %q, want %q", c.Ports[1].Protocol, "udp")
+	}
+}
+
+func TestParsePortsDefaultProtocol(t *testing.T) {
+	yaml := `apiVersion: v1
+kind: Pod
+metadata:
+  name: port-default-proto
+spec:
+  containers:
+    - name: web
+      image: nginx:latest
+      ports:
+        - containerPort: 80
+          hostPort: 8080
+`
+	result, err := Parse([]byte(yaml), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	c := result.Pods[0].Containers[0]
+	if len(c.Ports) != 1 {
+		t.Fatalf("expected 1 port, got %d", len(c.Ports))
+	}
+	if c.Ports[0].Protocol != "tcp" {
+		t.Errorf("protocol = %q, want %q", c.Ports[0].Protocol, "tcp")
+	}
+}
+
+func TestParsePortsMissingHostPort(t *testing.T) {
+	yaml := `apiVersion: v1
+kind: Pod
+metadata:
+  name: port-no-host
+spec:
+  containers:
+    - name: web
+      image: nginx:latest
+      ports:
+        - containerPort: 3000
+`
+	result, err := Parse([]byte(yaml), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	c := result.Pods[0].Containers[0]
+	if len(c.Ports) != 1 {
+		t.Fatalf("expected 1 port, got %d", len(c.Ports))
+	}
+	if c.Ports[0].ContainerPort != 3000 {
+		t.Errorf("containerPort = %d, want 3000", c.Ports[0].ContainerPort)
+	}
+	if c.Ports[0].HostPort != 3000 {
+		t.Errorf("hostPort = %d, want 3000 (should default to containerPort)", c.Ports[0].HostPort)
+	}
+	if c.Ports[0].Protocol != "tcp" {
+		t.Errorf("protocol = %q, want %q", c.Ports[0].Protocol, "tcp")
+	}
+}
+
 func TestParse_MissingKind(t *testing.T) {
 	yaml := `apiVersion: v1
 metadata:

@@ -109,6 +109,27 @@ func parseContainer(cm map[string]interface{}) ContainerSpec {
 		})
 	}
 
+	for _, v := range getList(cm, "ports") {
+		pm, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		cp := getInt(pm, "containerPort")
+		hp := getInt(pm, "hostPort")
+		if hp == 0 {
+			hp = cp
+		}
+		proto := getString(pm, "protocol")
+		if proto == "" {
+			proto = "tcp"
+		}
+		c.Ports = append(c.Ports, ContainerPort{
+			ContainerPort: cp,
+			HostPort:      hp,
+			Protocol:      proto,
+		})
+	}
+
 	for _, v := range getList(cm, "volumeMounts") {
 		vmm, ok := v.(map[string]interface{})
 		if !ok {
