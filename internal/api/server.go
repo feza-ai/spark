@@ -4,10 +4,16 @@ import (
 	"net/http"
 
 	"github.com/feza-ai/spark/internal/executor"
+	"github.com/feza-ai/spark/internal/manifest"
 	"github.com/feza-ai/spark/internal/metrics"
 	"github.com/feza-ai/spark/internal/scheduler"
 	"github.com/feza-ai/spark/internal/state"
 )
+
+// CronRegisterer registers parsed CronJob specs with a cron scheduler.
+type CronRegisterer interface {
+	Register(manifest.CronJobSpec) error
+}
 
 // Server provides HTTP endpoints for health, resources, and pod management.
 type Server struct {
@@ -17,6 +23,7 @@ type Server struct {
 	priorityClasses map[string]int
 	sqlStore        *state.SQLiteStore
 	collector       *metrics.Collector
+	cronSched       CronRegisterer
 	mux             *http.ServeMux
 	handler         http.Handler
 }
@@ -24,7 +31,7 @@ type Server struct {
 // NewServer creates a Server and registers all HTTP routes.
 // If token is non-empty, all routes (except /healthz and /metrics) require
 // Bearer token authentication.
-func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, token string) *Server {
+func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, cronSched CronRegisterer, token string) *Server {
 	s := &Server{
 		store:           store,
 		tracker:         tracker,
@@ -32,6 +39,7 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 		priorityClasses: priorityClasses,
 		sqlStore:        sqlStore,
 		collector:       collector,
+		cronSched:       cronSched,
 		mux:             http.NewServeMux(),
 	}
 	s.registerHealthRoutes()
