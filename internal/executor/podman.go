@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"strconv"
@@ -38,6 +39,8 @@ type Executor interface {
 	RemovePod(ctx context.Context, name string) error
 	ListPods(ctx context.Context) ([]PodListEntry, error)
 	PodStats(ctx context.Context, name string) (PodResourceUsage, error)
+	PodLogs(ctx context.Context, name string, tail int) ([]byte, error)
+	StreamPodLogs(ctx context.Context, name string, tail int) (io.ReadCloser, error)
 }
 
 // PodmanExecutor implements Executor using podman CLI.
@@ -91,11 +94,19 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 		if !ok {
 			continue
 		}
-		mount := vol.HostPath + ":" + m.MountPath
-		if m.ReadOnly {
-			mount += ":ro"
+		if vol.EmptyDir {
+			mount := "type=tmpfs,destination=" + m.MountPath
+			if m.ReadOnly {
+				mount += ",ro"
+			}
+			args = append(args, "--mount", mount)
+		} else {
+			mount := vol.HostPath + ":" + m.MountPath
+			if m.ReadOnly {
+				mount += ":ro"
+			}
+			args = append(args, "--volume", mount)
 		}
-		args = append(args, "--volume", mount)
 	}
 
 	limits := container.Resources.Limits
@@ -248,6 +259,53 @@ func parseMemUsage(raw string) int {
 		return int(val / 1024)
 	}
 	return 0
+}
+
+// buildPodLogsArgs constructs the arguments for a podman pod logs command.
+func buildPodLogsArgs(name string, tail int) []string {
+	args := []string{"pod", "logs"}
+	if tail > 0 {
+		args = append(args, "--tail", strconv.Itoa(tail))
+	}
+	args = append(args, name)
+	return args
+}
+
+// buildStreamPodLogsArgs constructs the arguments for a streaming podman pod logs command.
+func buildStreamPodLogsArgs(name string, tail int) []string {
+	args := []string{"pod", "logs", "--follow"}
+	if tail > 0 {
+		args = append(args, "--tail", strconv.Itoa(tail))
+	}
+	args = append(args, name)
+	return args
+}
+
+// PodLogs returns the combined log output for a pod.
+func (p *PodmanExecutor) PodLogs(ctx context.Context, name string, tail int) ([]byte, error) {
+	args := buildPodLogsArgs(name, tail)
+	slog.Info("fetching pod logs", "cmd", "podman", "args", args)
+	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("podman pod logs: %w: %s", err, out)
+	}
+	return out, nil
+}
+
+// StreamPodLogs returns a streaming reader for pod logs.
+// The caller must close the returned reader; cancelling the context stops the process.
+func (p *PodmanExecutor) StreamPodLogs(ctx context.Context, name string, tail int) (io.ReadCloser, error) {
+	args := buildStreamPodLogsArgs(name, tail)
+	slog.Info("streaming pod logs", "cmd", "podman", "args", args)
+	cmd := exec.CommandContext(ctx, "podman", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("podman pod logs pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("podman pod logs start: %w", err)
+	}
+	return stdout, nil
 }
 
 // parsePodsJSON parses the JSON output of podman pod ls.

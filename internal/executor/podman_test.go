@@ -256,3 +256,122 @@ func TestBuildRunArgs_PodAndContainerName(t *testing.T) {
 		t.Errorf("expected --name mypod-worker in args, got %v", args)
 	}
 }
+
+func TestBuildRunArgs_EmptyDirVolumes(t *testing.T) {
+	tests := []struct {
+		name     string
+		mounts   []manifest.VolumeMount
+		volumes  []manifest.VolumeSpec
+		wantFlag string
+		wantVal  string
+	}{
+		{
+			name:     "emptyDir tmpfs mount",
+			mounts:   []manifest.VolumeMount{{Name: "scratch", MountPath: "/tmp/scratch"}},
+			volumes:  []manifest.VolumeSpec{{Name: "scratch", EmptyDir: true}},
+			wantFlag: "--mount",
+			wantVal:  "type=tmpfs,destination=/tmp/scratch",
+		},
+		{
+			name:     "emptyDir readonly",
+			mounts:   []manifest.VolumeMount{{Name: "cache", MountPath: "/cache", ReadOnly: true}},
+			volumes:  []manifest.VolumeSpec{{Name: "cache", EmptyDir: true}},
+			wantFlag: "--mount",
+			wantVal:  "type=tmpfs,destination=/cache,ro",
+		},
+		{
+			name:     "hostPath unchanged",
+			mounts:   []manifest.VolumeMount{{Name: "data", MountPath: "/data"}},
+			volumes:  []manifest.VolumeSpec{{Name: "data", HostPath: "/host/data"}},
+			wantFlag: "--volume",
+			wantVal:  "/host/data:/data",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := manifest.ContainerSpec{
+				Name:         "app",
+				Image:        "myimage:latest",
+				VolumeMounts: tt.mounts,
+			}
+			args := buildRunArgs("mypod", container, tt.volumes, "spark-net")
+			idx := slices.Index(args, tt.wantVal)
+			if idx < 1 || args[idx-1] != tt.wantFlag {
+				t.Errorf("expected %s %s in args, got %v", tt.wantFlag, tt.wantVal, args)
+			}
+		})
+	}
+}
+
+func TestBuildRunArgs_MixedVolumes(t *testing.T) {
+	container := manifest.ContainerSpec{
+		Name:  "app",
+		Image: "myimage:latest",
+		VolumeMounts: []manifest.VolumeMount{
+			{Name: "data", MountPath: "/data"},
+			{Name: "scratch", MountPath: "/tmp/scratch"},
+			{Name: "config", MountPath: "/etc/config", ReadOnly: true},
+		},
+	}
+	volumes := []manifest.VolumeSpec{
+		{Name: "data", HostPath: "/host/data"},
+		{Name: "scratch", EmptyDir: true},
+		{Name: "config", HostPath: "/host/config"},
+	}
+	args := buildRunArgs("mypod", container, volumes, "spark-net")
+
+	// hostPath volume for data
+	idx := slices.Index(args, "/host/data:/data")
+	if idx < 1 || args[idx-1] != "--volume" {
+		t.Errorf("expected --volume /host/data:/data in args, got %v", args)
+	}
+
+	// emptyDir tmpfs for scratch
+	idx = slices.Index(args, "type=tmpfs,destination=/tmp/scratch")
+	if idx < 1 || args[idx-1] != "--mount" {
+		t.Errorf("expected --mount type=tmpfs,destination=/tmp/scratch in args, got %v", args)
+	}
+
+	// hostPath ro volume for config
+	idx = slices.Index(args, "/host/config:/etc/config:ro")
+	if idx < 1 || args[idx-1] != "--volume" {
+		t.Errorf("expected --volume /host/config:/etc/config:ro in args, got %v", args)
+	}
+
+	// Ensure no --volume flag was used for scratch
+	for i, a := range args {
+		if a == "--volume" && i+1 < len(args) && args[i+1] == ":/tmp/scratch" {
+			t.Errorf("emptyDir should not use --volume, got %v", args)
+		}
+	}
+}
+
+func TestBuildPodLogsArgs_WithTail(t *testing.T) {
+	got := buildPodLogsArgs("mypod", 100)
+	want := []string{"pod", "logs", "--tail", "100", "mypod"}
+	if !slices.Equal(got, want) {
+		t.Errorf("buildPodLogsArgs(mypod, 100) = %v, want %v", got, want)
+	}
+}
+
+func TestBuildPodLogsArgs_NoTail(t *testing.T) {
+	got := buildPodLogsArgs("mypod", 0)
+	want := []string{"pod", "logs", "mypod"}
+	if !slices.Equal(got, want) {
+		t.Errorf("buildPodLogsArgs(mypod, 0) = %v, want %v", got, want)
+	}
+	if slices.Contains(got, "--tail") {
+		t.Errorf("expected no --tail flag when tail=0, got %v", got)
+	}
+}
+
+func TestBuildStreamPodLogsArgs(t *testing.T) {
+	got := buildStreamPodLogsArgs("mypod", 50)
+	want := []string{"pod", "logs", "--follow", "--tail", "50", "mypod"}
+	if !slices.Equal(got, want) {
+		t.Errorf("buildStreamPodLogsArgs(mypod, 50) = %v, want %v", got, want)
+	}
+	if !slices.Contains(got, "--follow") {
+		t.Errorf("expected --follow flag in args, got %v", got)
+	}
+}
