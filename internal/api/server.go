@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/feza-ai/spark/internal/executor"
+	"github.com/feza-ai/spark/internal/gpu"
 	"github.com/feza-ai/spark/internal/manifest"
 	"github.com/feza-ai/spark/internal/metrics"
 	"github.com/feza-ai/spark/internal/scheduler"
@@ -29,6 +30,8 @@ type Server struct {
 	sqlStore        *state.SQLiteStore
 	collector       *metrics.Collector
 	cronSched       CronRegisterer
+	gpuInfo         *gpu.GPUInfo
+	sysInfo         *gpu.SystemInfo
 	mux             *http.ServeMux
 	handler         http.Handler
 	scheduler       PodRemover
@@ -37,7 +40,7 @@ type Server struct {
 // NewServer creates a Server and registers all HTTP routes.
 // If token is non-empty, all routes (except /healthz and /metrics) require
 // Bearer token authentication.
-func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, cronSched CronRegisterer, token string, sched PodRemover) *Server {
+func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, cronSched CronRegisterer, token string, sched PodRemover, gpuInfo *gpu.GPUInfo, sysInfo *gpu.SystemInfo) *Server {
 	s := &Server{
 		store:           store,
 		tracker:         tracker,
@@ -46,11 +49,14 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 		sqlStore:        sqlStore,
 		collector:       collector,
 		cronSched:       cronSched,
+		gpuInfo:         gpuInfo,
+		sysInfo:         sysInfo,
 		mux:             http.NewServeMux(),
 		scheduler:       sched,
 	}
 	s.registerHealthRoutes()
 	s.registerResourceRoutes()
+	s.registerNodeRoutes()
 	s.registerPodQueryRoutes()
 	s.registerPodMutateRoutes()
 	s.registerPodLogRoutes()

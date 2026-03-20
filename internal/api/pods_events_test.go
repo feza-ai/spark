@@ -28,7 +28,7 @@ func newPodEventsTestServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { sqlStore.Close() })
 
-	srv := NewServer(store, tracker, nil, nil, sqlStore, nil, nil, "", nil)
+	srv := NewServer(store, tracker, nil, nil, sqlStore, nil, nil, "", nil, nil, nil)
 	return srv
 }
 

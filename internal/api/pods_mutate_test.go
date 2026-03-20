@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/feza-ai/spark/internal/executor"
 	"github.com/feza-ai/spark/internal/manifest"
@@ -76,6 +77,14 @@ func (e *stubExecutor) PullImage(_ context.Context, _ string) error {
 	return nil
 }
 
+func (e *stubExecutor) ExecProbe(_ context.Context, _ string, _ string, _ []string, _ time.Duration) (int, error) {
+	return 0, nil
+}
+
+func (e *stubExecutor) HTTPProbe(_ context.Context, _ int, _ string, _ time.Duration) error {
+	return nil
+}
+
 type stubScheduler struct {
 	mu      sync.Mutex
 	removed []string
@@ -96,7 +105,7 @@ func newMutateTestServer(t *testing.T) (*Server, *state.PodStore, *stubExecutor)
 		nil, 0,
 	)
 	exec := &stubExecutor{}
-	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", nil)
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", nil, nil, nil)
 	return srv, store, exec
 }
 
@@ -262,7 +271,7 @@ func TestDeletePodSchedulerRemove(t *testing.T) {
 				nil, 0,
 			)
 			exec := &stubExecutor{}
-			srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", tt.sched)
+			srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", tt.sched, nil, nil)
 
 			store.Apply(manifest.PodSpec{Name: "sched-pod"})
 
