@@ -733,3 +733,104 @@ func TestBuildRunArgs_InitContainerNaming(t *testing.T) {
 		t.Errorf("expected --name mypod-init-0-setup in args, got %v", args)
 	}
 }
+
+func TestBuildRunArgs_SecurityContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		sc       *manifest.SecurityContext
+		wantArgs []string // flag-value pairs or standalone flags expected in args
+		notArgs  []string // flags that should NOT appear
+	}{
+		{
+			name:    "nil security context",
+			sc:      nil,
+			notArgs: []string{"--user", "--privileged", "--cap-add", "--cap-drop"},
+		},
+		{
+			name: "runAsUser only",
+			sc:   &manifest.SecurityContext{RunAsUser: 1000},
+			wantArgs: []string{"--user", "1000"},
+			notArgs:  []string{"--privileged", "--cap-add", "--cap-drop"},
+		},
+		{
+			name: "privileged only",
+			sc:   &manifest.SecurityContext{Privileged: true},
+			wantArgs: []string{"--privileged"},
+			notArgs:  []string{"--user", "--cap-add", "--cap-drop"},
+		},
+		{
+			name: "add capabilities",
+			sc:   &manifest.SecurityContext{AddCaps: []string{"NET_ADMIN", "SYS_PTRACE"}},
+			wantArgs: []string{"--cap-add", "NET_ADMIN", "--cap-add", "SYS_PTRACE"},
+			notArgs:  []string{"--user", "--privileged", "--cap-drop"},
+		},
+		{
+			name: "drop capabilities",
+			sc:   &manifest.SecurityContext{DropCaps: []string{"ALL"}},
+			wantArgs: []string{"--cap-drop", "ALL"},
+			notArgs:  []string{"--user", "--privileged", "--cap-add"},
+		},
+		{
+			name: "all fields combined",
+			sc: &manifest.SecurityContext{
+				RunAsUser:  65534,
+				Privileged: true,
+				AddCaps:    []string{"SYS_ADMIN"},
+				DropCaps:   []string{"NET_RAW"},
+			},
+			wantArgs: []string{"--user", "65534", "--privileged", "--cap-add", "SYS_ADMIN", "--cap-drop", "NET_RAW"},
+		},
+		{
+			name:    "zero runAsUser not added",
+			sc:      &manifest.SecurityContext{RunAsUser: 0},
+			notArgs: []string{"--user", "--privileged", "--cap-add", "--cap-drop"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := manifest.ContainerSpec{
+				Name:            "app",
+				Image:           "myimage:latest",
+				SecurityContext: tt.sc,
+			}
+			args := buildRunArgs("mypod", container, nil, "spark-net", true)
+
+			// Check expected flag-value pairs.
+			for i := 0; i < len(tt.wantArgs); i++ {
+				flag := tt.wantArgs[i]
+				if flag == "--privileged" {
+					if !slices.Contains(args, "--privileged") {
+						t.Errorf("expected --privileged in args, got %v", args)
+					}
+					continue
+				}
+				// It's a flag with a value: --flag value
+				if i+1 < len(tt.wantArgs) && !isFlag(tt.wantArgs[i+1]) {
+					value := tt.wantArgs[i+1]
+					idx := -1
+					for j, a := range args {
+						if a == flag && j+1 < len(args) && args[j+1] == value {
+							idx = j
+							break
+						}
+					}
+					if idx < 0 {
+						t.Errorf("expected %s %s in args, got %v", flag, value, args)
+					}
+					i++ // skip value
+				}
+			}
+
+			// Check flags that should NOT appear.
+			for _, flag := range tt.notArgs {
+				if slices.Contains(args, flag) {
+					t.Errorf("unexpected %s in args, got %v", flag, args)
+				}
+			}
+		})
+	}
+}
+
+func isFlag(s string) bool {
+	return len(s) > 1 && s[0] == '-'
+}

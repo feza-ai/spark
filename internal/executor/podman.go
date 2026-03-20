@@ -161,6 +161,22 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 		}
 	}
 
+	// Security context flags.
+	if sc := container.SecurityContext; sc != nil {
+		if sc.RunAsUser > 0 {
+			args = append(args, "--user", strconv.Itoa(sc.RunAsUser))
+		}
+		if sc.Privileged {
+			args = append(args, "--privileged")
+		}
+		for _, cap := range sc.AddCaps {
+			args = append(args, "--cap-add", cap)
+		}
+		for _, cap := range sc.DropCaps {
+			args = append(args, "--cap-drop", cap)
+		}
+	}
+
 	limits := container.Resources.Limits
 	if limits.MemoryMB > 0 {
 		args = append(args, "--memory", fmt.Sprintf("%dm", limits.MemoryMB))
