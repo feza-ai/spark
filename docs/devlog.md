@@ -1,5 +1,21 @@
 # Spark Development Log
 
+## 2026-03-19: v1.3.0 Observability, Security, and Operational Maturity
+
+**Type:** finding
+**Tags:** v1.3.0, metrics, auth, logs, events, emptydir
+
+**Problem:** v1.2.0 had no Prometheus metrics, no HTTP auth, no HTTP access to pod logs/events, no structured logging, and broken emptyDir volumes.
+**Root cause:** N/A -- planned feature delivery.
+**Fix:** Delivered 6 features across 14 tasks in 2 parallel waves (8+4 agents):
+- Prometheus /metrics endpoint (stdlib text exposition format, no client_golang). ADR-010.
+- Bearer token HTTP auth middleware (--api-token-file, /healthz and /metrics exempt). ADR-011.
+- Pod logs via HTTP: GET /api/v1/pods/{name}/logs with ?tail=N and ?follow=true (SSE).
+- Pod events via HTTP: GET /api/v1/pods/{name}/events with ?since=RFC3339 filter.
+- Structured JSON logging: --log-format json switches slog to JSONHandler.
+- EmptyDir volumes: mapped to podman --mount type=tmpfs,destination=PATH.
+**Impact:** 31 use cases (UC-001 through UC-031) all WIRED. 13 packages, all tests pass. HTTP API now has 9 endpoints + auth + metrics.
+
 ## 2026-03-19: v1.1.0 Full System Verification
 
 **Type:** finding
