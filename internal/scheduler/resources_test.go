@@ -353,3 +353,215 @@ func TestGPUSlotDisabled(t *testing.T) {
 		t.Errorf("expected no GPU assignments when disabled, got %v", gpus)
 	}
 }
+
+func TestGPUCountAllocation(t *testing.T) {
+	tests := []struct {
+		name       string
+		devices    []int
+		gpuMax     int
+		gpuCount   int
+		wantErr    bool
+		wantDevLen int
+	}{
+		{
+			name:       "allocate 2 GPUs via GPUCount",
+			devices:    []int{0, 1, 2, 3},
+			gpuMax:     4,
+			gpuCount:   2,
+			wantErr:    false,
+			wantDevLen: 2,
+		},
+		{
+			name:       "allocate all 4 GPUs",
+			devices:    []int{0, 1, 2, 3},
+			gpuMax:     4,
+			gpuCount:   4,
+			wantErr:    false,
+			wantDevLen: 4,
+		},
+		{
+			name:     "exceed gpuMax rejects allocation",
+			devices:  []int{0, 1, 2, 3},
+			gpuMax:   2,
+			gpuCount: 3,
+			wantErr:  true,
+		},
+		{
+			name:     "exceed available devices rejects allocation",
+			devices:  []int{0, 1},
+			gpuMax:   4,
+			gpuCount: 3,
+			wantErr:  true,
+		},
+		{
+			name:       "allocate 1 GPU via GPUCount",
+			devices:    []int{0, 1, 2, 3},
+			gpuMax:     4,
+			gpuCount:   1,
+			wantErr:    false,
+			wantDevLen: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := NewResourceTracker(
+				Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+				Resources{},
+				tt.devices, tt.gpuMax,
+			)
+
+			req := manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: tt.gpuCount}
+			err := rt.Allocate("gpu-pod", req)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			gpus := rt.AssignedGPUs("gpu-pod")
+			if len(gpus) != tt.wantDevLen {
+				t.Errorf("expected %d GPU devices assigned, got %d: %v", tt.wantDevLen, len(gpus), gpus)
+			}
+		})
+	}
+}
+
+func TestGPUCountConsumesDeviceSlots(t *testing.T) {
+	// 4 devices, gpuMax=4. Allocate 2 GPUs, verify 2 device slots consumed.
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0, 1, 2, 3}, 4,
+	)
+
+	err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gpus := rt.AssignedGPUs("pod-a")
+	if len(gpus) != 2 {
+		t.Fatalf("expected 2 devices assigned, got %d", len(gpus))
+	}
+	if gpus[0] != 0 || gpus[1] != 1 {
+		t.Errorf("expected devices [0,1], got %v", gpus)
+	}
+
+	// Allocate 2 more - should succeed (fills remaining slots).
+	err = rt.Allocate("pod-b", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gpus = rt.AssignedGPUs("pod-b")
+	if len(gpus) != 2 {
+		t.Fatalf("expected 2 devices assigned, got %d", len(gpus))
+	}
+	if gpus[0] != 2 || gpus[1] != 3 {
+		t.Errorf("expected devices [2,3], got %v", gpus)
+	}
+
+	// Allocate 1 more - should fail (all slots consumed).
+	err = rt.Allocate("pod-c", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1})
+	if err == nil {
+		t.Fatal("expected error when all GPU slots consumed")
+	}
+}
+
+func TestGPUCountRelease(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0, 1, 2, 3}, 4,
+	)
+
+	err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rt.Release("pod-a")
+
+	// All 3 device slots should be freed.
+	gpus := rt.AssignedGPUs("pod-a")
+	if gpus != nil {
+		t.Errorf("expected no GPUs after release, got %v", gpus)
+	}
+
+	// Should be able to allocate 3 again.
+	err = rt.Allocate("pod-b", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 3})
+	if err != nil {
+		t.Fatalf("unexpected error after release: %v", err)
+	}
+
+	gpus = rt.AssignedGPUs("pod-b")
+	if len(gpus) != 3 {
+		t.Errorf("expected 3 devices reassigned, got %v", gpus)
+	}
+}
+
+func TestGPUCountCanFit(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0, 1, 2, 3}, 4,
+	)
+
+	// Allocate 3 GPUs.
+	err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 1 GPU should fit.
+	if !rt.CanFit(manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1}) {
+		t.Error("expected CanFit=true for 1 GPU when 1 slot remains")
+	}
+
+	// 2 GPUs should not fit.
+	if rt.CanFit(manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 2}) {
+		t.Error("expected CanFit=false for 2 GPUs when only 1 slot remains")
+	}
+}
+
+func TestGPUCountBackwardsCompatWithGPUMemory(t *testing.T) {
+	// GPUMemoryMB without GPUCount should still get 1 device slot (backwards compat).
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0, 1}, 2,
+	)
+
+	err := rt.Allocate("legacy-pod", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 4096})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gpus := rt.AssignedGPUs("legacy-pod")
+	if len(gpus) != 1 {
+		t.Fatalf("expected 1 GPU device for legacy GPUMemoryMB path, got %d", len(gpus))
+	}
+
+	// GPUCount pod should get remaining slot.
+	err = rt.Allocate("new-pod", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gpus = rt.AssignedGPUs("new-pod")
+	if len(gpus) != 1 {
+		t.Fatalf("expected 1 GPU device for GPUCount path, got %d", len(gpus))
+	}
+
+	// No more slots.
+	err = rt.Allocate("overflow", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1})
+	if err == nil {
+		t.Fatal("expected error when all GPU slots consumed")
+	}
+}

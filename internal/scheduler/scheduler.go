@@ -105,6 +105,7 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 	freed := Resources{
 		CPUMillis:   avail.CPUMillis,
 		MemoryMB:    avail.MemoryMB,
+		GPUCount:    avail.GPUCount,
 		GPUMemoryMB: avail.GPUMemoryMB,
 	}
 
@@ -112,18 +113,21 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 	for _, c := range candidates {
 		if freed.CPUMillis >= req.CPUMillis &&
 			freed.MemoryMB >= req.MemoryMB &&
+			freed.GPUCount >= req.GPUCount &&
 			freed.GPUMemoryMB >= req.GPUMemoryMB {
 			break
 		}
 		victims = append(victims, c.Name)
 		freed.CPUMillis += c.Resources.CPUMillis
 		freed.MemoryMB += c.Resources.MemoryMB
+		freed.GPUCount += c.Resources.GPUCount
 		freed.GPUMemoryMB += c.Resources.GPUMemoryMB
 	}
 
 	// Check if we freed enough.
 	if freed.CPUMillis >= req.CPUMillis &&
 		freed.MemoryMB >= req.MemoryMB &&
+		freed.GPUCount >= req.GPUCount &&
 		freed.GPUMemoryMB >= req.GPUMemoryMB {
 		// Record preemption events for anti-thrash tracking.
 		for _, v := range victims {
