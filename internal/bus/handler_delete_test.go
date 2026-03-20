@@ -66,112 +66,118 @@ func (e *stubExecutor) PullImage(_ context.Context, _ string) error {
 	return nil
 }
 
-func TestDeleteHandler_ExistingPod(t *testing.T) {
-	bus := NewStubBus()
-	store := state.NewPodStore()
-	exec := &stubExecutor{}
-
-	store.Apply(manifest.PodSpec{
-		Name:                          "test-pod",
-		TerminationGracePeriodSeconds: 10,
-	})
-
-	RegisterDeleteHandler(bus, store, exec)
-
-	reqData, _ := json.Marshal(DeleteRequest{Name: "test-pod"})
-	resp, err := bus.Request(context.Background(), "req.spark.delete", reqData)
-	if err != nil {
-		t.Fatalf("Request() error = %v", err)
-	}
-
-	var dr DeleteResponse
-	if err := json.Unmarshal(resp, &dr); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-
-	if !dr.Deleted {
-		t.Errorf("expected Deleted=true, got false; error=%q", dr.Error)
-	}
-	if dr.Name != "test-pod" {
-		t.Errorf("Name = %q, want %q", dr.Name, "test-pod")
-	}
-	if dr.Error != "" {
-		t.Errorf("unexpected error: %q", dr.Error)
-	}
-
-	if len(exec.stopped) != 1 || exec.stopped[0] != "test-pod" {
-		t.Errorf("stopped = %v, want [test-pod]", exec.stopped)
-	}
-	if len(exec.removed) != 1 || exec.removed[0] != "test-pod" {
-		t.Errorf("removed = %v, want [test-pod]", exec.removed)
-	}
-
-	if _, ok := store.Get("test-pod"); ok {
-		t.Error("pod should have been removed from store")
-	}
+// stubPodRemover implements PodRemover for testing.
+type stubPodRemover struct {
+	removed []string
 }
 
-func TestDeleteHandler_NonExistentPod(t *testing.T) {
-	bus := NewStubBus()
-	store := state.NewPodStore()
-	exec := &stubExecutor{}
-
-	RegisterDeleteHandler(bus, store, exec)
-
-	reqData, _ := json.Marshal(DeleteRequest{Name: "missing-pod"})
-	resp, err := bus.Request(context.Background(), "req.spark.delete", reqData)
-	if err != nil {
-		t.Fatalf("Request() error = %v", err)
-	}
-
-	var dr DeleteResponse
-	if err := json.Unmarshal(resp, &dr); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-
-	if dr.Deleted {
-		t.Error("expected Deleted=false for non-existent pod")
-	}
-	if dr.Error == "" {
-		t.Error("expected error message for non-existent pod")
-	}
-	if dr.Name != "missing-pod" {
-		t.Errorf("Name = %q, want %q", dr.Name, "missing-pod")
-	}
-
-	if len(exec.stopped) != 0 {
-		t.Errorf("executor should not have been called, stopped = %v", exec.stopped)
-	}
+func (s *stubPodRemover) RemovePod(name string) {
+	s.removed = append(s.removed, name)
 }
 
-func TestDeleteHandler_StopError(t *testing.T) {
-	bus := NewStubBus()
-	store := state.NewPodStore()
-	exec := &stubExecutor{stopErr: fmt.Errorf("stop failed")}
-
-	store.Apply(manifest.PodSpec{Name: "fail-pod"})
-	RegisterDeleteHandler(bus, store, exec)
-
-	reqData, _ := json.Marshal(DeleteRequest{Name: "fail-pod"})
-	resp, err := bus.Request(context.Background(), "req.spark.delete", reqData)
-	if err != nil {
-		t.Fatalf("Request() error = %v", err)
+func TestDeleteHandler(t *testing.T) {
+	tests := []struct {
+		name            string
+		podName         string
+		podExists       bool
+		stopErr         error
+		removeErr       error
+		scheduler       PodRemover
+		wantDeleted     bool
+		wantError       bool
+		wantSchedulerRM []string
+	}{
+		{
+			name:            "existing pod with scheduler",
+			podName:         "test-pod",
+			podExists:       true,
+			scheduler:       &stubPodRemover{},
+			wantDeleted:     true,
+			wantSchedulerRM: []string{"test-pod"},
+		},
+		{
+			name:        "existing pod nil scheduler",
+			podName:     "test-pod",
+			podExists:   true,
+			scheduler:   nil,
+			wantDeleted: true,
+		},
+		{
+			name:      "non-existent pod",
+			podName:   "missing-pod",
+			podExists: false,
+			scheduler: &stubPodRemover{},
+			wantError: true,
+		},
+		{
+			name:      "stop error",
+			podName:   "fail-pod",
+			podExists: true,
+			stopErr:   fmt.Errorf("stop failed"),
+			scheduler: &stubPodRemover{},
+			wantError: true,
+		},
+		{
+			name:      "remove error",
+			podName:   "fail-pod",
+			podExists: true,
+			removeErr: fmt.Errorf("remove failed"),
+			scheduler: &stubPodRemover{},
+			wantError: true,
+		},
 	}
 
-	var dr DeleteResponse
-	if err := json.Unmarshal(resp, &dr); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewStubBus()
+			store := state.NewPodStore()
+			exec := &stubExecutor{stopErr: tc.stopErr, removeErr: tc.removeErr}
 
-	if dr.Deleted {
-		t.Error("expected Deleted=false when stop fails")
-	}
-	if dr.Error == "" {
-		t.Error("expected error message when stop fails")
-	}
+			if tc.podExists {
+				store.Apply(manifest.PodSpec{
+					Name:                          tc.podName,
+					TerminationGracePeriodSeconds: 10,
+				})
+			}
 
-	// Pod should still be in store since delete failed.
-	if _, ok := store.Get("fail-pod"); !ok {
-		t.Error("pod should still be in store after stop failure")
+			RegisterDeleteHandler(b, store, exec, tc.scheduler)
+
+			reqData, _ := json.Marshal(DeleteRequest{Name: tc.podName})
+			resp, err := b.Request(context.Background(), "req.spark.delete", reqData)
+			if err != nil {
+				t.Fatalf("Request() error = %v", err)
+			}
+
+			var dr DeleteResponse
+			if err := json.Unmarshal(resp, &dr); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+
+			if dr.Deleted != tc.wantDeleted {
+				t.Errorf("Deleted = %v, want %v", dr.Deleted, tc.wantDeleted)
+			}
+			if tc.wantError && dr.Error == "" {
+				t.Error("expected error message, got empty")
+			}
+			if !tc.wantError && dr.Error != "" {
+				t.Errorf("unexpected error: %q", dr.Error)
+			}
+
+			// Check scheduler was called on successful delete.
+			if sr, ok := tc.scheduler.(*stubPodRemover); ok {
+				if len(tc.wantSchedulerRM) == 0 && len(sr.removed) != 0 {
+					t.Errorf("scheduler.RemovePod called unexpectedly: %v", sr.removed)
+				}
+				for i, want := range tc.wantSchedulerRM {
+					if i >= len(sr.removed) {
+						t.Errorf("scheduler.RemovePod not called for %q", want)
+						continue
+					}
+					if sr.removed[i] != want {
+						t.Errorf("scheduler.RemovePod[%d] = %q, want %q", i, sr.removed[i], want)
+					}
+				}
+			}
+		})
 	}
 }

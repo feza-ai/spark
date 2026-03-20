@@ -9,6 +9,11 @@ import (
 	"github.com/feza-ai/spark/internal/state"
 )
 
+// PodRemover releases scheduler resources for a pod.
+type PodRemover interface {
+	RemovePod(name string)
+}
+
 // DeleteRequest is the payload for a delete request.
 type DeleteRequest struct {
 	Name string `json:"name"`
@@ -22,7 +27,8 @@ type DeleteResponse struct {
 }
 
 // RegisterDeleteHandler registers the req.spark.delete handler.
-func RegisterDeleteHandler(b Bus, store *state.PodStore, exec executor.Executor) {
+// The scheduler parameter may be nil if scheduling is not enabled.
+func RegisterDeleteHandler(b Bus, store *state.PodStore, exec executor.Executor, scheduler PodRemover) {
 	b.HandleRequest("req.spark.delete", func(_ string, data []byte) ([]byte, error) {
 		var req DeleteRequest
 		if err := json.Unmarshal(data, &req); err != nil {
@@ -43,7 +49,7 @@ func RegisterDeleteHandler(b Bus, store *state.PodStore, exec executor.Executor)
 			gracePeriod = 30
 		}
 
-		ctx := context.TODO()
+		ctx := context.Background()
 
 		if err := exec.StopPod(ctx, req.Name, gracePeriod); err != nil {
 			return json.Marshal(DeleteResponse{
@@ -62,6 +68,10 @@ func RegisterDeleteHandler(b Bus, store *state.PodStore, exec executor.Executor)
 		}
 
 		store.Delete(req.Name)
+
+		if scheduler != nil {
+			scheduler.RemovePod(req.Name)
+		}
 
 		return json.Marshal(DeleteResponse{
 			Name:    req.Name,
