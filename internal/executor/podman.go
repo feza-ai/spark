@@ -97,6 +97,10 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 	// Start each main container in the pod (detached).
 	for _, c := range spec.Containers {
 		runArgs := buildRunArgs(spec.Name, c, spec.Volumes, p.network, true)
+		// Inject NVIDIA_VISIBLE_DEVICES if specific GPU devices are assigned.
+		if len(spec.GPUDevices) > 0 {
+			runArgs = injectGPUDevices(runArgs, spec.GPUDevices)
+		}
 		slog.Info("starting container", "cmd", "podman", "args", runArgs)
 		out, err := exec.CommandContext(ctx, "podman", runArgs...).CombinedOutput()
 		if err != nil {
@@ -178,6 +182,46 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 	}
 
 	return args
+}
+
+// formatDeviceIDs joins GPU device IDs into a comma-separated string.
+func formatDeviceIDs(ids []int) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.Itoa(id)
+	}
+	return strings.Join(parts, ",")
+}
+
+// injectGPUDevices inserts an NVIDIA_VISIBLE_DEVICES env var into run args.
+// It inserts the --env flag before the image argument (first arg after all flags).
+func injectGPUDevices(args []string, devices []int) []string {
+	envArg := "NVIDIA_VISIBLE_DEVICES=" + formatDeviceIDs(devices)
+	// Find the position of the image name to insert before it.
+	// The image is the first positional arg after all --flag pairs.
+	insertIdx := len(args)
+	for i := 1; i < len(args); i++ {
+		if args[i-1] == "--env" || args[i-1] == "--pod" || args[i-1] == "--name" ||
+			args[i-1] == "--volume" || args[i-1] == "--mount" ||
+			args[i-1] == "--memory" || args[i-1] == "--cpus" ||
+			args[i-1] == "--device" {
+			continue
+		}
+		if !strings.HasPrefix(args[i], "-") && !strings.HasPrefix(args[i-1], "-") {
+			// This is a positional arg (image or command) — but we want the image.
+			// The image is the first non-flag arg.
+			continue
+		}
+		if !strings.HasPrefix(args[i], "-") {
+			insertIdx = i
+			break
+		}
+	}
+	result := make([]string, 0, len(args)+2)
+	result = append(result, args[:insertIdx]...)
+	result = append(result, "--env", envArg)
+	result = append(result, args[insertIdx:]...)
+	return result
 }
 
 // buildStopArgs constructs the arguments for a podman pod stop command.

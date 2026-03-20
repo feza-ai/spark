@@ -67,6 +67,7 @@ type PodSpec struct {
 	SourceKind                    string // Pod, Job, Deployment, StatefulSet, CronJob
 	SourceName                    string
 	BackoffLimit                  int
+	GPUDevices                    []int // runtime: assigned GPU device IDs (set by scheduler, not parsed from YAML)
 }
 
 // TotalRequests sums resource requests across all containers in the pod.
