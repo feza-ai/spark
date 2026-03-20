@@ -16,6 +16,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	collector := metrics.NewCollector(store, tracker, nil)
 	srv := NewServer(store, tracker, nil, nil, nil, collector, "")

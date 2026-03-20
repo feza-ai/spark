@@ -14,6 +14,7 @@ func newTestTracker() *scheduler.ResourceTracker {
 	return scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+		nil, 0,
 	)
 }
 

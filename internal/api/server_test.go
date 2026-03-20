@@ -17,6 +17,7 @@ func newTestServer(t *testing.T) *Server {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
 		scheduler.Resources{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	return NewServer(store, tracker, nil, nil, nil, nil, "")
 }
@@ -51,6 +52,7 @@ func TestResources(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
 		scheduler.Resources{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	// Allocate some resources so allocated != zero.
 	tracker.Allocate("test-pod", manifest.ResourceList{

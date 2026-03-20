@@ -52,6 +52,7 @@ func TestIntegrationReconcilerRestartsKilledPod(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 49152},
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	sched := scheduler.NewScheduler(tracker)
 	exec := executor.NewPodmanExecutor(testNetwork)

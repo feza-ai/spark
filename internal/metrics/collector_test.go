@@ -38,6 +38,7 @@ func TestCollect_PodCounts(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
 		scheduler.Resources{},
+	nil, 0,
 	)
 
 	c := NewCollector(store, tracker, nil)
@@ -74,6 +75,7 @@ func TestCollect_Resources(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
 		scheduler.Resources{CPUMillis: 500, MemoryMB: 1024, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	// Allocate some resources to make available != total.
 	tracker.Allocate("test-pod", manifest.ResourceList{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 4096})
@@ -113,6 +115,7 @@ func TestCollect_SchedulerMetrics(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
+	nil, 0,
 	)
 	sched := &fakeSchedulerMetrics{attempts: 42, preemptions: 7}
 	c := NewCollector(store, tracker, sched)
@@ -143,6 +146,7 @@ func TestCollect_SchedulerNil(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
+	nil, 0,
 	)
 	c := NewCollector(store, tracker, nil)
 	families := c.Collect()
@@ -246,6 +250,7 @@ func TestCollect_PodRestarts(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
+	nil, 0,
 	)
 	c := NewCollector(store, tracker, nil)
 	families := c.Collect()
@@ -272,6 +277,7 @@ func TestCollect_FamilyTypes(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
+	nil, 0,
 	)
 	sched := &fakeSchedulerMetrics{}
 	c := NewCollector(store, tracker, sched)

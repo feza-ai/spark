@@ -72,6 +72,7 @@ func newTestInfra() (*state.PodStore, *scheduler.Scheduler, *executor.PodmanExec
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 49152},
 		scheduler.Resources{CPUMillis: 500, MemoryMB: 512, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	sched := scheduler.NewScheduler(tracker)
 	exec := executor.NewPodmanExecutor("spark-net")
@@ -171,6 +172,7 @@ func TestE2E_PriorityPreemption(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 4096},
 		scheduler.Resources{CPUMillis: 500, MemoryMB: 512, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	sched := scheduler.NewScheduler(tracker)
 	ex := executor.NewPodmanExecutor("spark-net")

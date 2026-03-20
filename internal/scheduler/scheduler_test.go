@@ -32,6 +32,7 @@ func newTracker(cpu, mem, gpu int) *ResourceTracker {
 	return NewResourceTracker(
 		Resources{CPUMillis: cpu, MemoryMB: mem, GPUMemoryMB: gpu},
 		Resources{},
+		nil, 0,
 	)
 }
 

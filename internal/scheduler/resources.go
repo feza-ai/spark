@@ -16,15 +16,20 @@ type Resources struct {
 
 // ResourceTracker tracks total, allocatable, and allocated resources on a node.
 type ResourceTracker struct {
-	mu          sync.Mutex
-	allocatable Resources
-	allocations map[string]manifest.ResourceList
+	mu             sync.Mutex
+	allocatable    Resources
+	allocations    map[string]manifest.ResourceList
+	gpuDevices     []int
+	gpuMax         int
+	gpuAssignments map[string][]int
 }
 
 // NewResourceTracker creates a tracker with total resources and system reserve.
 // Allocatable resources are total minus systemReserve.
-func NewResourceTracker(total Resources, systemReserve Resources) *ResourceTracker {
-	return &ResourceTracker{
+// gpuDevices lists available GPU device IDs; gpuMax limits concurrent GPU pods.
+// If gpuDevices is nil/empty, GPU slot tracking is disabled (memory-only).
+func NewResourceTracker(total Resources, systemReserve Resources, gpuDevices []int, gpuMax int) *ResourceTracker {
+	rt := &ResourceTracker{
 		allocatable: Resources{
 			CPUMillis:   total.CPUMillis - systemReserve.CPUMillis,
 			MemoryMB:    total.MemoryMB - systemReserve.MemoryMB,
@@ -32,6 +37,13 @@ func NewResourceTracker(total Resources, systemReserve Resources) *ResourceTrack
 		},
 		allocations: make(map[string]manifest.ResourceList),
 	}
+	if len(gpuDevices) > 0 {
+		rt.gpuDevices = make([]int, len(gpuDevices))
+		copy(rt.gpuDevices, gpuDevices)
+		rt.gpuMax = gpuMax
+		rt.gpuAssignments = make(map[string][]int)
+	}
+	return rt
 }
 
 // Allocate reserves resources for a pod. Returns error if insufficient.
@@ -51,6 +63,17 @@ func (rt *ResourceTracker) Allocate(name string, req manifest.ResourceList) erro
 		return fmt.Errorf("insufficient GPU memory: requested %d MB, available %d MB", req.GPUMemoryMB, avail.GPUMemoryMB)
 	}
 
+	if req.GPUMemoryMB > 0 && len(rt.gpuDevices) > 0 {
+		if len(rt.gpuAssignments) >= rt.gpuMax {
+			return fmt.Errorf("GPU slot limit reached")
+		}
+		dev := rt.firstUnassignedDeviceLocked()
+		if dev == -1 {
+			return fmt.Errorf("no GPU device available")
+		}
+		rt.gpuAssignments[name] = []int{dev}
+	}
+
 	rt.allocations[name] = req
 	return nil
 }
@@ -61,6 +84,35 @@ func (rt *ResourceTracker) Release(name string) {
 	defer rt.mu.Unlock()
 
 	delete(rt.allocations, name)
+	if rt.gpuAssignments != nil {
+		delete(rt.gpuAssignments, name)
+	}
+}
+
+// AssignedGPUs returns the GPU device IDs assigned to a pod, or nil if none.
+func (rt *ResourceTracker) AssignedGPUs(name string) []int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if rt.gpuAssignments == nil {
+		return nil
+	}
+	return rt.gpuAssignments[name]
+}
+
+func (rt *ResourceTracker) firstUnassignedDeviceLocked() int {
+	assigned := make(map[int]bool)
+	for _, devs := range rt.gpuAssignments {
+		for _, d := range devs {
+			assigned[d] = true
+		}
+	}
+	for _, dev := range rt.gpuDevices {
+		if !assigned[dev] {
+			return dev
+		}
+	}
+	return -1
 }
 
 // Available returns currently available resources.
