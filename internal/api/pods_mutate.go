@@ -81,6 +81,11 @@ func (s *Server) handleDeletePod(w http.ResponseWriter, r *http.Request) {
 	s.executor.StopPod(r.Context(), name, 10)
 	s.executor.RemovePod(r.Context(), name)
 
+	// Release scheduler resources for this pod.
+	if s.scheduler != nil {
+		s.scheduler.RemovePod(name)
+	}
+
 	s.store.Delete(name)
 
 	w.Header().Set("Content-Type", "application/json")

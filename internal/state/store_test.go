@@ -325,11 +325,11 @@ func TestSetReadOnly(t *testing.T) {
 
 func TestIncrementRestarts(t *testing.T) {
 	tests := []struct {
-		name       string
-		setup      func(s *PodStore)
-		podName    string
-		wantOK     bool
-		wantCount  int
+		name      string
+		setup     func(s *PodStore)
+		podName   string
+		wantOK    bool
+		wantCount int
 	}{
 		{
 			name: "increments existing pod",
@@ -375,29 +375,6 @@ func TestIncrementRestarts(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestConcurrentAccess(t *testing.T) {
-	s := NewPodStore()
-	var wg sync.WaitGroup
-
-	for i := 0; i < 100; i++ {
-		wg.Add(3)
-		name := "pod-concurrent"
-		go func() {
-			defer wg.Done()
-			s.Apply(podSpec(name))
-		}()
-		go func() {
-			defer wg.Done()
-			s.Get(name)
-		}()
-		go func() {
-			defer wg.Done()
-			s.Delete(name)
-		}()
-	}
-	wg.Wait()
 }
 
 func TestListBySourcePath(t *testing.T) {
@@ -489,3 +466,27 @@ func TestSourcePathPreservedOnGet(t *testing.T) {
 		t.Fatalf("expected SourcePath %q, got %q", "/tmp/app.yaml", rec.SourcePath)
 	}
 }
+
+func TestConcurrentAccess(t *testing.T) {
+	s := NewPodStore()
+	var wg sync.WaitGroup
+
+	for i := 0; i < 100; i++ {
+		wg.Add(3)
+		name := "pod-concurrent"
+		go func() {
+			defer wg.Done()
+			s.Apply(podSpec(name))
+		}()
+		go func() {
+			defer wg.Done()
+			s.Get(name)
+		}()
+		go func() {
+			defer wg.Done()
+			s.Delete(name)
+		}()
+	}
+	wg.Wait()
+}
+

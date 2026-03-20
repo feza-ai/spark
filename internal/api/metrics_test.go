@@ -19,7 +19,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	nil, 0,
 	)
 	collector := metrics.NewCollector(store, tracker, nil)
-	srv := NewServer(store, tracker, nil, nil, nil, collector, nil, "")
+	srv := NewServer(store, tracker, nil, nil, nil, collector, nil, "", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()

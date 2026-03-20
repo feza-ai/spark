@@ -19,7 +19,7 @@ func newTestServer(t *testing.T) *Server {
 		scheduler.Resources{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 0},
 	nil, 0,
 	)
-	return NewServer(store, tracker, nil, nil, nil, nil, nil, "")
+	return NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil)
 }
 
 func TestHealthz(t *testing.T) {
@@ -61,7 +61,7 @@ func TestResources(t *testing.T) {
 		GPUMemoryMB: 8192,
 	})
 
-	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "")
+	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources", nil)
 	rec := httptest.NewRecorder()

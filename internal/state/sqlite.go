@@ -58,7 +58,7 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 	}
 
 	// Migration: add source_path column for existing databases.
-	db.Exec("ALTER TABLE pods ADD COLUMN source_path TEXT DEFAULT ''") 
+	db.Exec("ALTER TABLE pods ADD COLUMN source_path TEXT DEFAULT ''")
 
 	return &SQLiteStore{db: db}, nil
 }
