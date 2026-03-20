@@ -15,6 +15,7 @@ import (
 
 	"github.com/feza-ai/spark/internal/api"
 	"github.com/feza-ai/spark/internal/bus"
+	"github.com/feza-ai/spark/internal/metrics"
 	"github.com/feza-ai/spark/internal/cron"
 	"github.com/feza-ai/spark/internal/executor"
 	"github.com/feza-ai/spark/internal/gpu"
@@ -229,8 +230,11 @@ func main() {
 		slog.Info("API authentication enabled")
 	}
 
+	// 12a. Create metrics collector.
+	metricsCollector := metrics.NewCollector(store, tracker, sched)
+
 	// 13. Start HTTP API server.
-	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, nil, apiToken)
+	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, apiToken)
 	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
 	go func() {
 		slog.Info("HTTP server starting", "addr", *httpAddr)
