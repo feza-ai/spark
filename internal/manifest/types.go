@@ -57,6 +57,7 @@ type PodSpec struct {
 	Name                          string
 	Labels                        map[string]string
 	Annotations                   map[string]string
+	InitContainers                []ContainerSpec
 	Containers                    []ContainerSpec
 	Volumes                       []VolumeSpec
 	RestartPolicy                 string
