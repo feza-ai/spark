@@ -1,40 +1,34 @@
-# Spark: Wiring Integrity and Reconciler Hardening (v1.5.0)
+# Spark: GPU Resource Model, Liveness Probes, and CronJob Management (v1.6.0)
 
-## Status: Complete
+## Status: In Progress
 
 ## Context
 
 ### Problem Statement
 
-Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the codebase reveals 7 broken wiring paths and 2 operational defects that undermine reliability for production ML workloads on the DGX:
+Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring paths. However, three gaps limit its utility as ML infrastructure for Feza's Wolf trading system and Zerfoo inference workloads on the DGX:
 
-1. **CronJob registration broken on NATS and HTTP.** The NATS `req.spark.apply` handler and the HTTP `POST /api/v1/pods` handler both parse CronJobs from manifests but never call `cronSched.Register()`. CronJobs submitted via NATS or HTTP are silently accepted but never scheduled. Only the filesystem watcher path registers cron jobs.
+1. **GPU resource model is semantically broken.** `parseGPU()` in `manifest/job.go` converts `nvidia.com/gpu: 1` (a device count) directly into `GPUMemoryMB = 1`. The scheduler then compares this 1 MB value against the total GPU memory (273,066 MB on DGX Spark). Every GPU request trivially fits, making resource tracking meaningless for multi-GPU workloads. The `GPUMemoryMB` field in `ResourceList` conflates device count and memory. This must be separated: `nvidia.com/gpu: N` should allocate N device slots, tracked as `GPUCount`, distinct from memory-based scheduling.
 
-2. **Manifest file removal is a no-op.** The watcher emits a `Removed` event when a manifest file is deleted, but `main.go:308` only logs a message. Pods created from the removed manifest continue running. Cron jobs remain registered. There is no way to undeploy workloads by removing their manifest files.
+2. **No liveness probes.** A deadlocked inference service (Zerfoo) or stalled trading microservice (Wolf) that does not exit will appear as "Running" to Spark indefinitely. The reconciler only checks if the podman process is alive, not whether the application is healthy. Without liveness probes, there is no automated recovery for stuck-but-running containers. K8s manifests with `livenessProbe` specifications are silently ignored.
 
-3. **HTTP/NATS delete does not release scheduler resources.** The `handleDeletePod` HTTP handler and the NATS delete handler call `StopPod` and `RemovePod` but never call `scheduler.RemovePod()` or `tracker.Release()`. Deleted pods leave their CPU/memory/GPU allocations permanently consumed until the next Spark restart.
+3. **No CronJob HTTP management.** CronJobs can only be submitted via NATS, HTTP POST, or filesystem. There is no way to list registered cron jobs, inspect their next-run time, or unregister them via the HTTP API. Operators must read the manifest directory or query NATS directly.
 
-4. **Restart counter never incremented.** `PodRecord.Restarts` is declared, persisted in SQLite, surfaced in the API, and emitted as `spark_pod_restarts_total` in Prometheus metrics, but it is never incremented. The reconciler re-queues pods to `StatusPending` on restart but does not call any increment function. The metric always reports 0.
-
-5. **StatusScheduled and StatusPreempted pods stuck forever.** The reconciler's `reconcileOnce()` only handles `StatusPending` and `StatusRunning`. A pod that reaches `StatusScheduled` (between scheduling and creation) and then has its `CreatePod` call panic or timeout remains stuck. A preempted pod stays in `StatusPreempted` indefinitely with no path back to `StatusPending`.
-
-6. **StreamPodLogs process not Wait()-ed.** `StreamPodLogs` starts a `podman pod logs --follow` process but does not call `cmd.Wait()` after the context closes. The process may become a zombie until the Go runtime garbage-collects it.
-
-7. **parseMemory missing Ki suffix.** `parseMemory()` handles Gi, Mi, G, and M suffixes but not Ki. A manifest using `512Ki` parses as 0 MB. This is an uncommon unit for ML workloads but breaks K8s compatibility.
+4. **No node info endpoint.** `GET /api/v1/resources` returns CPU/memory/GPU memory totals but not GPU model, device count, device IDs, or OS info. ML workload operators need a `GET /api/v1/node` endpoint to see the full hardware picture for scheduling decisions.
 
 ### Objectives
 
-1. Fix all 7 broken wiring paths so that CronJobs, deletes, restarts, and stuck pods work correctly.
-2. Fix the 2 operational defects (zombie processes, memory parsing).
-3. Add securityContext passthrough for privileged ML containers.
-4. Reach zero broken use cases in the manifest.
+1. Fix the GPU resource model: separate device count from memory, track `GPUCount` in `ResourceList` and the scheduler.
+2. Add liveness probe support: parse probe specs from manifests, poll running containers, restart on failure.
+3. Add CronJob HTTP management endpoints: list, inspect, unregister.
+4. Add a node info HTTP endpoint for GPU/hardware observability.
 
 ### Non-Goals
 
-- envFrom / configMapRef / secretRef support (v1.6.0 -- requires new ConfigMap/Secret store).
-- CronJob HTTP management endpoints (v1.6.0 -- depends on stable cron registration first).
-- Liveness/readiness probes (significant new subsystem, not a wiring fix).
-- GPU count-to-memory normalization (requires design decision on resource model; tracked separately).
+- Readiness probes (no service discovery or load balancing in single-node Spark; deferred to v1.7.0).
+- envFrom / ConfigMap / Secret support (requires new package and manifest kinds; deferred to v1.7.0).
+- TCP socket probes (exec and HTTP probes cover ML workload needs; TCP deferred).
+- Multi-node scheduling or node affinity.
 
 ### Constraints
 
@@ -42,38 +36,31 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 - HTTP routing via `net/http.ServeMux` with Go 1.22+ method-aware patterns. See ADR-009.
 - Standard `flag` package for CLI flags.
 - Podman CLI only (no podman API socket).
+- Liveness probes execute via `podman exec` (exec probes) or stdlib `net/http` (HTTP probes).
 
 ### Success Metrics
 
+- `nvidia.com/gpu: 2` in a manifest allocates 2 device slots, not 2 MB of GPU memory.
+- A pod with `livenessProbe: {exec: {command: ["cat", "/tmp/healthy"]}}` restarts when the probe fails.
+- `curl localhost:8080/api/v1/cronjobs` returns a JSON list of registered cron jobs with next-run times.
+- `curl localhost:8080/api/v1/node` returns GPU model, device count, device IDs, CPU, memory.
 - `go test ./... -race -timeout 120s` passes with all new tests.
-- CronJob submitted via `nats pub req.spark.apply` triggers on schedule.
-- CronJob submitted via `curl -X POST /api/v1/pods` triggers on schedule.
-- Deleting a manifest file from the watch directory stops the corresponding pod.
-- `curl -X DELETE /api/v1/pods/myapp` releases resources visible in `GET /api/v1/resources`.
-- Pod restart counter increments on reconciler re-queue, visible in `GET /api/v1/pods/{name}` and `/metrics`.
-- Preempted pod returns to Pending on next reconcile pass.
-- `podman ps` shows no zombie `podman pod logs` processes after SSE stream disconnects.
 
 ## Discovery Summary
 
 **Current architecture** (from docs/design.md):
-- 13 packages, 36 use cases (all WIRED prior to this audit).
+- 13 packages, 46 use cases (all WIRED after v1.5.0).
 - HTTP API: 12 endpoints + auth middleware + Prometheus metrics on :8080.
 - NATS: 4 request/reply subjects + events + logs + heartbeat.
 - Filesystem: manifest directory watcher with SHA-256 change detection.
 
-**Gaps discovered** (7 broken, 2 defects):
-- UC-037: NATS apply ignores CronJobs (never calls Register).
-- UC-038: HTTP apply ignores CronJobs (never calls Register).
-- UC-039: Watcher Removed event is a no-op.
-- UC-040: Delete handlers do not release scheduler resources.
-- UC-041: Restarts counter never incremented.
-- UC-042: StatusScheduled/StatusPreempted pods stuck forever.
-- UC-046: StreamPodLogs zombie processes.
-- parseMemory missing Ki suffix (breaks K8s compat).
-- securityContext not parsed (needed for privileged ML containers).
+**Gaps discovered**:
+- UC-047: GPU count-based scheduling (resource model conflates count and memory).
+- UC-048: Liveness probe polling (no health check for running containers).
+- UC-045: CronJob HTTP management (no list/inspect/unregister endpoints).
+- UC-050: Node info HTTP endpoint (no hardware detail exposed).
 
-**Use case manifest**: .claude/scratch/usecases-manifest.json (46 total: 36 WIRED, 7 BROKEN, 3 PLANNED).
+**Use case manifest**: .claude/scratch/usecases-manifest.json (50 total: 46 WIRED, 4 PLANNED).
 
 ## Scope and Deliverables
 
@@ -81,164 +68,157 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 | ID | Deliverable | Acceptance Criteria |
 |----|-------------|---------------------|
-| D1 | CronJob registration on all ingestion paths | CronJobs register via NATS, HTTP, and filesystem |
-| D2 | Manifest removal triggers pod deletion | Removing a file stops pods and unregisters cron jobs |
-| D3 | Delete releases scheduler resources | Resources freed immediately on delete |
-| D4 | Restart counter works | Restarts increments on re-queue, visible in API and metrics |
-| D5 | Stuck pod recovery | StatusScheduled and StatusPreempted pods recover |
-| D6 | StreamPodLogs cleanup | No zombie processes after SSE disconnect |
-| D7 | parseMemory Ki support | 512Ki parses as 0 MB (0.5 MB, rounds to 0), 1024Ki parses as 1 MB |
-| D8 | securityContext passthrough | runAsUser, privileged, capabilities forwarded to podman |
+| D1 | GPU resource model fix | GPUCount field in ResourceList, parseGPU returns count, scheduler allocates by count |
+| D2 | Liveness probe support | Parse livenessProbe from manifests, reconciler polls probes, restart on failure |
+| D3 | CronJob HTTP management | GET /api/v1/cronjobs, GET /api/v1/cronjobs/{name}, DELETE /api/v1/cronjobs/{name} |
+| D4 | Node info endpoint | GET /api/v1/node returns GPU model, device count, device IDs, CPU, memory, OS |
 
 ### Out of Scope
 
-- envFrom / configMapRef / secretRef support
-- CronJob HTTP management endpoints
-- Liveness/readiness probes
-- GPU count-to-memory normalization
+- Readiness probes
+- envFrom / ConfigMap / Secret support
+- TCP socket probes
+- Multi-node scheduling
 
 ## Checkable Work Breakdown
 
-### E40: CronJob Registration Fixes
+### E49: GPU Resource Model Fix
 
-- [x] T40.1 Wire CronJob registration into NATS apply handler  Owner: TBD  Est: 30m  verifies: [UC-037]
-  - Update `internal/bus/handler_apply.go` `RegisterApplyHandler` to accept a `cronSched` parameter.
-  - After iterating CronJobs, call `cronSched.Register(cj)` for each.
-  - Update `main.go` to pass `cronSched` to `RegisterApplyHandler`.
-  - Create tests: NATS apply with CronJob manifest calls Register.
-  - Acceptance: `go test -race ./internal/bus/` passes. CronJob registered.
+- [ ] T49.1 Add GPUCount to ResourceList and refactor parseGPU  Owner: TBD  Est: 45m  verifies: [UC-047]
+  - Add `GPUCount int` field to `manifest.ResourceList` in `internal/manifest/types.go`.
+  - Update `parseGPU()` in `internal/manifest/job.go` to set `GPUCount` instead of `GPUMemoryMB`.
+  - Update `TotalRequests()` to sum `GPUCount` across containers.
+  - Create tests: `nvidia.com/gpu: 2` produces `GPUCount=2, GPUMemoryMB=0`.
+  - Acceptance: `go test -race ./internal/manifest/` passes.
 
-- [x] T40.2 Wire CronJob registration into HTTP apply handler  Owner: TBD  Est: 30m  verifies: [UC-038]
-  - Add `cronSched` field to `api.Server` struct.
-  - Update `handleApplyPod` to call `cronSched.Register(cj)` for each CronJob in `result.CronJobs`.
-  - Update `NewServer` to accept and store `cronSched`.
-  - Update `main.go` to pass `cronSched` when creating the API server.
-  - Create tests: HTTP POST with CronJob manifest calls Register.
-  - Acceptance: `go test -race ./internal/api/` passes.
+- [ ] T49.2 Update scheduler to track GPU count  Owner: TBD  Est: 45m  verifies: [UC-047]
+  - Update `scheduler.Resources` to include `GPUCount int`.
+  - Update `ResourceTracker.Allocate` to check `GPUCount` against `gpuMax` and available device slots.
+  - Update `ResourceTracker.Release` to free device slots by count.
+  - Keep `GPUMemoryMB` for future memory-based scheduling but do not use it for count-based allocation.
+  - Create tests: allocate 2 GPUs, verify 2 device slots consumed. Exceed gpuMax, verify rejection.
+  - Acceptance: `go test -race ./internal/scheduler/` passes.
 
-### E41: Manifest Removal Handling
-
-- [x] T41.1 Implement manifest removal handler in main.go  Owner: TBD  Est: 45m  verifies: [UC-039]
-  - In the watcher `Removed` case in `main.go`:
-    1. Track which pods and cron jobs came from each manifest file path (add a `sourcePath` field to PodRecord or maintain a map in main.go).
-    2. On Removed event: look up pods by source path, call `executor.StopPod`, `executor.RemovePod`, `store.Delete`, `scheduler.RemovePod` for each.
-    3. Unregister cron jobs from `cronSched` by name.
-  - Add `Unregister(name string)` method to `cron.Scheduler` if it does not exist.
-  - Create tests: manifest removal stops pods and unregisters cron jobs.
-  - Acceptance: `go test -race ./internal/cron/` and `go build ./cmd/spark` pass.
-
-- [x] T41.2 Add source path tracking to state store  Owner: TBD  Est: 30m  verifies: [UC-039]
-  - Add `SourcePath string` field to `state.PodRecord`.
-  - Set it when a pod is applied from the watcher (pass the file path through to `store.Apply`).
-  - Add `ListBySourcePath(path string) []PodRecord` query method to `PodStore`.
-  - Persist `SourcePath` in SQLite schema (add column, update SavePod/LoadPods).
-  - Create tests for `ListBySourcePath`.
-  - Acceptance: `go test -race ./internal/state/` passes.
-
-### E42: Delete Releases Scheduler Resources
-
-- [x] T42.1 Release scheduler resources on HTTP delete  Owner: TBD  Est: 30m  verifies: [UC-040]
-  - Update `handleDeletePod` in `internal/api/pods_mutate.go` to call `s.scheduler.RemovePod(name)` after stopping the pod.
-  - Add `scheduler` field to `api.Server` struct (or use an interface with RemovePod method).
-  - Update `NewServer` to accept and store the scheduler reference.
-  - Update `main.go` to pass the scheduler when creating the API server.
-  - Create tests: delete pod, verify RemovePod called on scheduler.
-  - Acceptance: `go test -race ./internal/api/` passes.
-
-- [x] T42.2 Release scheduler resources on NATS delete  Owner: TBD  Est: 30m  verifies: [UC-040]
-  - Update `internal/bus/handler_delete.go` `RegisterDeleteHandler` to accept a scheduler parameter.
-  - Call `scheduler.RemovePod(name)` after stopping the pod.
-  - Replace `context.TODO()` with a proper context from the bus handler.
-  - Update `main.go` to pass the scheduler to `RegisterDeleteHandler`.
-  - Create tests: NATS delete calls scheduler.RemovePod.
-  - Acceptance: `go test -race ./internal/bus/` passes.
-
-### E43: Restart Counter Fix
-
-- [x] T43.1 Increment restart counter in reconciler  Owner: TBD  Est: 30m  verifies: [UC-041]
-  - In `reconcileRunning` in `internal/reconciler/reconciler.go`:
-    - When re-queuing a pod to `StatusPending` (policy Always or OnFailure), call `r.store.IncrementRestarts(pod.Spec.Name)`.
-  - Add `IncrementRestarts(name string)` method to `state.PodStore` if it does not exist (distinct from `IncrementRetry`).
-  - The method should increment `PodRecord.Restarts` and persist to SQLite.
-  - Create tests: reconciler restart increments counter, verify via store.Get.
-  - Acceptance: `go test -race ./internal/reconciler/` and `go test -race ./internal/state/` pass.
-
-### E44: Stuck Pod Recovery
-
-- [x] T44.1 Handle StatusScheduled and StatusPreempted in reconciler  Owner: TBD  Est: 45m  verifies: [UC-042]
-  - In `reconcileOnce` in `internal/reconciler/reconciler.go`, add cases for:
-    - `StatusScheduled`: check if the pod exists in podman. If running, update to `StatusRunning`. If not found, reset to `StatusPending` to retry scheduling.
-    - `StatusPreempted`: reset to `StatusPending` so the scheduler can re-evaluate. The preempted pod will be re-scheduled when resources become available.
-  - Add a staleness check: if a pod has been in `StatusScheduled` for more than 30 seconds, force reset to `StatusPending`.
-  - Create tests: scheduled pod reset, preempted pod reset, stale scheduled pod timeout.
+- [ ] T49.3 Update reconciler and heartbeat for GPU count  Owner: TBD  Est: 30m  verifies: [UC-047]
+  - Update `ResourceReconciler` to use `GPUCount` for drift detection.
+  - Update heartbeat payload to include `gpuCount` alongside `gpuMemoryMB`.
+  - Update `reconciler/resources.go` to compare allocated GPU count vs actual.
+  - Create tests.
   - Acceptance: `go test -race ./internal/reconciler/` passes.
 
-### E45: StreamPodLogs Process Cleanup
+### E50: Liveness Probe Support
 
-- [x] T45.1 Add cmd.Wait() to StreamPodLogs  Owner: TBD  Est: 15m  verifies: [UC-046]
-  - In `internal/executor/logs.go` `StreamPodLogs`:
-    - After the context is done or the scanner loop exits, call `cmd.Wait()` to reap the child process.
-    - Use a deferred call or a goroutine that waits on context cancellation.
-  - Create test: verify that after cancelling the context, the command process is properly waited on.
-  - Acceptance: `go test -race ./internal/executor/` passes.
-
-### E46: parseMemory Ki Suffix
-
-- [x] T46.1 Add Ki suffix support to parseMemory  Owner: TBD  Est: 15m  verifies: [infrastructure]
-  - In `internal/manifest/yaml.go` `parseMemory`:
-    - Add case for `Ki` suffix: parse value, divide by 1024 to get MB (e.g., 1024Ki = 1 MB, 512Ki = 0 MB).
-    - Add case for `K` suffix: parse value, divide by 1000 to get MB.
-  - Create tests: 1024Ki=1, 512Ki=0, 2048Ki=2, 1K=0, 2000K=2.
+- [ ] T50.1 Add ProbeSpec to ContainerSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-048]
+  - Add to `internal/manifest/types.go`:
+    ```
+    type ProbeSpec struct {
+        Exec                *ExecProbe
+        HTTPGet             *HTTPGetProbe
+        InitialDelaySeconds int
+        PeriodSeconds       int  // default 10
+        FailureThreshold    int  // default 3
+        TimeoutSeconds      int  // default 1
+    }
+    type ExecProbe struct { Command []string }
+    type HTTPGetProbe struct { Path string; Port int }
+    ```
+  - Add `LivenessProbe *ProbeSpec` field to `ContainerSpec`.
+  - Update `parseContainer` in `parse.go` / `job.go` to extract `livenessProbe` from YAML.
+  - Create tests: parse exec probe, HTTP probe, missing probe (nil), default values.
   - Acceptance: `go test -race ./internal/manifest/` passes.
 
-### E47: Security Context Passthrough
+- [ ] T50.2 Add probe executor methods  Owner: TBD  Est: 45m  verifies: [UC-048]
+  - Add to `internal/executor`:
+    - `ExecProbe(ctx, podName, containerName, command) (exitCode int, err error)` -- runs `podman exec` with timeout.
+    - `HTTPProbe(ctx, port int, path string, timeout time.Duration) error` -- makes HTTP GET to localhost:port/path.
+  - Both methods return nil on success, error on failure.
+  - Create tests with stubs.
+  - Acceptance: `go test -race ./internal/executor/` passes.
 
-- [x] T47.1 Add SecurityContext to ContainerSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-043]
-  - Add `SecurityContext` struct to `internal/manifest/types.go`:
-    ```go
-    type SecurityContext struct {
-        RunAsUser    int
-        RunAsNonRoot bool
-        Privileged   bool
-        AddCaps      []string // capabilities.add
-        DropCaps     []string // capabilities.drop
+- [ ] T50.3 Add probe poller to reconciler  Owner: TBD  Est: 60m  verifies: [UC-048]
+  - Depends on: T50.1, T50.2.
+  - In `internal/reconciler`, add a `probePoller` that:
+    1. For each Running pod with a LivenessProbe, tracks consecutive failures.
+    2. After `InitialDelaySeconds`, polls every `PeriodSeconds`.
+    3. On `FailureThreshold` consecutive failures, calls `executor.StopPod`, then sets pod to `StatusPending` (triggering restart via reconciler).
+    4. Resets failure count on successful probe.
+  - The poller runs as part of `reconcileRunning` -- check probes for each running pod on each reconcile tick.
+  - Track probe state per pod in a `map[string]*probeState` on the Reconciler struct.
+  - Create tests: probe passes (no restart), probe fails N times (restart triggered), initial delay respected.
+  - Acceptance: `go test -race ./internal/reconciler/` passes.
+
+### E51: CronJob HTTP Management
+
+- [ ] T51.1 Add List method to CronScheduler  Owner: TBD  Est: 30m  verifies: [UC-045]
+  - Add `CronJobStatus` struct to `internal/cron/scheduler.go`:
+    ```
+    type CronJobStatus struct {
+        Name     string
+        Schedule string
+        LastRun  time.Time
+        NextRun  time.Time
+        RunCount int
     }
     ```
-  - Add `SecurityContext *SecurityContext` field to `ContainerSpec`.
-  - Update `parseContainer` in `parse.go` to extract `securityContext` from YAML.
-  - Create tests: parse securityContext with all fields, partial fields, missing.
-  - Acceptance: `go test -race ./internal/manifest/` passes.
+  - Add `List() []CronJobStatus` method to `CronScheduler`.
+  - Add `Get(name string) (CronJobStatus, bool)` method.
+  - Create tests.
+  - Acceptance: `go test -race ./internal/cron/` passes.
 
-- [x] T47.2 Wire security context into executor buildRunArgs  Owner: TBD  Est: 30m  verifies: [UC-043]
-  - Depends on: T47.1.
-  - In `internal/executor/podman.go` `buildRunArgs`:
-    - If `SecurityContext.RunAsUser` is set, add `--user <uid>`.
-    - If `SecurityContext.Privileged` is true, add `--privileged`.
-    - For each cap in `AddCaps`, add `--cap-add <cap>`.
-    - For each cap in `DropCaps`, add `--cap-drop <cap>`.
-  - Create tests: verify podman args for each securityContext field.
-  - Acceptance: `go test -race ./internal/executor/` passes.
+- [ ] T51.2 Add CronJob HTTP endpoints  Owner: TBD  Est: 30m  verifies: [UC-045]
+  - Depends on: T51.1.
+  - Create `internal/api/cronjobs.go`:
+    - `GET /api/v1/cronjobs` -- lists all registered cron jobs as JSON array.
+    - `GET /api/v1/cronjobs/{name}` -- returns single cron job detail (404 if not found).
+    - `DELETE /api/v1/cronjobs/{name}` -- unregisters cron job (calls cronSched.Unregister).
+  - Extend the CronRegisterer interface in api to include List/Get/Unregister, or define a broader CronManager interface.
+  - Register routes in server.go.
+  - Create tests.
+  - Acceptance: `go test -race ./internal/api/` passes.
 
-### E48: Integration Wiring and Verification
+### E52: Node Info Endpoint
 
-- [x] T48.1 Update main.go for all new wiring  Owner: TBD  Est: 30m  verifies: [UC-037, UC-038, UC-039, UC-040, UC-041, UC-042, UC-043, UC-046]
-  - Depends on: T40.1, T40.2, T41.1, T41.2, T42.1, T42.2, T43.1, T44.1, T45.1, T46.1, T47.1, T47.2.
+- [ ] T52.1 Add node info HTTP endpoint  Owner: TBD  Est: 30m  verifies: [UC-050]
+  - Create `internal/api/node.go`:
+    - `GET /api/v1/node` returns JSON:
+      ```json
+      {
+        "hostname": "dgx-spark",
+        "os": "linux",
+        "arch": "arm64",
+        "cpu_cores": 72,
+        "memory_total_mb": 131072,
+        "gpu_model": "NVIDIA GH200",
+        "gpu_count": 1,
+        "gpu_device_ids": [0],
+        "gpu_memory_mb": 131072
+      }
+      ```
+  - Server needs access to `gpu.GPUInfo` and `gpu.SystemInfo` (pass at construction or store on Server struct).
+  - Register route in server.go.
+  - Create tests.
+  - Acceptance: `go test -race ./internal/api/` passes.
+
+### E53: Integration Wiring and Verification
+
+- [ ] T53.1 Wire GPU count into main.go and reconciler  Owner: TBD  Est: 30m  verifies: [UC-047, UC-048, UC-045, UC-050]
+  - Depends on: T49.1, T49.2, T49.3, T50.1, T50.2, T50.3, T51.1, T51.2, T52.1.
   - Update `cmd/spark/main.go`:
-    - Pass `cronSched` to `RegisterApplyHandler` and `api.NewServer`.
-    - Pass `scheduler` to `api.NewServer` and `RegisterDeleteHandler`.
-    - Implement manifest removal handler in watcher callback.
+    - Pass GPUCount through to scheduler.
+    - Pass GPUInfo and SystemInfo to api.NewServer for node endpoint.
+    - Wire CronManager interface to api.NewServer.
   - Acceptance: `go build ./...` and `go vet ./...` pass.
 
-- [x] T48.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
-  - Depends on: T48.1.
+- [ ] T53.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
+  - Depends on: T53.1.
   - Run `go test ./... -race -timeout 120s`. Zero failures.
   - Run `go vet ./...`. Zero warnings.
   - Acceptance: All tests pass, zero lint warnings.
 
-- [x] T48.3 Update design docs for v1.5.0  Owner: TBD  Est: 15m  verifies: [infrastructure]
-  - Depends on: T48.2.
-  - Update docs/design.md: note wiring fixes, securityContext support.
-  - Update README.md if any new user-facing behavior.
+- [ ] T53.3 Update design docs for v1.6.0  Owner: TBD  Est: 15m  verifies: [infrastructure]
+  - Depends on: T53.2.
+  - Update docs/design.md: GPU count model, liveness probes, CronJob endpoints, node endpoint.
+  - Update README.md: new endpoints documentation.
   - Acceptance: Docs accurately reflect current system.
 
 ## Parallel Work
@@ -247,58 +227,52 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 | Track | Tasks | Description |
 |-------|-------|-------------|
-| A: CronJob Registration | T40.1, T40.2 | Wire cron scheduler into NATS and HTTP apply |
-| B: Manifest Removal | T41.1, T41.2 | Handle file deletion in watcher |
-| C: Delete Resources | T42.1, T42.2 | Release scheduler allocations on delete |
-| D: Reconciler Fixes | T43.1, T44.1 | Restart counter + stuck pod recovery |
-| E: Executor Fixes | T45.1 | StreamPodLogs process cleanup |
-| F: Parser Fixes | T46.1, T47.1 | Ki suffix + securityContext parsing |
-| G: Security Context | T47.2 | Wire securityContext into executor (depends on T47.1) |
+| A: GPU Model | T49.1, T49.2, T49.3 | Resource model fix across manifest, scheduler, reconciler |
+| B: Probes | T50.1, T50.2, T50.3 | Probe types, executor methods, reconciler poller |
+| C: CronJob Mgmt | T51.1, T51.2 | CronScheduler List + HTTP endpoints |
+| D: Node Info | T52.1 | Node info HTTP endpoint |
 
-Sync point: T48.1 requires all tracks to complete before integration wiring.
+Sync point: T53.1 requires all tracks to complete before integration wiring.
 
 ### Waves
 
-### Wave 1: Independent Fixes (10 agents)
-- [x] T40.1 Wire CronJob registration into NATS apply handler  verifies: [UC-037]
-- [x] T40.2 Wire CronJob registration into HTTP apply handler  verifies: [UC-038]
-- [x] T41.2 Add source path tracking to state store  verifies: [UC-039]
-- [x] T42.1 Release scheduler resources on HTTP delete  verifies: [UC-040]
-- [x] T42.2 Release scheduler resources on NATS delete  verifies: [UC-040]
-- [x] T43.1 Increment restart counter in reconciler  verifies: [UC-041]
-- [x] T44.1 Handle StatusScheduled and StatusPreempted in reconciler  verifies: [UC-042]
-- [x] T45.1 Add cmd.Wait() to StreamPodLogs  verifies: [UC-046]
-- [x] T46.1 Add Ki suffix support to parseMemory  verifies: [infrastructure]
-- [x] T47.1 Add SecurityContext to ContainerSpec and parse from YAML  verifies: [UC-043]
+### Wave 1: Independent Components (8 agents)
+- [ ] T49.1 Add GPUCount to ResourceList and refactor parseGPU  verifies: [UC-047]
+- [ ] T49.2 Update scheduler to track GPU count  verifies: [UC-047]
+- [ ] T50.1 Add ProbeSpec to ContainerSpec and parse from YAML  verifies: [UC-048]
+- [ ] T50.2 Add probe executor methods  verifies: [UC-048]
+- [ ] T51.1 Add List method to CronScheduler  verifies: [UC-045]
+- [ ] T51.2 Add CronJob HTTP endpoints  verifies: [UC-045]
+- [ ] T52.1 Add node info HTTP endpoint  verifies: [UC-050]
+- [ ] T49.3 Update reconciler and heartbeat for GPU count  verifies: [UC-047]
 
-### Wave 2: Dependent Components (2 agents)
-- [x] T41.1 Implement manifest removal handler in main.go  verifies: [UC-039]
-- [x] T47.2 Wire security context into executor buildRunArgs  verifies: [UC-043]
+### Wave 2: Dependent Components (1 agent)
+- [ ] T50.3 Add probe poller to reconciler  verifies: [UC-048]
 
-Note: T41.1 depends on T41.2 (source path tracking). T47.2 depends on T47.1 (securityContext types).
+Note: T50.3 depends on T50.1 (probe types) and T50.2 (probe executor). T51.2 depends on T51.1 but can run in Wave 1 if assigned to the same agent sequentially.
 
 ### Wave 3: Integration and Verification (3 agents)
-- [x] T48.1 Update main.go for all new wiring  verifies: [UC-037, UC-038, UC-039, UC-040, UC-041, UC-042, UC-043, UC-046]
-- [x] T48.2 Run full test suite and lint  verifies: [infrastructure]
-- [x] T48.3 Update design docs for v1.5.0  verifies: [infrastructure]
+- [ ] T53.1 Wire GPU count into main.go and reconciler  verifies: [UC-047, UC-048, UC-045, UC-050]
+- [ ] T53.2 Run full test suite and lint  verifies: [infrastructure]
+- [ ] T53.3 Update design docs for v1.6.0  verifies: [infrastructure]
 
 ## Timeline and Milestones
 
 | ID | Milestone | Dependencies | Exit Criteria |
 |----|-----------|--------------|---------------|
-| M1 | CronJob registration works on all paths | T40.1, T40.2 | CronJob registers via NATS, HTTP, and filesystem |
-| M2 | Delete path complete | T41.1, T41.2, T42.1, T42.2 | Delete releases resources, manifest removal stops pods |
-| M3 | Reconciler hardened | T43.1, T44.1 | Restart counter works, stuck pods recover |
-| M4 | Wired, tested, documented | T48.1, T48.2, T48.3 | Full integration passes, docs updated |
+| M1 | GPU model correct | T49.1, T49.2, T49.3 | nvidia.com/gpu:2 allocates 2 device slots |
+| M2 | Liveness probes functional | T50.1, T50.2, T50.3 | Failed probe restarts container |
+| M3 | CronJob management | T51.1, T51.2 | GET /api/v1/cronjobs returns registered jobs |
+| M4 | Wired, tested, documented | T53.1, T53.2, T53.3 | Full integration passes, docs updated |
 
 ## Risk Register
 
 | ID | Risk | Impact | Likelihood | Mitigation |
 |----|------|--------|------------|------------|
-| R1 | Adding cronSched to NATS/HTTP handlers changes function signatures | Low | High | Keep the interface narrow: pass only the Register method, not the full scheduler. |
-| R2 | Source path tracking requires SQLite schema migration | Medium | High | Add column with ALTER TABLE ADD COLUMN. SQLite supports this without full migration. |
-| R3 | Manifest removal race with watcher poll interval | Low | Medium | Use store lookup by source path. If path was re-added between polls, the new manifest will re-apply. |
-| R4 | StatusPreempted -> Pending creates scheduling thrash | Medium | Low | Only reset to Pending once per reconcile cycle. The scheduler's anti-thrash logic (3 preemptions in 5 min) prevents loops. |
+| R1 | Changing GPUMemoryMB semantics breaks existing manifests | High | Medium | Keep GPUMemoryMB field but stop populating it from parseGPU. Existing manifests using nvidia.com/gpu will now use GPUCount. No behavior change for manifests not specifying GPU. |
+| R2 | Liveness probe polling adds overhead to reconciler loop | Medium | Low | Probes only checked for pods with LivenessProbe defined. Skip pods without probes. Poll interval >= 10s. |
+| R3 | HTTP probe to container localhost may fail due to network namespace | Medium | Medium | Containers in podman pods share the pod network. Use the pod's published port for HTTP probes, or use exec probes as the default recommendation. |
+| R4 | CronJob List() races with Register/Unregister | Low | Medium | CronScheduler already uses a mutex. List() acquires the same lock. |
 
 ## Operating Procedure
 
@@ -314,29 +288,26 @@ Note: T41.1 depends on T41.2 (source path tracking). T47.2 depends on T47.1 (sec
 - Rebase and merge (not squash, not merge commits).
 - Each commit is a small, logical unit touching one package.
 - HTTP tests use `httptest.NewServer` (no real network binding).
-- Bus tests use mock bus (no NATS dependency in CI).
-- Reconciler tests use stub executor and store.
+- Probe tests use stub executor (no podman dependency in CI).
+- GPU tests verify count-based allocation with mock device IDs.
 
 ## Progress Log
 
-### 2026-03-20: v1.5.0 complete
-- Wave 1 (10 tasks): All independent fixes merged. CronJob registration, source path tracking, scheduler resource release, restart counter, stuck pod recovery, StreamPodLogs cleanup, Ki suffix, securityContext parsing.
-- Wave 2 (2 tasks): Manifest removal handler and securityContext executor wiring merged.
-- Wave 3 (3 tasks): Wired cronSched and scheduler into NATS/HTTP handlers in main.go. Full test suite passes. Design docs updated.
-- All 15 tasks (T40.1--T48.3) complete. All 7 broken wiring paths fixed. 2 operational defects resolved. securityContext passthrough added.
-
 ### 2026-03-20: Plan created
-- Audited codebase post-v1.4.0 delivery. Found 7 broken wiring paths and 2 operational defects.
-- Updated use case manifest: UC-032 through UC-036 marked WIRED. Added UC-037 through UC-046 (7 BROKEN, 3 PLANNED).
-- Created plan for v1.5.0: 15 tasks across 3 waves (10+2+3 agents).
-- Prioritized wiring integrity over new features. Non-goals: envFrom, CronJob HTTP endpoints, probes.
+- Trimmed completed v1.5.0 plan. v1.5.0 knowledge preserved in docs/devlog.md (2026-03-20 entry) and docs/design.md.
+- Updated use case manifest: UC-037 through UC-046 marked WIRED. Added UC-047 through UC-050 as PLANNED.
+- Created plan for v1.6.0: GPU resource model fix, liveness probes, CronJob HTTP management, node info endpoint.
+- 12 tasks across 3 waves. 8 agents in Wave 1, 1 in Wave 2, 3 in Wave 3.
 
 ## Hand-off Notes
 
 - Spark is a single-binary Go pod orchestrator for GPU hosts. See docs/design.md for architecture.
-- v1.4.0 is complete: pod exec, port mapping, init containers, GPU device assignment, image management. All 36 use cases WIRED.
-- This plan fixes 7 broken wiring paths discovered during a post-v1.4.0 audit.
-- The core issue: NATS and HTTP apply handlers parse CronJobs but never register them. Delete handlers do not release scheduler resources. Reconciler does not handle stuck states.
+- v1.5.0 is complete: all 46 use cases WIRED. Zero broken wiring paths.
+- This plan adds four features: GPU count model, liveness probes, CronJob HTTP management, node info endpoint.
+- GPU model fix: `parseGPU()` currently returns raw count into `GPUMemoryMB`. Must add `GPUCount` field and use it instead.
+- Liveness probes: exec probes use `podman exec`, HTTP probes use stdlib `net/http`. Reconciler polls on each 5s tick.
+- CronJob management: `CronScheduler` needs `List()` and `Get()` methods. Three new HTTP routes.
+- Node info: expose `gpu.GPUInfo` and `gpu.SystemInfo` via `GET /api/v1/node`.
 - CI/CD is operational: GitHub Actions with build/test/vet/staticcheck + release-please + goreleaser.
 - DGX Spark target: `ssh ndungu@192.168.86.250` (Ubuntu arm64, NVIDIA Grace CPU, 1 GPU 128GB unified memory).
 

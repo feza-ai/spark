@@ -1,5 +1,24 @@
 # Spark Development Log
 
+## 2026-03-20: v1.5.0 Wiring Integrity and Reconciler Hardening
+
+**Type:** finding
+**Tags:** v1.5.0, wiring, reconciler, cron, securityContext, manifest-removal
+
+**Problem:** Post-v1.4.0 audit found 7 broken wiring paths (CronJob registration on NATS/HTTP, manifest removal no-op, delete not releasing scheduler resources, restart counter never incremented, stuck Scheduled/Preempted pods, StreamPodLogs zombie processes) plus missing Ki suffix parsing and securityContext support.
+**Root cause:** N/A -- audit-driven fix delivery.
+**Fix:** Delivered 15 tasks across 3 parallel waves (10+2+3 agents):
+- CronJob registration on all ingestion paths (NATS, HTTP, filesystem).
+- Manifest file removal stops pods, releases resources, unregisters cron jobs.
+- HTTP and NATS delete releases scheduler resources immediately.
+- Restart counter increments on reconciler re-queue.
+- Stuck StatusScheduled (30s timeout) and StatusPreempted pods recovered.
+- StreamPodLogs reaps child processes via cmdReadCloser wrapping cmd.Wait().
+- parseMemory Ki/K suffix support added.
+- SecurityContext (runAsUser, privileged, capabilities add/drop) parsed and forwarded to podman.
+- Source path tracking in state store for manifest-to-pod association.
+**Impact:** 46 use cases (UC-001 through UC-046) all WIRED. Zero broken use cases. 13 packages, all tests pass.
+
 ## 2026-03-20: v1.4.0 Container Operations and GPU Device Management
 
 **Type:** finding
