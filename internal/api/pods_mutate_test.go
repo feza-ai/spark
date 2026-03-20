@@ -72,7 +72,7 @@ func newMutateTestServer(t *testing.T) (*Server, *state.PodStore, *stubExecutor)
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
 	)
 	exec := &stubExecutor{}
-	srv := NewServer(store, tracker, exec, nil, nil, nil)
+	srv := NewServer(store, tracker, exec, nil, nil, nil, "")
 	return srv, store, exec
 }
 
