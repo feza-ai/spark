@@ -19,6 +19,13 @@ type EnvVar struct {
 	Value string
 }
 
+// ContainerPort describes a port exposed by a container.
+type ContainerPort struct {
+	ContainerPort int
+	HostPort      int
+	Protocol      string // defaults to "tcp"
+}
+
 // VolumeMount describes a mount point for a volume in a container.
 type VolumeMount struct {
 	Name      string
@@ -40,6 +47,7 @@ type ContainerSpec struct {
 	Command      []string
 	Args         []string
 	Env          []EnvVar
+	Ports        []ContainerPort
 	VolumeMounts []VolumeMount
 	Resources    ResourceRequirements
 }
