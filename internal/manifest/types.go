@@ -4,6 +4,7 @@ package manifest
 type ResourceList struct {
 	CPUMillis   int
 	MemoryMB    int
+	GPUCount    int
 	GPUMemoryMB int
 }
 
@@ -86,6 +87,7 @@ func (p *PodSpec) TotalRequests() ResourceList {
 	for _, c := range p.Containers {
 		total.CPUMillis += c.Resources.Requests.CPUMillis
 		total.MemoryMB += c.Resources.Requests.MemoryMB
+		total.GPUCount += c.Resources.Requests.GPUCount
 		total.GPUMemoryMB += c.Resources.Requests.GPUMemoryMB
 	}
 	return total

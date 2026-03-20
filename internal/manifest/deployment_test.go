@@ -181,8 +181,8 @@ spec:
 		if c.Resources.Limits.MemoryMB != 16384 {
 			t.Errorf("pod[%d] limits.memory = %d, want 16384", i, c.Resources.Limits.MemoryMB)
 		}
-		if c.Resources.Limits.GPUMemoryMB != 1 {
-			t.Errorf("pod[%d] limits.gpu = %d, want 1", i, c.Resources.Limits.GPUMemoryMB)
+		if c.Resources.Limits.GPUCount != 1 {
+			t.Errorf("pod[%d] limits.gpuCount = %d, want 1", i, c.Resources.Limits.GPUCount)
 		}
 
 		if pod.PriorityClassName != "normal" {
