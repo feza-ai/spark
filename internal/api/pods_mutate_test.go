@@ -85,7 +85,7 @@ func newMutateTestServer(t *testing.T) (*Server, *state.PodStore, *stubExecutor)
 	nil, 0,
 	)
 	exec := &stubExecutor{}
-	srv := NewServer(store, tracker, exec, nil, nil, nil, "")
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "")
 	return srv, store, exec
 }
 

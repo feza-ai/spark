@@ -46,6 +46,17 @@ func (s *Server) handleApplyPod(w http.ResponseWriter, r *http.Request) {
 		pods = append(pods, podStatus{Name: pod.Name, Status: "pending"})
 	}
 
+	if s.cronSched != nil {
+		for _, cj := range result.CronJobs {
+			if err := s.cronSched.Register(cj); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"error": "cronjob registration failed: " + err.Error()})
+				return
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{"pods": pods})
