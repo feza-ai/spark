@@ -62,6 +62,14 @@ func parsePodFromMap(specMap map[string]interface{}, priorityClasses map[string]
 
 	pod.TerminationGracePeriodSeconds = getInt(specMap, "terminationGracePeriodSeconds")
 
+	for _, item := range getList(specMap, "initContainers") {
+		cm, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		pod.InitContainers = append(pod.InitContainers, parseContainer(cm))
+	}
+
 	for _, item := range getList(specMap, "containers") {
 		cm, ok := item.(map[string]interface{})
 		if !ok {
