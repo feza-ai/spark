@@ -40,6 +40,7 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 	s.registerPodMutateRoutes()
 	s.registerPodLogRoutes()
 	s.mux.HandleFunc("GET /api/v1/pods/{name}/events", s.handlePodEvents)
+	s.mux.HandleFunc("POST /api/v1/pods/{name}/exec", s.handlePodExec)
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	if token != "" {
