@@ -168,6 +168,48 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 	return pods, evtRows.Err()
 }
 
+// ListEvents returns events for a pod, optionally filtered by time.
+// If since is zero, all events for the pod are returned.
+// Returns an empty slice (not nil) if no events are found.
+func (s *SQLiteStore) ListEvents(podName string, since time.Time) ([]PodEvent, error) {
+	var rows *sql.Rows
+	var err error
+	if since.IsZero() {
+		rows, err = s.db.Query(
+			`SELECT pod_name, time, type, message FROM events WHERE pod_name = ? ORDER BY time ASC`,
+			podName,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT pod_name, time, type, message FROM events WHERE pod_name = ? AND time >= ? ORDER BY time ASC`,
+			podName, since.Format(time.RFC3339),
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]PodEvent, 0)
+	for rows.Next() {
+		var pn, timeStr, typ string
+		var message sql.NullString
+		if err := rows.Scan(&pn, &timeStr, &typ, &message); err != nil {
+			return nil, err
+		}
+		t, _ := time.Parse(time.RFC3339, timeStr)
+		events = append(events, PodEvent{
+			Time:    t,
+			Type:    typ,
+			Message: message.String,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 // DeletePod removes a pod and its events (via CASCADE).
 func (s *SQLiteStore) DeletePod(name string) error {
 	_, err := s.db.Exec(`DELETE FROM pods WHERE name = ?`, name)
