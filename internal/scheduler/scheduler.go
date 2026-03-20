@@ -3,6 +3,7 @@ package scheduler
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
@@ -43,6 +44,9 @@ type Scheduler struct {
 	pods        map[string]PodInfo
 	preemptions map[string]*preemptionRecord
 	now         func() time.Time // injectable clock for testing
+
+	scheduleAttempts int64 // atomic counter for Schedule() calls
+	preemptionCount  int64 // atomic counter for executed preemptions
 }
 
 // NewScheduler creates a scheduler backed by a resource tracker.
@@ -58,6 +62,8 @@ func NewScheduler(tracker *ResourceTracker) *Scheduler {
 // Schedule attempts to schedule a pod. Returns Scheduled if resources fit,
 // Preempting with victim list if preemption is possible, or Pending otherwise.
 func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
+	atomic.AddInt64(&s.scheduleAttempts, 1)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -159,6 +165,16 @@ func (s *Scheduler) isAntiThrashed(name string, now time.Time) bool {
 		}
 	}
 	return count > 3
+}
+
+// ScheduleAttempts returns the total number of Schedule() calls.
+func (s *Scheduler) ScheduleAttempts() int64 {
+	return atomic.LoadInt64(&s.scheduleAttempts)
+}
+
+// PreemptionCount returns the total number of executed preemptions.
+func (s *Scheduler) PreemptionCount() int64 {
+	return atomic.LoadInt64(&s.preemptionCount)
 }
 
 // recordPreemption records a preemption event for anti-thrash tracking.
