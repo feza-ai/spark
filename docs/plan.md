@@ -182,7 +182,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
     - TestAuth_Disabled: empty token string, all requests pass through.
   - Acceptance: `go test -race ./internal/api/` passes. Auth middleware correctly gates access.
 
-- [ ] T28.2 Wire auth middleware into server  Owner: TBD  Est: 15m  verifies: [UC-027]
+- [x] T28.2 Wire auth middleware into server  Owner: TBD  Est: 15m  verifies: [UC-027]
   - Depends on: T28.1.
   - Update `api.NewServer` signature to accept an optional token string parameter.
   - If token is non-empty, wrap `s.mux` with `AuthMiddleware.Wrap()` in `ServeHTTP()`.
@@ -209,7 +209,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
     - TestStreamPodLogs_Args: verify --follow flag included.
   - Acceptance: `go test -race ./internal/executor/` passes.
 
-- [ ] T29.2 Add pod logs HTTP endpoint in internal/api  Owner: TBD  Est: 45m  verifies: [UC-028]
+- [x] T29.2 Add pod logs HTTP endpoint in internal/api  Owner: TBD  Est: 45m  verifies: [UC-028]
   - Depends on: T29.1.
   - Create `internal/api/pods_logs.go`:
     - `GET /api/v1/pods/{name}/logs` handler.
@@ -246,7 +246,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
     - TestListEvents_NoPod: list events for nonexistent pod, verify empty slice (not error).
   - Acceptance: `go test -race ./internal/state/` passes.
 
-- [ ] T30.2 Add pod events HTTP endpoint in internal/api  Owner: TBD  Est: 30m  verifies: [UC-029]
+- [x] T30.2 Add pod events HTTP endpoint in internal/api  Owner: TBD  Est: 30m  verifies: [UC-029]
   - Depends on: T30.1.
   - Create `internal/api/pods_events.go`:
     - `GET /api/v1/pods/{name}/events` handler.
@@ -296,7 +296,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 ### E33: Integration Wiring
 
-- [ ] T33.1 Wire metrics, auth, logs, events, log format, and emptyDir into main.go  Owner: TBD  Est: 45m  verifies: [UC-026, UC-027, UC-028, UC-029, UC-030, UC-031]
+- [x] T33.1 Wire metrics, auth, logs, events, log format, and emptyDir into main.go  Owner: TBD  Est: 45m  verifies: [UC-026, UC-027, UC-028, UC-029, UC-030, UC-031]
   - Depends on: T27.1, T27.2, T27.3, T28.1, T28.2, T29.1, T29.2, T30.1, T30.2, T31.1, T32.1.
   - Wire metrics collector into api.Server.
   - Wire auth middleware token into api.Server.
@@ -305,7 +305,7 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
   - Update `deploy/spark.service` to include new flags in documentation comments.
   - Acceptance: Spark starts with all new features. `go build ./...` and `go vet ./...` pass.
 
-- [ ] T33.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
+- [x] T33.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
   - Depends on: T33.1.
   - Run `go test ./... -race -timeout 120s`. Zero failures.
   - Run `go vet ./...`. Zero warnings.
@@ -353,13 +353,13 @@ Sync point: T33.1 requires all tracks to complete before wiring.
 - [x] T27.3 Add /metrics HTTP handler in internal/api  verifies: [UC-026]
 
 ### Wave 2: HTTP Handlers and Wiring (4 agents)
-- [ ] T28.2 Wire auth middleware into server  verifies: [UC-027]
-- [ ] T29.2 Add pod logs HTTP endpoint in internal/api  verifies: [UC-028]
-- [ ] T30.2 Add pod events HTTP endpoint in internal/api  verifies: [UC-029]
-- [ ] T33.1 Wire metrics, auth, logs, events, log format, and emptyDir into main.go  verifies: [UC-026, UC-027, UC-028, UC-029, UC-030, UC-031]
+- [x] T28.2 Wire auth middleware into server  verifies: [UC-027]
+- [x] T29.2 Add pod logs HTTP endpoint in internal/api  verifies: [UC-028]
+- [x] T30.2 Add pod events HTTP endpoint in internal/api  verifies: [UC-029]
+- [x] T33.1 Wire metrics, auth, logs, events, log format, and emptyDir into main.go  verifies: [UC-026, UC-027, UC-028, UC-029, UC-030, UC-031]
 
 ### Wave 3: Verification (2 agents)
-- [ ] T33.2 Run full test suite and lint  verifies: [infrastructure]
+- [x] T33.2 Run full test suite and lint  verifies: [infrastructure]
 - [ ] T33.3 Update README and design docs for v1.3.0  verifies: [infrastructure]
 
 Note: T27.3 depends on T27.1 (needs collector) but can run in Wave 1 if T27.1 completes first or if the agent runs them sequentially. T28.2 depends on T28.1. T29.2 depends on T29.1. T30.2 depends on T30.1. T33.1 depends on all Wave 1 and Wave 2 tasks.
