@@ -564,6 +564,113 @@ func TestReconcileRunningExitCodes(t *testing.T) {
 	}
 }
 
+func TestReconcileRunningIncrementsRestarts(t *testing.T) {
+	tests := []struct {
+		name          string
+		restartPolicy string
+		backoffLimit  int
+		exitCode      int
+		wantRestarts  int
+	}{
+		{
+			name:          "Always/exit0 increments restarts",
+			restartPolicy: "Always",
+			exitCode:      0,
+			wantRestarts:  1,
+		},
+		{
+			name:          "Always/exit1 increments restarts",
+			restartPolicy: "Always",
+			exitCode:      1,
+			wantRestarts:  1,
+		},
+		{
+			name:          "OnFailure/exit1 increments restarts",
+			restartPolicy: "OnFailure",
+			backoffLimit:  3,
+			exitCode:      1,
+			wantRestarts:  1,
+		},
+		{
+			name:          "Never/exit0 no restart increment",
+			restartPolicy: "Never",
+			exitCode:      0,
+			wantRestarts:  0,
+		},
+		{
+			name:          "Never/exit1 no restart increment",
+			restartPolicy: "Never",
+			exitCode:      1,
+			wantRestarts:  0,
+		},
+		{
+			name:          "OnFailure/exit0 no restart increment",
+			restartPolicy: "OnFailure",
+			backoffLimit:  3,
+			exitCode:      0,
+			wantRestarts:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := state.NewPodStore()
+			sched := newTestScheduler()
+			exec := newStubExecutor()
+			r := NewReconciler(store, sched, exec, time.Second)
+
+			spec := testPodSpec("rst-"+tt.name, tt.restartPolicy, tt.backoffLimit)
+			store.Apply(spec)
+
+			// Tick 1: schedule and create.
+			r.reconcileOnce(context.Background())
+
+			// Simulate exit.
+			exec.setStatus("rst-"+tt.name, executor.Status{Running: false, ExitCode: tt.exitCode})
+
+			// Tick 2: detect exit.
+			r.reconcileOnce(context.Background())
+
+			rec, ok := store.Get("rst-" + tt.name)
+			if !ok {
+				t.Fatal("pod not found")
+			}
+			if rec.Restarts != tt.wantRestarts {
+				t.Fatalf("expected Restarts=%d, got %d", tt.wantRestarts, rec.Restarts)
+			}
+		})
+	}
+}
+
+func TestReconcileRunningMultipleRestartsAccumulate(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("svc-multi", "Always", 0)
+	store.Apply(spec)
+
+	for i := 0; i < 3; i++ {
+		// Schedule and create.
+		r.reconcileOnce(context.Background())
+
+		// Simulate crash.
+		exec.setStatus("svc-multi", executor.Status{Running: false, ExitCode: 1})
+
+		// Detect crash, re-queue.
+		r.reconcileOnce(context.Background())
+	}
+
+	rec, ok := store.Get("svc-multi")
+	if !ok {
+		t.Fatal("pod not found")
+	}
+	if rec.Restarts != 3 {
+		t.Fatalf("expected Restarts=3 after 3 crash cycles, got %d", rec.Restarts)
+	}
+}
+
 func TestOnStatusChangeCallback(t *testing.T) {
 	store := state.NewPodStore()
 	sched := newTestScheduler()
