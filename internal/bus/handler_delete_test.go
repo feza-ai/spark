@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/feza-ai/spark/internal/executor"
@@ -43,6 +44,14 @@ func (e *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, err
 
 func (e *stubExecutor) PodStats(_ context.Context, _ string) (executor.PodResourceUsage, error) {
 	return executor.PodResourceUsage{}, nil
+}
+
+func (e *stubExecutor) PodLogs(_ context.Context, _ string, _ int) ([]byte, error) {
+	return nil, nil
+}
+
+func (e *stubExecutor) StreamPodLogs(_ context.Context, _ string, _ int) (io.ReadCloser, error) {
+	return nil, nil
 }
 
 func TestDeleteHandler_ExistingPod(t *testing.T) {
