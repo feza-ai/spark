@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -281,6 +282,10 @@ func main() {
 	slog.Info("heartbeat publisher started", "interval", *heartbeatInterval)
 
 	// 16. Start directory watcher.
+	// Track which cron jobs came from which manifest file.
+	cronByPath := make(map[string][]string) // path -> cronjob names
+	var cronByPathMu sync.Mutex
+
 	go watcher.Watch(ctx, *manifestDir, func(event watcher.WatchEvent) {
 		switch event.Type {
 		case watcher.Added, watcher.Modified:
@@ -291,22 +296,56 @@ func main() {
 			}
 			for _, pod := range result.Pods {
 				store.Apply(pod)
-				slog.Info("applied pod from file", "pod", pod.Name, "path", event.Path)
 				if podRec, ok := store.Get(pod.Name); ok {
+					podRec.SourcePath = event.Path
+					store.SetSourcePath(pod.Name, event.Path)
 					if err := sqlStore.SavePod(&podRec); err != nil {
 						slog.Error("failed to persist applied pod", "pod", pod.Name, "error", err)
 					}
 				}
+				slog.Info("applied pod from file", "pod", pod.Name, "path", event.Path)
 			}
+			cronByPathMu.Lock()
+			var cronNames []string
 			for _, cj := range result.CronJobs {
 				if err := cronSched.Register(cj); err != nil {
 					slog.Error("failed to register cronjob", "name", cj.Name, "error", err)
 				} else {
+					cronNames = append(cronNames, cj.Name)
 					slog.Info("registered cronjob from file", "name", cj.Name, "path", event.Path)
 				}
 			}
+			cronByPath[event.Path] = cronNames
+			cronByPathMu.Unlock()
 		case watcher.Removed:
-			slog.Info("manifest removed", "path", event.Path)
+			slog.Info("manifest removed, cleaning up", "path", event.Path)
+
+			// Remove pods that came from this manifest file.
+			for _, podRec := range store.ListBySourcePath(event.Path) {
+				name := podRec.Spec.Name
+				gracePeriod := podRec.Spec.TerminationGracePeriodSeconds
+				if gracePeriod == 0 {
+					gracePeriod = 10
+				}
+				if err := exec.StopPod(context.Background(), name, gracePeriod); err != nil {
+					slog.Error("failed to stop pod on manifest removal", "pod", name, "error", err)
+				}
+				if err := exec.RemovePod(context.Background(), name); err != nil {
+					slog.Error("failed to remove pod on manifest removal", "pod", name, "error", err)
+				}
+				store.Delete(name)
+				sched.RemovePod(name)
+				slog.Info("removed pod due to manifest deletion", "pod", name, "path", event.Path)
+			}
+
+			// Unregister cron jobs from this manifest file.
+			cronByPathMu.Lock()
+			for _, cronName := range cronByPath[event.Path] {
+				cronSched.Unregister(cronName)
+				slog.Info("unregistered cronjob due to manifest deletion", "name", cronName, "path", event.Path)
+			}
+			delete(cronByPath, event.Path)
+			cronByPathMu.Unlock()
 		}
 	})
 	slog.Info("directory watcher started", "dir", *manifestDir)
