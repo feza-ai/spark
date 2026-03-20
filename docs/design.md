@@ -14,10 +14,10 @@ internal/
   executor/         Podman interface: pod create, exec, stop, logs, image list/pull, stats, port mapping, init containers
   gpu/              GPU detection (nvidia-smi), device ID enumeration, and system resource detection
   lifecycle/        Graceful shutdown coordinator with pod draining
-  manifest/         K8s YAML parser (Pod, Job, CronJob, Deployment, StatefulSet) with ports and init containers
-  reconciler/       Desired-state reconciliation loop, pod recovery, resource sync
+  manifest/         K8s YAML parser (Pod, Job, CronJob, Deployment, StatefulSet) with ports, init containers, securityContext
+  reconciler/       Desired-state reconciliation loop, pod recovery, resource sync, stuck pod recovery (StatusScheduled/StatusPreempted)
   scheduler/        Resource-aware scheduling with priority preemption and GPU device slot tracking
-  state/            Pod state store (in-memory + SQLite WAL persistence)
+  state/            Pod state store (in-memory + SQLite WAL persistence) with source path tracking
   watcher/          Manifest directory poller (SHA-256 change detection)
 ```
 
@@ -28,8 +28,9 @@ internal/
 3. Scheduler checks resource availability (CPU, memory, GPU devices); preempts lower-priority pods if needed.
 4. Executor runs init containers sequentially, then creates main containers in podman pod(s) on the shared `spark-net` network with port mappings.
 5. State store tracks desired vs actual state.
-6. Reconciler (5s loop) restarts crashed services and retries failed jobs.
+6. Reconciler (5s loop) restarts crashed services and retries failed jobs. Recovers stuck StatusScheduled/StatusPreempted pods. Tracks restart counts.
 7. Events, logs, and heartbeats publish over NATS.
+8. Manifest file removal triggers pod stop, resource release, and cron job unregistration.
 
 ## Key Invariants
 
@@ -41,6 +42,10 @@ internal/
 - GPU device isolation: scheduler assigns specific device IDs via `NVIDIA_VISIBLE_DEVICES`; `--gpu-max` limits concurrent GPU pods.
 - Init containers run sequentially to completion before main containers start. Any init failure aborts the pod.
 - Container ports declared in manifests are mapped via `podman pod create --publish`.
+- SecurityContext: runAsUser, privileged, capabilities (add/drop) are forwarded to podman container args.
+- Delete (HTTP, NATS, manifest removal) releases scheduler resources immediately.
+- CronJob registration works on all ingestion paths: NATS apply, HTTP apply, filesystem watcher.
+- StreamPodLogs properly reaps child processes via cmd.Wait() on context cancellation.
 
 ## Interfaces
 

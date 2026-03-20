@@ -1,6 +1,6 @@
 # Spark: Wiring Integrity and Reconciler Hardening (v1.5.0)
 
-## Status: In Progress
+## Status: Complete
 
 ## Context
 
@@ -101,14 +101,14 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E40: CronJob Registration Fixes
 
-- [ ] T40.1 Wire CronJob registration into NATS apply handler  Owner: TBD  Est: 30m  verifies: [UC-037]
+- [x] T40.1 Wire CronJob registration into NATS apply handler  Owner: TBD  Est: 30m  verifies: [UC-037]
   - Update `internal/bus/handler_apply.go` `RegisterApplyHandler` to accept a `cronSched` parameter.
   - After iterating CronJobs, call `cronSched.Register(cj)` for each.
   - Update `main.go` to pass `cronSched` to `RegisterApplyHandler`.
   - Create tests: NATS apply with CronJob manifest calls Register.
   - Acceptance: `go test -race ./internal/bus/` passes. CronJob registered.
 
-- [ ] T40.2 Wire CronJob registration into HTTP apply handler  Owner: TBD  Est: 30m  verifies: [UC-038]
+- [x] T40.2 Wire CronJob registration into HTTP apply handler  Owner: TBD  Est: 30m  verifies: [UC-038]
   - Add `cronSched` field to `api.Server` struct.
   - Update `handleApplyPod` to call `cronSched.Register(cj)` for each CronJob in `result.CronJobs`.
   - Update `NewServer` to accept and store `cronSched`.
@@ -118,7 +118,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E41: Manifest Removal Handling
 
-- [ ] T41.1 Implement manifest removal handler in main.go  Owner: TBD  Est: 45m  verifies: [UC-039]
+- [x] T41.1 Implement manifest removal handler in main.go  Owner: TBD  Est: 45m  verifies: [UC-039]
   - In the watcher `Removed` case in `main.go`:
     1. Track which pods and cron jobs came from each manifest file path (add a `sourcePath` field to PodRecord or maintain a map in main.go).
     2. On Removed event: look up pods by source path, call `executor.StopPod`, `executor.RemovePod`, `store.Delete`, `scheduler.RemovePod` for each.
@@ -127,7 +127,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
   - Create tests: manifest removal stops pods and unregisters cron jobs.
   - Acceptance: `go test -race ./internal/cron/` and `go build ./cmd/spark` pass.
 
-- [ ] T41.2 Add source path tracking to state store  Owner: TBD  Est: 30m  verifies: [UC-039]
+- [x] T41.2 Add source path tracking to state store  Owner: TBD  Est: 30m  verifies: [UC-039]
   - Add `SourcePath string` field to `state.PodRecord`.
   - Set it when a pod is applied from the watcher (pass the file path through to `store.Apply`).
   - Add `ListBySourcePath(path string) []PodRecord` query method to `PodStore`.
@@ -137,7 +137,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E42: Delete Releases Scheduler Resources
 
-- [ ] T42.1 Release scheduler resources on HTTP delete  Owner: TBD  Est: 30m  verifies: [UC-040]
+- [x] T42.1 Release scheduler resources on HTTP delete  Owner: TBD  Est: 30m  verifies: [UC-040]
   - Update `handleDeletePod` in `internal/api/pods_mutate.go` to call `s.scheduler.RemovePod(name)` after stopping the pod.
   - Add `scheduler` field to `api.Server` struct (or use an interface with RemovePod method).
   - Update `NewServer` to accept and store the scheduler reference.
@@ -145,7 +145,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
   - Create tests: delete pod, verify RemovePod called on scheduler.
   - Acceptance: `go test -race ./internal/api/` passes.
 
-- [ ] T42.2 Release scheduler resources on NATS delete  Owner: TBD  Est: 30m  verifies: [UC-040]
+- [x] T42.2 Release scheduler resources on NATS delete  Owner: TBD  Est: 30m  verifies: [UC-040]
   - Update `internal/bus/handler_delete.go` `RegisterDeleteHandler` to accept a scheduler parameter.
   - Call `scheduler.RemovePod(name)` after stopping the pod.
   - Replace `context.TODO()` with a proper context from the bus handler.
@@ -155,7 +155,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E43: Restart Counter Fix
 
-- [ ] T43.1 Increment restart counter in reconciler  Owner: TBD  Est: 30m  verifies: [UC-041]
+- [x] T43.1 Increment restart counter in reconciler  Owner: TBD  Est: 30m  verifies: [UC-041]
   - In `reconcileRunning` in `internal/reconciler/reconciler.go`:
     - When re-queuing a pod to `StatusPending` (policy Always or OnFailure), call `r.store.IncrementRestarts(pod.Spec.Name)`.
   - Add `IncrementRestarts(name string)` method to `state.PodStore` if it does not exist (distinct from `IncrementRetry`).
@@ -165,7 +165,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E44: Stuck Pod Recovery
 
-- [ ] T44.1 Handle StatusScheduled and StatusPreempted in reconciler  Owner: TBD  Est: 45m  verifies: [UC-042]
+- [x] T44.1 Handle StatusScheduled and StatusPreempted in reconciler  Owner: TBD  Est: 45m  verifies: [UC-042]
   - In `reconcileOnce` in `internal/reconciler/reconciler.go`, add cases for:
     - `StatusScheduled`: check if the pod exists in podman. If running, update to `StatusRunning`. If not found, reset to `StatusPending` to retry scheduling.
     - `StatusPreempted`: reset to `StatusPending` so the scheduler can re-evaluate. The preempted pod will be re-scheduled when resources become available.
@@ -175,7 +175,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E45: StreamPodLogs Process Cleanup
 
-- [ ] T45.1 Add cmd.Wait() to StreamPodLogs  Owner: TBD  Est: 15m  verifies: [UC-046]
+- [x] T45.1 Add cmd.Wait() to StreamPodLogs  Owner: TBD  Est: 15m  verifies: [UC-046]
   - In `internal/executor/logs.go` `StreamPodLogs`:
     - After the context is done or the scanner loop exits, call `cmd.Wait()` to reap the child process.
     - Use a deferred call or a goroutine that waits on context cancellation.
@@ -184,7 +184,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E46: parseMemory Ki Suffix
 
-- [ ] T46.1 Add Ki suffix support to parseMemory  Owner: TBD  Est: 15m  verifies: [infrastructure]
+- [x] T46.1 Add Ki suffix support to parseMemory  Owner: TBD  Est: 15m  verifies: [infrastructure]
   - In `internal/manifest/yaml.go` `parseMemory`:
     - Add case for `Ki` suffix: parse value, divide by 1024 to get MB (e.g., 1024Ki = 1 MB, 512Ki = 0 MB).
     - Add case for `K` suffix: parse value, divide by 1000 to get MB.
@@ -193,7 +193,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E47: Security Context Passthrough
 
-- [ ] T47.1 Add SecurityContext to ContainerSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-043]
+- [x] T47.1 Add SecurityContext to ContainerSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-043]
   - Add `SecurityContext` struct to `internal/manifest/types.go`:
     ```go
     type SecurityContext struct {
@@ -209,7 +209,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
   - Create tests: parse securityContext with all fields, partial fields, missing.
   - Acceptance: `go test -race ./internal/manifest/` passes.
 
-- [ ] T47.2 Wire security context into executor buildRunArgs  Owner: TBD  Est: 30m  verifies: [UC-043]
+- [x] T47.2 Wire security context into executor buildRunArgs  Owner: TBD  Est: 30m  verifies: [UC-043]
   - Depends on: T47.1.
   - In `internal/executor/podman.go` `buildRunArgs`:
     - If `SecurityContext.RunAsUser` is set, add `--user <uid>`.
@@ -221,7 +221,7 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
 
 ### E48: Integration Wiring and Verification
 
-- [ ] T48.1 Update main.go for all new wiring  Owner: TBD  Est: 30m  verifies: [UC-037, UC-038, UC-039, UC-040, UC-041, UC-042, UC-043, UC-046]
+- [x] T48.1 Update main.go for all new wiring  Owner: TBD  Est: 30m  verifies: [UC-037, UC-038, UC-039, UC-040, UC-041, UC-042, UC-043, UC-046]
   - Depends on: T40.1, T40.2, T41.1, T41.2, T42.1, T42.2, T43.1, T44.1, T45.1, T46.1, T47.1, T47.2.
   - Update `cmd/spark/main.go`:
     - Pass `cronSched` to `RegisterApplyHandler` and `api.NewServer`.
@@ -229,13 +229,13 @@ Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the code
     - Implement manifest removal handler in watcher callback.
   - Acceptance: `go build ./...` and `go vet ./...` pass.
 
-- [ ] T48.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
+- [x] T48.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
   - Depends on: T48.1.
   - Run `go test ./... -race -timeout 120s`. Zero failures.
   - Run `go vet ./...`. Zero warnings.
   - Acceptance: All tests pass, zero lint warnings.
 
-- [ ] T48.3 Update design docs for v1.5.0  Owner: TBD  Est: 15m  verifies: [infrastructure]
+- [x] T48.3 Update design docs for v1.5.0  Owner: TBD  Est: 15m  verifies: [infrastructure]
   - Depends on: T48.2.
   - Update docs/design.md: note wiring fixes, securityContext support.
   - Update README.md if any new user-facing behavior.
@@ -260,27 +260,27 @@ Sync point: T48.1 requires all tracks to complete before integration wiring.
 ### Waves
 
 ### Wave 1: Independent Fixes (10 agents)
-- [ ] T40.1 Wire CronJob registration into NATS apply handler  verifies: [UC-037]
-- [ ] T40.2 Wire CronJob registration into HTTP apply handler  verifies: [UC-038]
-- [ ] T41.2 Add source path tracking to state store  verifies: [UC-039]
-- [ ] T42.1 Release scheduler resources on HTTP delete  verifies: [UC-040]
-- [ ] T42.2 Release scheduler resources on NATS delete  verifies: [UC-040]
-- [ ] T43.1 Increment restart counter in reconciler  verifies: [UC-041]
-- [ ] T44.1 Handle StatusScheduled and StatusPreempted in reconciler  verifies: [UC-042]
-- [ ] T45.1 Add cmd.Wait() to StreamPodLogs  verifies: [UC-046]
-- [ ] T46.1 Add Ki suffix support to parseMemory  verifies: [infrastructure]
-- [ ] T47.1 Add SecurityContext to ContainerSpec and parse from YAML  verifies: [UC-043]
+- [x] T40.1 Wire CronJob registration into NATS apply handler  verifies: [UC-037]
+- [x] T40.2 Wire CronJob registration into HTTP apply handler  verifies: [UC-038]
+- [x] T41.2 Add source path tracking to state store  verifies: [UC-039]
+- [x] T42.1 Release scheduler resources on HTTP delete  verifies: [UC-040]
+- [x] T42.2 Release scheduler resources on NATS delete  verifies: [UC-040]
+- [x] T43.1 Increment restart counter in reconciler  verifies: [UC-041]
+- [x] T44.1 Handle StatusScheduled and StatusPreempted in reconciler  verifies: [UC-042]
+- [x] T45.1 Add cmd.Wait() to StreamPodLogs  verifies: [UC-046]
+- [x] T46.1 Add Ki suffix support to parseMemory  verifies: [infrastructure]
+- [x] T47.1 Add SecurityContext to ContainerSpec and parse from YAML  verifies: [UC-043]
 
 ### Wave 2: Dependent Components (2 agents)
-- [ ] T41.1 Implement manifest removal handler in main.go  verifies: [UC-039]
-- [ ] T47.2 Wire security context into executor buildRunArgs  verifies: [UC-043]
+- [x] T41.1 Implement manifest removal handler in main.go  verifies: [UC-039]
+- [x] T47.2 Wire security context into executor buildRunArgs  verifies: [UC-043]
 
 Note: T41.1 depends on T41.2 (source path tracking). T47.2 depends on T47.1 (securityContext types).
 
 ### Wave 3: Integration and Verification (3 agents)
-- [ ] T48.1 Update main.go for all new wiring  verifies: [UC-037, UC-038, UC-039, UC-040, UC-041, UC-042, UC-043, UC-046]
-- [ ] T48.2 Run full test suite and lint  verifies: [infrastructure]
-- [ ] T48.3 Update design docs for v1.5.0  verifies: [infrastructure]
+- [x] T48.1 Update main.go for all new wiring  verifies: [UC-037, UC-038, UC-039, UC-040, UC-041, UC-042, UC-043, UC-046]
+- [x] T48.2 Run full test suite and lint  verifies: [infrastructure]
+- [x] T48.3 Update design docs for v1.5.0  verifies: [infrastructure]
 
 ## Timeline and Milestones
 
@@ -319,6 +319,12 @@ Note: T41.1 depends on T41.2 (source path tracking). T47.2 depends on T47.1 (sec
 
 ## Progress Log
 
+### 2026-03-20: v1.5.0 complete
+- Wave 1 (10 tasks): All independent fixes merged. CronJob registration, source path tracking, scheduler resource release, restart counter, stuck pod recovery, StreamPodLogs cleanup, Ki suffix, securityContext parsing.
+- Wave 2 (2 tasks): Manifest removal handler and securityContext executor wiring merged.
+- Wave 3 (3 tasks): Wired cronSched and scheduler into NATS/HTTP handlers in main.go. Full test suite passes. Design docs updated.
+- All 15 tasks (T40.1--T48.3) complete. All 7 broken wiring paths fixed. 2 operational defects resolved. securityContext passthrough added.
+
 ### 2026-03-20: Plan created
 - Audited codebase post-v1.4.0 delivery. Found 7 broken wiring paths and 2 operational defects.
 - Updated use case manifest: UC-032 through UC-036 marked WIRED. Added UC-037 through UC-046 (7 BROKEN, 3 PLANNED).
@@ -343,3 +349,4 @@ Note: T41.1 depends on T41.2 (source path tracking). T47.2 depends on T47.1 (sec
 | v1.2.0 | HTTP REST API, priority preemption, CronJob, Deployment, StatefulSet | UC-018 through UC-025 |
 | v1.3.0 | Prometheus metrics, HTTP auth, pod logs/events, JSON logging, emptyDir volumes | UC-026 through UC-031 |
 | v1.4.0 | Pod exec, port mapping, init containers, GPU device assignment, image management | UC-032 through UC-036 |
+| v1.5.0 | Wiring integrity: CronJob registration on all paths, manifest removal, delete releases resources, restart counter, stuck pod recovery, StreamPodLogs cleanup, Ki suffix, securityContext passthrough | UC-037 through UC-046 |
