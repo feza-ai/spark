@@ -41,6 +41,7 @@ type Executor interface {
 	PodStats(ctx context.Context, name string) (PodResourceUsage, error)
 	PodLogs(ctx context.Context, name string, tail int) ([]byte, error)
 	StreamPodLogs(ctx context.Context, name string, tail int) (io.ReadCloser, error)
+	ExecPod(ctx context.Context, podName string, containerName string, command []string) ([]byte, []byte, int, error)
 }
 
 // PodmanExecutor implements Executor using podman CLI.
@@ -306,6 +307,44 @@ func (p *PodmanExecutor) StreamPodLogs(ctx context.Context, name string, tail in
 		return nil, fmt.Errorf("podman pod logs start: %w", err)
 	}
 	return stdout, nil
+}
+
+// buildExecArgs constructs the arguments for a podman exec command.
+func buildExecArgs(podName string, containerName string, command []string) []string {
+	target := podName
+	if containerName != "" {
+		target = podName + "-" + containerName
+	}
+	args := []string{"exec", target}
+	args = append(args, command...)
+	return args
+}
+
+// ExecPod executes a command in a container within a pod.
+// Returns stdout, stderr, exit code, and any error.
+func (p *PodmanExecutor) ExecPod(ctx context.Context, podName string, containerName string, command []string) ([]byte, []byte, int, error) {
+	args := buildExecArgs(podName, containerName, command)
+	slog.Info("exec in pod", "cmd", "podman", "args", args)
+	cmd := exec.CommandContext(ctx, "podman", args...)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("podman exec stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("podman exec stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, nil, 0, fmt.Errorf("podman exec start: %w", err)
+	}
+	stdout, _ := io.ReadAll(stdoutPipe)
+	stderr, _ := io.ReadAll(stderrPipe)
+	err = cmd.Wait()
+	exitCode := 0
+	if err != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+	return stdout, stderr, exitCode, nil
 }
 
 // parsePodsJSON parses the JSON output of podman pod ls.
