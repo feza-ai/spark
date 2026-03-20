@@ -30,14 +30,27 @@ type podEvent struct {
 	Message string    `json:"message"`
 }
 
+type containerPortResponse struct {
+	ContainerPort int    `json:"containerPort"`
+	HostPort      int    `json:"hostPort,omitempty"`
+	Protocol      string `json:"protocol"`
+}
+
+type containerResponse struct {
+	Name  string                  `json:"name"`
+	Image string                  `json:"image"`
+	Ports []containerPortResponse `json:"ports,omitempty"`
+}
+
 type getPodResponse struct {
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	Priority   int       `json:"priority"`
-	StartedAt  time.Time `json:"startedAt"`
-	FinishedAt time.Time `json:"finishedAt"`
-	Restarts   int       `json:"restarts"`
-	Events     []podEvent `json:"events"`
+	Name       string              `json:"name"`
+	Status     string              `json:"status"`
+	Priority   int                 `json:"priority"`
+	StartedAt  time.Time           `json:"startedAt"`
+	FinishedAt time.Time           `json:"finishedAt"`
+	Restarts   int                 `json:"restarts"`
+	Containers []containerResponse `json:"containers,omitempty"`
+	Events     []podEvent          `json:"events"`
 }
 
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +89,22 @@ func (s *Server) handleGetPod(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	containers := make([]containerResponse, 0, len(rec.Spec.Containers))
+	for _, c := range rec.Spec.Containers {
+		cr := containerResponse{
+			Name:  c.Name,
+			Image: c.Image,
+		}
+		for _, p := range c.Ports {
+			cr.Ports = append(cr.Ports, containerPortResponse{
+				ContainerPort: p.ContainerPort,
+				HostPort:      p.HostPort,
+				Protocol:      p.Protocol,
+			})
+		}
+		containers = append(containers, cr)
+	}
+
 	resp := getPodResponse{
 		Name:       rec.Spec.Name,
 		Status:     string(rec.Status),
@@ -83,6 +112,7 @@ func (s *Server) handleGetPod(w http.ResponseWriter, r *http.Request) {
 		StartedAt:  rec.StartedAt,
 		FinishedAt: rec.FinishedAt,
 		Restarts:   rec.Restarts,
+		Containers: containers,
 		Events:     events,
 	}
 

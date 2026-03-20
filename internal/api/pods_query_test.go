@@ -118,6 +118,81 @@ func TestGetPod(t *testing.T) {
 	}
 }
 
+func TestGetPod_WithPorts(t *testing.T) {
+	srv, store := newPodQueryTestServer(t)
+
+	store.Apply(manifest.PodSpec{
+		Name:     "web-pod",
+		Priority: 100,
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:  "nginx",
+				Image: "nginx:latest",
+				Ports: []manifest.ContainerPort{
+					{ContainerPort: 80, HostPort: 8080, Protocol: "tcp"},
+					{ContainerPort: 443, Protocol: "tcp"},
+				},
+			},
+			{
+				Name:  "sidecar",
+				Image: "envoy:latest",
+				Ports: []manifest.ContainerPort{
+					{ContainerPort: 9090, HostPort: 9090, Protocol: "tcp"},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods/web-pod", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var body getPodResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body.Name != "web-pod" {
+		t.Errorf("expected name web-pod, got %s", body.Name)
+	}
+	if len(body.Containers) != 2 {
+		t.Fatalf("expected 2 containers, got %d", len(body.Containers))
+	}
+
+	// Check first container
+	c0 := body.Containers[0]
+	if c0.Name != "nginx" {
+		t.Errorf("expected container name nginx, got %s", c0.Name)
+	}
+	if c0.Image != "nginx:latest" {
+		t.Errorf("expected image nginx:latest, got %s", c0.Image)
+	}
+	if len(c0.Ports) != 2 {
+		t.Fatalf("expected 2 ports on nginx, got %d", len(c0.Ports))
+	}
+	if c0.Ports[0].ContainerPort != 80 || c0.Ports[0].HostPort != 8080 || c0.Ports[0].Protocol != "tcp" {
+		t.Errorf("unexpected port[0]: %+v", c0.Ports[0])
+	}
+	if c0.Ports[1].ContainerPort != 443 || c0.Ports[1].HostPort != 0 || c0.Ports[1].Protocol != "tcp" {
+		t.Errorf("unexpected port[1]: %+v", c0.Ports[1])
+	}
+
+	// Check second container
+	c1 := body.Containers[1]
+	if c1.Name != "sidecar" {
+		t.Errorf("expected container name sidecar, got %s", c1.Name)
+	}
+	if len(c1.Ports) != 1 {
+		t.Fatalf("expected 1 port on sidecar, got %d", len(c1.Ports))
+	}
+	if c1.Ports[0].ContainerPort != 9090 || c1.Ports[0].HostPort != 9090 {
+		t.Errorf("unexpected sidecar port: %+v", c1.Ports[0])
+	}
+}
+
 func TestGetPodNotFound(t *testing.T) {
 	srv, _ := newPodQueryTestServer(t)
 
