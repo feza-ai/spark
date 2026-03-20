@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +42,7 @@ func main() {
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "max time to drain pods on shutdown")
 	reconcileResourcesInterval := flag.Duration("reconcile-resources-interval", 60*time.Second, "resource reconciliation interval")
 	logFormat := flag.String("log-format", "text", "log output format (text or json)")
+	apiTokenFile := flag.String("api-token-file", "", "path to file containing API bearer token")
 	flag.Parse()
 
 	switch *logFormat {
@@ -215,8 +217,20 @@ func main() {
 	go rec.Run(ctx)
 	slog.Info("reconciler started", "interval", *reconcileInterval)
 
-	// 12. Start HTTP API server.
-	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, nil)
+	// 12. Read API token.
+	var apiToken string
+	if *apiTokenFile != "" {
+		tokenBytes, err := os.ReadFile(*apiTokenFile)
+		if err != nil {
+			slog.Error("failed to read API token file", "path", *apiTokenFile, "error", err)
+			os.Exit(1)
+		}
+		apiToken = strings.TrimSpace(string(tokenBytes))
+		slog.Info("API authentication enabled")
+	}
+
+	// 13. Start HTTP API server.
+	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, nil, apiToken)
 	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
 	go func() {
 		slog.Info("HTTP server starting", "addr", *httpAddr)
