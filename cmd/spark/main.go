@@ -216,7 +216,7 @@ func main() {
 	slog.Info("reconciler started", "interval", *reconcileInterval)
 
 	// 12. Start HTTP API server.
-	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore)
+	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, nil)
 	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
 	go func() {
 		slog.Info("HTTP server starting", "addr", *httpAddr)
