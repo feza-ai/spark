@@ -20,8 +20,20 @@ type PodStatus struct {
 	Status string `json:"status"`
 }
 
+// CronRegisterer registers parsed CronJob specs for scheduled execution.
+type CronRegisterer interface {
+	Register(manifest.CronJobSpec) error
+}
+
 // RegisterApplyHandler registers the req.spark.apply handler.
-func RegisterApplyHandler(b Bus, store *state.PodStore, priorityClasses map[string]int) {
+// An optional CronRegisterer may be passed; when provided, each parsed
+// CronJob is registered for scheduled execution.
+func RegisterApplyHandler(b Bus, store *state.PodStore, priorityClasses map[string]int, opts ...CronRegisterer) {
+	var cronReg CronRegisterer
+	if len(opts) > 0 {
+		cronReg = opts[0]
+	}
+
 	b.HandleRequest("req.spark.apply", func(_ string, data []byte) ([]byte, error) {
 		result, err := manifest.Parse(data, priorityClasses)
 		if err != nil {
@@ -39,6 +51,11 @@ func RegisterApplyHandler(b Bus, store *state.PodStore, priorityClasses map[stri
 		}
 
 		for _, cj := range result.CronJobs {
+			if cronReg != nil {
+				if err := cronReg.Register(cj); err != nil {
+					return json.Marshal(ApplyResponse{Error: "cron register: " + err.Error()})
+				}
+			}
 			resp.CronJobs = append(resp.CronJobs, cj.Name)
 		}
 

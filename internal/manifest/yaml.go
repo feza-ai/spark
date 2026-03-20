@@ -287,6 +287,10 @@ func parseMemory(s string) int {
 		v, _ := strconv.Atoi(strings.TrimSuffix(s, "Mi"))
 		return v
 	}
+	if strings.HasSuffix(s, "Ki") {
+		v, _ := strconv.Atoi(strings.TrimSuffix(s, "Ki"))
+		return v / 1024
+	}
 	if strings.HasSuffix(s, "G") {
 		v, _ := strconv.Atoi(strings.TrimSuffix(s, "G"))
 		return v * 1000
@@ -294,6 +298,10 @@ func parseMemory(s string) int {
 	if strings.HasSuffix(s, "M") {
 		v, _ := strconv.Atoi(strings.TrimSuffix(s, "M"))
 		return v
+	}
+	if strings.HasSuffix(s, "K") {
+		v, _ := strconv.Atoi(strings.TrimSuffix(s, "K"))
+		return v / 1000
 	}
 	v, _ := strconv.Atoi(s)
 	return v / (1024 * 1024)

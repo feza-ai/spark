@@ -3,10 +3,23 @@ package bus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
+	"github.com/feza-ai/spark/internal/manifest"
 	"github.com/feza-ai/spark/internal/state"
 )
+
+// mockCronRegisterer records Register calls for testing.
+type mockCronRegisterer struct {
+	registered []manifest.CronJobSpec
+	err        error
+}
+
+func (m *mockCronRegisterer) Register(cj manifest.CronJobSpec) error {
+	m.registered = append(m.registered, cj)
+	return m.err
+}
 
 func registerAndApply(t *testing.T, yaml string) ApplyResponse {
 	t.Helper()
@@ -113,8 +126,6 @@ spec:
 }
 
 func TestApplyHandler_UnsupportedKind(t *testing.T) {
-	// Unknown kinds are silently ignored by Parse, so the response
-	// should have no pods and no error.
 	resp := registerAndApply(t, `
 apiVersion: v1
 kind: ConfigMap
@@ -207,5 +218,139 @@ spec:
 	}
 	if rec.Spec.Name != "stored-pod" {
 		t.Errorf("stored pod name = %q, want %q", rec.Spec.Name, "stored-pod")
+	}
+}
+
+func TestApplyHandler_CronJobRegistered(t *testing.T) {
+	tests := []struct {
+		name       string
+		yaml       string
+		regErr     error
+		wantCount  int
+		wantName   string
+		wantErrSub string
+	}{
+		{
+			name: "register called on CronJob apply",
+			yaml: `
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scheduled-task
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: runner
+            image: alpine
+          restartPolicy: Never
+`,
+			wantCount: 1,
+			wantName:  "scheduled-task",
+		},
+		{
+			name:   "register error propagates",
+			regErr: errors.New("scheduler full"),
+			yaml: `
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fail-cron
+spec:
+  schedule: "0 0 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: runner
+            image: alpine
+          restartPolicy: Never
+`,
+			wantCount:  1,
+			wantErrSub: "cron register: scheduler full",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := NewStubBus()
+			store := state.NewPodStore()
+			mock := &mockCronRegisterer{err: tt.regErr}
+			RegisterApplyHandler(b, store, map[string]int{}, mock)
+
+			raw, err := b.Request(context.Background(), "req.spark.apply", []byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("Request() error = %v", err)
+			}
+
+			var resp ApplyResponse
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+
+			if len(mock.registered) != tt.wantCount {
+				t.Fatalf("Register called %d times, want %d", len(mock.registered), tt.wantCount)
+			}
+
+			if tt.wantErrSub != "" {
+				if resp.Error != tt.wantErrSub {
+					t.Errorf("error = %q, want %q", resp.Error, tt.wantErrSub)
+				}
+				return
+			}
+
+			if resp.Error != "" {
+				t.Errorf("unexpected error: %s", resp.Error)
+			}
+			if tt.wantName != "" && mock.registered[0].Name != tt.wantName {
+				t.Errorf("registered cron name = %q, want %q", mock.registered[0].Name, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestApplyHandler_NilCronRegisterer(t *testing.T) {
+	b := NewStubBus()
+	store := state.NewPodStore()
+	RegisterApplyHandler(b, store, map[string]int{})
+
+	yaml := `
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nil-reg-cron
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: runner
+            image: alpine
+          restartPolicy: Never
+`
+	raw, err := b.Request(context.Background(), "req.spark.apply", []byte(yaml))
+	if err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+
+	var resp ApplyResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if resp.Error != "" {
+		t.Errorf("unexpected error: %s", resp.Error)
+	}
+	if len(resp.CronJobs) != 1 {
+		t.Fatalf("expected 1 cronJob, got %d", len(resp.CronJobs))
+	}
+	if resp.CronJobs[0] != "nil-reg-cron" {
+		t.Errorf("cronJob name = %q, want %q", resp.CronJobs[0], "nil-reg-cron")
 	}
 }
