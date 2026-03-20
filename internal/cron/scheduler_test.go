@@ -445,6 +445,107 @@ func TestBackoffLimitPropagation(t *testing.T) {
 	}
 }
 
+func TestList(t *testing.T) {
+	store := state.NewPodStore()
+	cs := NewCronScheduler(store)
+
+	// Empty list.
+	if got := cs.List(); len(got) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(got))
+	}
+
+	// Register two jobs.
+	if err := cs.Register(newTestSpec("beta", "0 * * * *", "Allow")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Register(newTestSpec("alpha", "*/5 * * * *", "Allow")); err != nil {
+		t.Fatal(err)
+	}
+
+	list := cs.List()
+	if len(list) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(list))
+	}
+	// Should be sorted by name.
+	if list[0].Name != "alpha" {
+		t.Fatalf("expected first entry alpha, got %s", list[0].Name)
+	}
+	if list[1].Name != "beta" {
+		t.Fatalf("expected second entry beta, got %s", list[1].Name)
+	}
+	if list[0].Schedule != "*/5 * * * *" {
+		t.Fatalf("expected schedule */5 * * * *, got %s", list[0].Schedule)
+	}
+	if list[0].RunCount != 0 {
+		t.Fatalf("expected RunCount 0, got %d", list[0].RunCount)
+	}
+
+	// Tick to update lastRun and runCount.
+	now := time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)
+	cs.tick(now)
+
+	list = cs.List()
+	for _, s := range list {
+		if s.Name == "alpha" {
+			if s.RunCount != 1 {
+				t.Fatalf("expected RunCount 1 for alpha, got %d", s.RunCount)
+			}
+			if s.LastRun != now {
+				t.Fatalf("expected LastRun %v, got %v", now, s.LastRun)
+			}
+			if s.NextRun.IsZero() {
+				t.Fatal("expected non-zero NextRun")
+			}
+		}
+	}
+}
+
+func TestGet(t *testing.T) {
+	store := state.NewPodStore()
+	cs := NewCronScheduler(store)
+
+	// Not found.
+	if _, ok := cs.Get("missing"); ok {
+		t.Fatal("expected not found")
+	}
+
+	if err := cs.Register(newTestSpec("myjob", "30 2 * * *", "Allow")); err != nil {
+		t.Fatal(err)
+	}
+
+	status, ok := cs.Get("myjob")
+	if !ok {
+		t.Fatal("expected to find myjob")
+	}
+	if status.Name != "myjob" {
+		t.Fatalf("expected name myjob, got %s", status.Name)
+	}
+	if status.Schedule != "30 2 * * *" {
+		t.Fatalf("expected schedule 30 2 * * *, got %s", status.Schedule)
+	}
+	if status.RunCount != 0 {
+		t.Fatalf("expected RunCount 0, got %d", status.RunCount)
+	}
+	if status.NextRun.IsZero() {
+		t.Fatal("expected non-zero NextRun")
+	}
+
+	// After tick, RunCount should update.
+	now := time.Date(2026, 1, 1, 2, 30, 0, 0, time.UTC)
+	cs.tick(now)
+
+	status, ok = cs.Get("myjob")
+	if !ok {
+		t.Fatal("expected to find myjob after tick")
+	}
+	if status.RunCount != 1 {
+		t.Fatalf("expected RunCount 1, got %d", status.RunCount)
+	}
+	if status.LastRun != now {
+		t.Fatalf("expected LastRun %v, got %v", now, status.LastRun)
+	}
+}
+
 func TestUnregister(t *testing.T) {
 	store := state.NewPodStore()
 	cs := NewCronScheduler(store)
