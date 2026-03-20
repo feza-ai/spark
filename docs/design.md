@@ -7,16 +7,16 @@ Single-binary Go pod orchestrator for single-node GPU hosts. Reads K8s-compatibl
 ```
 cmd/spark/          Entry point: flags, startup, signal handling
 internal/
-  api/              HTTP REST API handlers (health, resources, pod CRUD, exec, logs, events, metrics, images, auth)
+  api/              HTTP REST API handlers (health, resources, node, pod CRUD, exec, logs, events, metrics, images, cronjobs, auth)
   bus/              NATS bus abstraction, protocol handlers, event/log publishers
   cron/             Cron expression parser and scheduled job trigger
   metrics/          Prometheus metrics collector and text renderer
-  executor/         Podman interface: pod create, exec, stop, logs, image list/pull, stats, port mapping, init containers
+  executor/         Podman interface: pod create, exec, stop, logs, image list/pull, stats, port mapping, init containers, liveness probes (exec/HTTP)
   gpu/              GPU detection (nvidia-smi), device ID enumeration, and system resource detection
   lifecycle/        Graceful shutdown coordinator with pod draining
-  manifest/         K8s YAML parser (Pod, Job, CronJob, Deployment, StatefulSet) with ports, init containers, securityContext
-  reconciler/       Desired-state reconciliation loop, pod recovery, resource sync, stuck pod recovery (StatusScheduled/StatusPreempted)
-  scheduler/        Resource-aware scheduling with priority preemption and GPU device slot tracking
+  manifest/         K8s YAML parser (Pod, Job, CronJob, Deployment, StatefulSet) with ports, init containers, securityContext, livenessProbe
+  reconciler/       Desired-state reconciliation loop, pod recovery, resource sync, stuck pod recovery (StatusScheduled/StatusPreempted), liveness probe polling
+  scheduler/        Resource-aware scheduling with priority preemption, GPU count-based device slot tracking
   state/            Pod state store (in-memory + SQLite WAL persistence) with source path tracking
   watcher/          Manifest directory poller (SHA-256 change detection)
 ```
@@ -28,7 +28,7 @@ internal/
 3. Scheduler checks resource availability (CPU, memory, GPU devices); preempts lower-priority pods if needed.
 4. Executor runs init containers sequentially, then creates main containers in podman pod(s) on the shared `spark-net` network with port mappings.
 5. State store tracks desired vs actual state.
-6. Reconciler (5s loop) restarts crashed services and retries failed jobs. Recovers stuck StatusScheduled/StatusPreempted pods. Tracks restart counts.
+6. Reconciler (5s loop) restarts crashed services and retries failed jobs. Recovers stuck StatusScheduled/StatusPreempted pods. Tracks restart counts. Polls liveness probes (exec/HTTP) for running pods; restarts on failure threshold.
 7. Events, logs, and heartbeats publish over NATS.
 8. Manifest file removal triggers pod stop, resource release, and cron job unregistration.
 
@@ -46,10 +46,14 @@ internal/
 - Delete (HTTP, NATS, manifest removal) releases scheduler resources immediately.
 - CronJob registration works on all ingestion paths: NATS apply, HTTP apply, filesystem watcher.
 - StreamPodLogs properly reaps child processes via cmd.Wait() on context cancellation.
+- GPU resource model: `nvidia.com/gpu: N` allocates N device slots (GPUCount), distinct from GPU memory. Scheduler tracks count-based allocation.
+- Liveness probes: exec probes run via `podman exec`; HTTP probes via stdlib `net/http`. Reconciler polls on each tick respecting InitialDelaySeconds, PeriodSeconds, FailureThreshold.
+- CronJob HTTP management: GET /api/v1/cronjobs (list), GET /api/v1/cronjobs/{name} (detail), DELETE /api/v1/cronjobs/{name} (unregister).
+- Node info: GET /api/v1/node exposes hostname, OS, arch, CPU cores, memory, GPU model, GPU count, device IDs, GPU memory.
 
 ## Interfaces
 
-- **HTTP**: GET /healthz, GET /metrics, GET /api/v1/resources, GET /api/v1/pods, GET /api/v1/pods/{name}, GET /api/v1/pods/{name}/logs, GET /api/v1/pods/{name}/events, POST /api/v1/pods, POST /api/v1/pods/{name}/exec, DELETE /api/v1/pods/{name}, GET /api/v1/images, POST /api/v1/images/pull. Bearer token auth middleware (optional via --api-token-file; /healthz and /metrics exempt).
+- **HTTP**: GET /healthz, GET /metrics, GET /api/v1/resources, GET /api/v1/node, GET /api/v1/pods, GET /api/v1/pods/{name}, GET /api/v1/pods/{name}/logs, GET /api/v1/pods/{name}/events, POST /api/v1/pods, POST /api/v1/pods/{name}/exec, DELETE /api/v1/pods/{name}, GET /api/v1/images, POST /api/v1/images/pull, GET /api/v1/cronjobs, GET /api/v1/cronjobs/{name}, DELETE /api/v1/cronjobs/{name}. Bearer token auth middleware (optional via --api-token-file; /healthz and /metrics exempt).
 - **NATS**: req.spark.{apply,delete,get,list}, evt.spark.{event}.{pod}, log.spark.{pod}, heartbeat.spark.{node}
 - **Filesystem**: manifest directory watch (poll every 5s, SHA-256 checksums)
 - **Podman CLI**: pod create (--publish), pod stop, pod rm, pod logs, pod stats, exec, run (init containers), image exists, image pull, image list (--format json), network create

@@ -1,6 +1,6 @@
 # Spark: GPU Resource Model, Liveness Probes, and CronJob Management (v1.6.0)
 
-## Status: In Progress
+## Status: Complete
 
 ## Context
 
@@ -84,14 +84,14 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
 
 ### E49: GPU Resource Model Fix
 
-- [ ] T49.1 Add GPUCount to ResourceList and refactor parseGPU  Owner: TBD  Est: 45m  verifies: [UC-047]
+- [x] T49.1 Add GPUCount to ResourceList and refactor parseGPU  Owner: TBD  Est: 45m  verifies: [UC-047]
   - Add `GPUCount int` field to `manifest.ResourceList` in `internal/manifest/types.go`.
   - Update `parseGPU()` in `internal/manifest/job.go` to set `GPUCount` instead of `GPUMemoryMB`.
   - Update `TotalRequests()` to sum `GPUCount` across containers.
   - Create tests: `nvidia.com/gpu: 2` produces `GPUCount=2, GPUMemoryMB=0`.
   - Acceptance: `go test -race ./internal/manifest/` passes.
 
-- [ ] T49.2 Update scheduler to track GPU count  Owner: TBD  Est: 45m  verifies: [UC-047]
+- [x] T49.2 Update scheduler to track GPU count  Owner: TBD  Est: 45m  verifies: [UC-047]
   - Update `scheduler.Resources` to include `GPUCount int`.
   - Update `ResourceTracker.Allocate` to check `GPUCount` against `gpuMax` and available device slots.
   - Update `ResourceTracker.Release` to free device slots by count.
@@ -99,7 +99,7 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
   - Create tests: allocate 2 GPUs, verify 2 device slots consumed. Exceed gpuMax, verify rejection.
   - Acceptance: `go test -race ./internal/scheduler/` passes.
 
-- [ ] T49.3 Update reconciler and heartbeat for GPU count  Owner: TBD  Est: 30m  verifies: [UC-047]
+- [x] T49.3 Update reconciler and heartbeat for GPU count  Owner: TBD  Est: 30m  verifies: [UC-047]
   - Update `ResourceReconciler` to use `GPUCount` for drift detection.
   - Update heartbeat payload to include `gpuCount` alongside `gpuMemoryMB`.
   - Update `reconciler/resources.go` to compare allocated GPU count vs actual.
@@ -108,7 +108,7 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
 
 ### E50: Liveness Probe Support
 
-- [ ] T50.1 Add ProbeSpec to ContainerSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-048]
+- [x] T50.1 Add ProbeSpec to ContainerSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-048]
   - Add to `internal/manifest/types.go`:
     ```
     type ProbeSpec struct {
@@ -127,7 +127,7 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
   - Create tests: parse exec probe, HTTP probe, missing probe (nil), default values.
   - Acceptance: `go test -race ./internal/manifest/` passes.
 
-- [ ] T50.2 Add probe executor methods  Owner: TBD  Est: 45m  verifies: [UC-048]
+- [x] T50.2 Add probe executor methods  Owner: TBD  Est: 45m  verifies: [UC-048]
   - Add to `internal/executor`:
     - `ExecProbe(ctx, podName, containerName, command) (exitCode int, err error)` -- runs `podman exec` with timeout.
     - `HTTPProbe(ctx, port int, path string, timeout time.Duration) error` -- makes HTTP GET to localhost:port/path.
@@ -135,7 +135,7 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
   - Create tests with stubs.
   - Acceptance: `go test -race ./internal/executor/` passes.
 
-- [ ] T50.3 Add probe poller to reconciler  Owner: TBD  Est: 60m  verifies: [UC-048]
+- [x] T50.3 Add probe poller to reconciler  Owner: TBD  Est: 60m  verifies: [UC-048]
   - Depends on: T50.1, T50.2.
   - In `internal/reconciler`, add a `probePoller` that:
     1. For each Running pod with a LivenessProbe, tracks consecutive failures.
@@ -149,7 +149,7 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
 
 ### E51: CronJob HTTP Management
 
-- [ ] T51.1 Add List method to CronScheduler  Owner: TBD  Est: 30m  verifies: [UC-045]
+- [x] T51.1 Add List method to CronScheduler  Owner: TBD  Est: 30m  verifies: [UC-045]
   - Add `CronJobStatus` struct to `internal/cron/scheduler.go`:
     ```
     type CronJobStatus struct {
@@ -165,7 +165,7 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
   - Create tests.
   - Acceptance: `go test -race ./internal/cron/` passes.
 
-- [ ] T51.2 Add CronJob HTTP endpoints  Owner: TBD  Est: 30m  verifies: [UC-045]
+- [x] T51.2 Add CronJob HTTP endpoints  Owner: TBD  Est: 30m  verifies: [UC-045]
   - Depends on: T51.1.
   - Create `internal/api/cronjobs.go`:
     - `GET /api/v1/cronjobs` -- lists all registered cron jobs as JSON array.
@@ -178,7 +178,7 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
 
 ### E52: Node Info Endpoint
 
-- [ ] T52.1 Add node info HTTP endpoint  Owner: TBD  Est: 30m  verifies: [UC-050]
+- [x] T52.1 Add node info HTTP endpoint  Owner: TBD  Est: 30m  verifies: [UC-050]
   - Create `internal/api/node.go`:
     - `GET /api/v1/node` returns JSON:
       ```json
@@ -201,7 +201,7 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
 
 ### E53: Integration Wiring and Verification
 
-- [ ] T53.1 Wire GPU count into main.go and reconciler  Owner: TBD  Est: 30m  verifies: [UC-047, UC-048, UC-045, UC-050]
+- [x] T53.1 Wire GPU count into main.go and reconciler  Owner: TBD  Est: 30m  verifies: [UC-047, UC-048, UC-045, UC-050]
   - Depends on: T49.1, T49.2, T49.3, T50.1, T50.2, T50.3, T51.1, T51.2, T52.1.
   - Update `cmd/spark/main.go`:
     - Pass GPUCount through to scheduler.
@@ -209,13 +209,13 @@ Spark v1.5.0 has 46 wired use cases across 13 packages with zero broken wiring p
     - Wire CronManager interface to api.NewServer.
   - Acceptance: `go build ./...` and `go vet ./...` pass.
 
-- [ ] T53.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
+- [x] T53.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
   - Depends on: T53.1.
   - Run `go test ./... -race -timeout 120s`. Zero failures.
   - Run `go vet ./...`. Zero warnings.
   - Acceptance: All tests pass, zero lint warnings.
 
-- [ ] T53.3 Update design docs for v1.6.0  Owner: TBD  Est: 15m  verifies: [infrastructure]
+- [x] T53.3 Update design docs for v1.6.0  Owner: TBD  Est: 15m  verifies: [infrastructure]
   - Depends on: T53.2.
   - Update docs/design.md: GPU count model, liveness probes, CronJob endpoints, node endpoint.
   - Update README.md: new endpoints documentation.
@@ -237,24 +237,24 @@ Sync point: T53.1 requires all tracks to complete before integration wiring.
 ### Waves
 
 ### Wave 1: Independent Components (8 agents)
-- [ ] T49.1 Add GPUCount to ResourceList and refactor parseGPU  verifies: [UC-047]
-- [ ] T49.2 Update scheduler to track GPU count  verifies: [UC-047]
-- [ ] T50.1 Add ProbeSpec to ContainerSpec and parse from YAML  verifies: [UC-048]
-- [ ] T50.2 Add probe executor methods  verifies: [UC-048]
-- [ ] T51.1 Add List method to CronScheduler  verifies: [UC-045]
-- [ ] T51.2 Add CronJob HTTP endpoints  verifies: [UC-045]
-- [ ] T52.1 Add node info HTTP endpoint  verifies: [UC-050]
-- [ ] T49.3 Update reconciler and heartbeat for GPU count  verifies: [UC-047]
+- [x] T49.1 Add GPUCount to ResourceList and refactor parseGPU  verifies: [UC-047]
+- [x] T49.2 Update scheduler to track GPU count  verifies: [UC-047]
+- [x] T50.1 Add ProbeSpec to ContainerSpec and parse from YAML  verifies: [UC-048]
+- [x] T50.2 Add probe executor methods  verifies: [UC-048]
+- [x] T51.1 Add List method to CronScheduler  verifies: [UC-045]
+- [x] T51.2 Add CronJob HTTP endpoints  verifies: [UC-045]
+- [x] T52.1 Add node info HTTP endpoint  verifies: [UC-050]
+- [x] T49.3 Update reconciler and heartbeat for GPU count  verifies: [UC-047]
 
 ### Wave 2: Dependent Components (1 agent)
-- [ ] T50.3 Add probe poller to reconciler  verifies: [UC-048]
+- [x] T50.3 Add probe poller to reconciler  verifies: [UC-048]
 
 Note: T50.3 depends on T50.1 (probe types) and T50.2 (probe executor). T51.2 depends on T51.1 but can run in Wave 1 if assigned to the same agent sequentially.
 
 ### Wave 3: Integration and Verification (3 agents)
-- [ ] T53.1 Wire GPU count into main.go and reconciler  verifies: [UC-047, UC-048, UC-045, UC-050]
-- [ ] T53.2 Run full test suite and lint  verifies: [infrastructure]
-- [ ] T53.3 Update design docs for v1.6.0  verifies: [infrastructure]
+- [x] T53.1 Wire GPU count into main.go and reconciler  verifies: [UC-047, UC-048, UC-045, UC-050]
+- [x] T53.2 Run full test suite and lint  verifies: [infrastructure]
+- [x] T53.3 Update design docs for v1.6.0  verifies: [infrastructure]
 
 ## Timeline and Milestones
 
@@ -292,6 +292,13 @@ Note: T50.3 depends on T50.1 (probe types) and T50.2 (probe executor). T51.2 dep
 - GPU tests verify count-based allocation with mock device IDs.
 
 ## Progress Log
+
+### 2026-03-20: v1.6.0 complete
+- All 12 tasks (T49.1-T53.3) completed across 3 waves.
+- Wave 1 (8 tasks): GPU count model (manifest, scheduler, reconciler/heartbeat), probe types and executor, cron List/Get + HTTP endpoints, node info endpoint.
+- Wave 2 (1 task): Liveness probe polling in reconciler with probeState tracking, exec/HTTP probe support, failure threshold restart.
+- Wave 3 (3 tasks): Wired GPUInfo/SystemInfo into api.NewServer, passed CronManager, full test suite green (13 packages, -race), docs updated.
+- 50 use cases: 46 WIRED (v1.5.0) + 4 new (UC-047 GPU count, UC-048 liveness probes, UC-045 CronJob HTTP mgmt, UC-050 node info).
 
 ### 2026-03-20: Plan created
 - Trimmed completed v1.5.0 plan. v1.5.0 knowledge preserved in docs/devlog.md (2026-03-20 entry) and docs/design.md.
