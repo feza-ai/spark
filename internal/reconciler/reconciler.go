@@ -140,6 +140,10 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 			r.reconcilePending(ctx, current)
 		case state.StatusRunning:
 			r.reconcileRunning(ctx, current)
+		case state.StatusScheduled:
+			r.reconcileScheduled(ctx, current)
+		case state.StatusPreempted:
+			r.reconcilePreempted(current)
 		}
 	}
 }
@@ -262,4 +266,59 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 			slog.Info("pod failed", "pod", pod.Spec.Name, "exitCode", st.ExitCode)
 		}
 	}
+}
+
+// scheduledStaleness is how long a pod can stay in StatusScheduled before
+// being reset to StatusPending for retry.
+const scheduledStaleness = 30 * time.Second
+
+// reconcileScheduled handles pods stuck in the Scheduled state. If the pod is
+// actually running in podman, it transitions to Running. If the pod is not
+// found and has been Scheduled for longer than scheduledStaleness, it resets
+// to Pending so the scheduler can retry.
+func (r *Reconciler) reconcileScheduled(ctx context.Context, pod state.PodRecord) {
+	st, err := r.executor.PodStatus(ctx, pod.Spec.Name)
+	if err != nil {
+		slog.Error("failed to get pod status for scheduled pod", "pod", pod.Spec.Name, "err", err)
+		return
+	}
+
+	if st.Running {
+		r.scheduler.AddPod(scheduler.PodInfo{
+			Name:      pod.Spec.Name,
+			Priority:  pod.Spec.Priority,
+			Resources: pod.Spec.TotalRequests(),
+			StartTime: time.Now(),
+		})
+		r.updateStatus(pod.Spec.Name, state.StatusRunning, "pod found running in podman")
+		slog.Info("scheduled pod now running", "pod", pod.Spec.Name)
+		if r.onPodRunning != nil {
+			r.onPodRunning(pod.Spec.Name)
+		}
+		return
+	}
+
+	// Pod is not running. Check if it has been stuck long enough to retry.
+	var scheduledAt time.Time
+	for i := len(pod.Events) - 1; i >= 0; i-- {
+		if pod.Events[i].Type == string(state.StatusScheduled) {
+			scheduledAt = pod.Events[i].Time
+			break
+		}
+	}
+	if scheduledAt.IsZero() || time.Since(scheduledAt) <= scheduledStaleness {
+		return
+	}
+
+	// Stale: reset to Pending.
+	r.scheduler.RemovePod(pod.Spec.Name)
+	r.updateStatus(pod.Spec.Name, state.StatusPending, "reset from scheduled: pod not found after timeout")
+	slog.Warn("scheduled pod reset to pending", "pod", pod.Spec.Name)
+}
+
+// reconcilePreempted resets a preempted pod to Pending so the scheduler can
+// re-evaluate it when resources become available.
+func (r *Reconciler) reconcilePreempted(pod state.PodRecord) {
+	r.updateStatus(pod.Spec.Name, state.StatusPending, "re-queued after preemption")
+	slog.Info("preempted pod re-queued", "pod", pod.Spec.Name)
 }

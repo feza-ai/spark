@@ -799,13 +799,14 @@ func TestPreemptionUpdatesVictimStatus(t *testing.T) {
 	store.Apply(highSpec)
 	r.reconcileOnce(context.Background())
 
-	// Verify victim status is Preempted.
+	// Verify victim status is Preempted or Pending (the reconciler may process
+	// the preempted pod in the same pass and reset it to Pending).
 	rec, ok := store.Get("victim")
 	if !ok {
 		t.Fatal("victim pod not found in store")
 	}
-	if rec.Status != state.StatusPreempted {
-		t.Fatalf("expected victim status Preempted, got %s", rec.Status)
+	if rec.Status != state.StatusPreempted && rec.Status != state.StatusPending {
+		t.Fatalf("expected victim status Preempted or Pending, got %s", rec.Status)
 	}
 }
 
@@ -845,11 +846,15 @@ func TestPreemptionReschedulesPendingPod(t *testing.T) {
 		t.Fatalf("expected high-priority pod Running after preemption, got %s", rec.Status)
 	}
 
-	// Verify both victims are preempted.
+	// Verify both victims are preempted or pending (the reconciler may process
+	// preempted pods in the same pass and reset them to Pending).
 	rec1, _ = store.Get("low1")
 	rec2, _ = store.Get("low2")
-	if rec1.Status != state.StatusPreempted || rec2.Status != state.StatusPreempted {
-		t.Fatalf("expected both victims Preempted, got %s and %s", rec1.Status, rec2.Status)
+	validStatus := func(s state.PodStatus) bool {
+		return s == state.StatusPreempted || s == state.StatusPending
+	}
+	if !validStatus(rec1.Status) || !validStatus(rec2.Status) {
+		t.Fatalf("expected both victims Preempted or Pending, got %s and %s", rec1.Status, rec2.Status)
 	}
 }
 
@@ -938,4 +943,76 @@ func TestRecoverPods_StoreStatusMismatch(t *testing.T) {
 	if rec.Status != state.StatusRunning {
 		t.Fatalf("expected Running after recovery, got %s", rec.Status)
 	}
+}
+
+func TestReconcileScheduledAndPreempted(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(store *state.PodStore, exec *stubExecutor)
+		wantStatus state.PodStatus
+	}{
+		{
+			name: "scheduled pod found running in podman transitions to Running",
+			setup: func(store *state.PodStore, exec *stubExecutor) {
+				store.Apply(testPodSpec("pod", "Always", 0))
+				store.UpdateStatus("pod", state.StatusScheduled, "scheduled by reconciler")
+				exec.setStatus("pod", executor.Status{Running: true})
+			},
+			wantStatus: state.StatusRunning,
+		},
+		{
+			name: "scheduled pod not found in podman and stale resets to Pending",
+			setup: func(store *state.PodStore, exec *stubExecutor) {
+				store.Apply(testPodSpec("pod", "Always", 0))
+				store.UpdateStatus("pod", state.StatusScheduled, "scheduled by reconciler")
+				// Backdate the scheduled event to make it stale.
+				backdateLastEvent(store, "pod", 60*time.Second)
+			},
+			wantStatus: state.StatusPending,
+		},
+		{
+			name: "scheduled pod not found in podman but not yet stale stays Scheduled",
+			setup: func(store *state.PodStore, exec *stubExecutor) {
+				store.Apply(testPodSpec("pod", "Always", 0))
+				store.UpdateStatus("pod", state.StatusScheduled, "scheduled by reconciler")
+				// Event was just created, so it's fresh — pod stays Scheduled.
+			},
+			wantStatus: state.StatusScheduled,
+		},
+		{
+			name: "preempted pod resets to Pending",
+			setup: func(store *state.PodStore, exec *stubExecutor) {
+				store.Apply(testPodSpec("pod", "Always", 0))
+				store.UpdateStatus("pod", state.StatusPreempted, "preempted for high-prio")
+			},
+			wantStatus: state.StatusPending,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := state.NewPodStore()
+			sched := newTestScheduler()
+			exec := newStubExecutor()
+			r := NewReconciler(store, sched, exec, time.Second)
+
+			tt.setup(store, exec)
+
+			r.reconcileOnce(context.Background())
+
+			rec, ok := store.Get("pod")
+			if !ok {
+				t.Fatal("pod not found in store")
+			}
+			if rec.Status != tt.wantStatus {
+				t.Fatalf("expected status %s, got %s", tt.wantStatus, rec.Status)
+			}
+		})
+	}
+}
+
+// backdateLastEvent shifts the last event's timestamp back by the given duration.
+// This is used to simulate staleness in tests.
+func backdateLastEvent(store *state.PodStore, name string, d time.Duration) {
+	store.BackdateLastEvent(name, d)
 }
