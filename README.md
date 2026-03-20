@@ -19,6 +19,12 @@ Single-binary Go pod orchestrator for GPU hosts. Accepts Kubernetes manifests an
 - **Directory watcher** -- manifest hot-loading with SHA-256 change detection
 - **Heartbeat publishing** -- periodic node status over NATS
 - **Event and log streaming** -- lifecycle events and container logs published over NATS
+- **Prometheus metrics** -- /metrics endpoint with node, pod, and scheduler metrics (v1.3.0)
+- **HTTP authentication** -- bearer token auth with configurable token file (v1.3.0)
+- **Pod logs via HTTP** -- tail and SSE streaming of pod logs (v1.3.0)
+- **Pod events via HTTP** -- lifecycle event history with time filtering (v1.3.0)
+- **Structured JSON logging** -- configurable log format for aggregation (v1.3.0)
+- **EmptyDir volumes** -- tmpfs-backed scratch volumes for pods (v1.3.0)
 
 ## Quick Start
 
@@ -46,6 +52,8 @@ Spark will detect system resources (CPU, memory, GPU), connect to NATS, and begi
 | `--http-addr` | `:8080` | HTTP listen address |
 | `--shutdown-timeout` | `30s` | Max time to drain pods on shutdown |
 | `--reconcile-resources-interval` | `60s` | Resource reconciliation interval |
+| `--log-format` | `text` | Log output format (text or json) |
+| `--api-token-file` | *(empty)* | Path to file containing API bearer token |
 
 ## HTTP API
 
@@ -115,6 +123,40 @@ curl -X DELETE http://localhost:8080/api/v1/pods/myapp
 ```json
 {"deleted": "myapp"}
 ```
+
+### Prometheus Metrics
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+Returns node and pod metrics in Prometheus text exposition format (v0.0.4).
+
+### Pod Logs
+
+```bash
+curl http://localhost:8080/api/v1/pods/myapp/logs?tail=50
+```
+
+Returns the last 50 lines of pod logs as `text/plain`. Use `?follow=true` for SSE streaming.
+
+### Pod Events
+
+```bash
+curl http://localhost:8080/api/v1/pods/myapp/events
+```
+
+Returns pod lifecycle events as JSON. Use `?since=2026-03-19T00:00:00Z` to filter by time.
+
+## Authentication
+
+When `--api-token-file` is set, all HTTP endpoints except `/healthz` and `/metrics` require a bearer token:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8080/api/v1/pods
+```
+
+Without the header, requests return 401 Unauthorized. If `--api-token-file` is not set, authentication is disabled.
 
 ## NATS Subjects
 
@@ -231,6 +273,8 @@ staticcheck ./...
 | [007](docs/adr/007-ubuntu-deb-packaging.md) | Ubuntu deb packaging |
 | [008](docs/adr/008-sqlite-state-persistence.md) | SQLite state persistence |
 | [009](docs/adr/009-http-api.md) | HTTP API design |
+| [010](docs/adr/010-prometheus-metrics.md) | Prometheus metrics via stdlib |
+| [011](docs/adr/011-http-bearer-token-auth.md) | HTTP bearer token authentication |
 
 ## License
 
