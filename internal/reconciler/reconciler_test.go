@@ -130,6 +130,10 @@ func (s *stubExecutor) ExecProbe(_ context.Context, _ string, _ string, _ []stri
 	return 0, nil
 }
 
+func (s *stubExecutor) HTTPProbe(_ context.Context, _ int, _ string, _ time.Duration) error {
+	return nil
+}
+
 func (s *stubExecutor) setStatus(name string, st executor.Status) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

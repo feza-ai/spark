@@ -78,6 +78,14 @@ func (s *stubExecutor) PullImage(_ context.Context, _ string) error {
 	return nil
 }
 
+func (s *stubExecutor) ExecProbe(_ context.Context, _ string, _ string, _ []string, _ time.Duration) (int, error) {
+	return 0, nil
+}
+
+func (s *stubExecutor) HTTPProbe(_ context.Context, _ int, _ string, _ time.Duration) error {
+	return nil
+}
+
 func (s *stubExecutor) getStopCalls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

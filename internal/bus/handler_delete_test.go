@@ -71,6 +71,10 @@ func (e *stubExecutor) ExecProbe(_ context.Context, _ string, _ string, _ []stri
 	return 0, nil
 }
 
+func (e *stubExecutor) HTTPProbe(_ context.Context, _ int, _ string, _ time.Duration) error {
+	return nil
+}
+
 // stubPodRemover implements PodRemover for testing.
 type stubPodRemover struct {
 	removed []string
