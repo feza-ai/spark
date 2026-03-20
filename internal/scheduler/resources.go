@@ -11,6 +11,7 @@ import (
 type Resources struct {
 	CPUMillis   int
 	MemoryMB    int
+	GPUCount    int
 	GPUMemoryMB int
 }
 
@@ -33,6 +34,7 @@ func NewResourceTracker(total Resources, systemReserve Resources, gpuDevices []i
 		allocatable: Resources{
 			CPUMillis:   total.CPUMillis - systemReserve.CPUMillis,
 			MemoryMB:    total.MemoryMB - systemReserve.MemoryMB,
+			GPUCount:    total.GPUCount - systemReserve.GPUCount,
 			GPUMemoryMB: total.GPUMemoryMB - systemReserve.GPUMemoryMB,
 		},
 		allocations: make(map[string]manifest.ResourceList),
@@ -63,15 +65,28 @@ func (rt *ResourceTracker) Allocate(name string, req manifest.ResourceList) erro
 		return fmt.Errorf("insufficient GPU memory: requested %d MB, available %d MB", req.GPUMemoryMB, avail.GPUMemoryMB)
 	}
 
-	if req.GPUMemoryMB > 0 && len(rt.gpuDevices) > 0 {
-		if len(rt.gpuAssignments) >= rt.gpuMax {
+	// GPUCount is the primary GPU allocation path: allocate N device slots.
+	if req.GPUCount > 0 && len(rt.gpuDevices) > 0 {
+		inUse := rt.assignedDeviceCountLocked()
+		if inUse+req.GPUCount > rt.gpuMax {
+			return fmt.Errorf("GPU slot limit reached: requested %d, max %d, in-use %d", req.GPUCount, rt.gpuMax, inUse)
+		}
+		devs := rt.unassignedDevicesLocked(req.GPUCount)
+		if len(devs) < req.GPUCount {
+			return fmt.Errorf("insufficient GPU devices: requested %d, available %d", req.GPUCount, len(devs))
+		}
+		rt.gpuAssignments[name] = devs
+	} else if req.GPUMemoryMB > 0 && len(rt.gpuDevices) > 0 {
+		// Backwards-compatible path: GPUMemoryMB without GPUCount gets 1 slot.
+		inUse := rt.assignedDeviceCountLocked()
+		if inUse+1 > rt.gpuMax {
 			return fmt.Errorf("GPU slot limit reached")
 		}
-		dev := rt.firstUnassignedDeviceLocked()
-		if dev == -1 {
+		devs := rt.unassignedDevicesLocked(1)
+		if len(devs) < 1 {
 			return fmt.Errorf("no GPU device available")
 		}
-		rt.gpuAssignments[name] = []int{dev}
+		rt.gpuAssignments[name] = devs
 	}
 
 	rt.allocations[name] = req
@@ -100,19 +115,33 @@ func (rt *ResourceTracker) AssignedGPUs(name string) []int {
 	return rt.gpuAssignments[name]
 }
 
-func (rt *ResourceTracker) firstUnassignedDeviceLocked() int {
+// unassignedDevicesLocked returns up to n unassigned GPU device IDs.
+func (rt *ResourceTracker) unassignedDevicesLocked(n int) []int {
 	assigned := make(map[int]bool)
 	for _, devs := range rt.gpuAssignments {
 		for _, d := range devs {
 			assigned[d] = true
 		}
 	}
+	var result []int
 	for _, dev := range rt.gpuDevices {
 		if !assigned[dev] {
-			return dev
+			result = append(result, dev)
+			if len(result) == n {
+				break
+			}
 		}
 	}
-	return -1
+	return result
+}
+
+// assignedDeviceCountLocked returns the total number of assigned device slots.
+func (rt *ResourceTracker) assignedDeviceCountLocked() int {
+	count := 0
+	for _, devs := range rt.gpuAssignments {
+		count += len(devs)
+	}
+	return count
 }
 
 // Available returns currently available resources.
@@ -129,9 +158,18 @@ func (rt *ResourceTracker) CanFit(req manifest.ResourceList) bool {
 	defer rt.mu.Unlock()
 
 	avail := rt.availableLocked()
-	return req.CPUMillis <= avail.CPUMillis &&
-		req.MemoryMB <= avail.MemoryMB &&
-		req.GPUMemoryMB <= avail.GPUMemoryMB
+	if req.CPUMillis > avail.CPUMillis || req.MemoryMB > avail.MemoryMB || req.GPUMemoryMB > avail.GPUMemoryMB {
+		return false
+	}
+	if req.GPUCount > 0 && len(rt.gpuDevices) > 0 {
+		if rt.assignedDeviceCountLocked()+req.GPUCount > rt.gpuMax {
+			return false
+		}
+		if len(rt.unassignedDevicesLocked(req.GPUCount)) < req.GPUCount {
+			return false
+		}
+	}
+	return true
 }
 
 // Allocated returns total currently allocated resources.
@@ -159,6 +197,7 @@ func (rt *ResourceTracker) Allocatable() Resources {
 	return Resources{
 		CPUMillis:   rt.allocatable.CPUMillis,
 		MemoryMB:    rt.allocatable.MemoryMB,
+		GPUCount:    rt.allocatable.GPUCount,
 		GPUMemoryMB: rt.allocatable.GPUMemoryMB,
 	}
 }
@@ -180,6 +219,7 @@ func (rt *ResourceTracker) availableLocked() Resources {
 	return Resources{
 		CPUMillis:   rt.allocatable.CPUMillis - alloc.CPUMillis,
 		MemoryMB:    rt.allocatable.MemoryMB - alloc.MemoryMB,
+		GPUCount:    rt.allocatable.GPUCount - alloc.GPUCount,
 		GPUMemoryMB: rt.allocatable.GPUMemoryMB - alloc.GPUMemoryMB,
 	}
 }
@@ -189,6 +229,7 @@ func (rt *ResourceTracker) allocatedLocked() Resources {
 	for _, a := range rt.allocations {
 		r.CPUMillis += a.CPUMillis
 		r.MemoryMB += a.MemoryMB
+		r.GPUCount += a.GPUCount
 		r.GPUMemoryMB += a.GPUMemoryMB
 	}
 	return r
