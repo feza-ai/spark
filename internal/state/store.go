@@ -250,6 +250,19 @@ func (s *PodStore) Names() []string {
 	return names
 }
 
+// SetSourcePath sets the SourcePath for a pod. Returns false if not found.
+func (s *PodStore) SetSourcePath(name string, path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.pods[name]
+	if !ok {
+		return false
+	}
+	rec.SourcePath = path
+	return true
+}
+
 // ListBySourcePath returns all pod records with the given SourcePath.
 func (s *PodStore) ListBySourcePath(path string) []PodRecord {
 	s.mu.RLock()
