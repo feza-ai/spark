@@ -1,4 +1,4 @@
-# Spark: Container Operations and GPU Device Management (v1.4.0)
+# Spark: Wiring Integrity and Reconciler Hardening (v1.5.0)
 
 ## Status: In Progress
 
@@ -6,33 +6,35 @@
 
 ### Problem Statement
 
-Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NATS messaging, HTTP REST API (9 endpoints + auth + metrics), SQLite persistence, resource-aware scheduling, graceful shutdown, Prometheus metrics, and structured logging. However, it has five operational gaps that limit its utility for ML workloads on the DGX:
+Spark v1.4.0 has 36 wired use cases across 13 packages. A deep audit of the codebase reveals 7 broken wiring paths and 2 operational defects that undermine reliability for production ML workloads on the DGX:
 
-1. **No pod exec.** Operators cannot execute commands inside running containers. When an ML training job stalls or produces unexpected output, there is no way to inspect the container without SSH into the DGX and using podman directly. An HTTP exec endpoint (`POST /api/v1/pods/{name}/exec`) would enable remote debugging without direct host access.
+1. **CronJob registration broken on NATS and HTTP.** The NATS `req.spark.apply` handler and the HTTP `POST /api/v1/pods` handler both parse CronJobs from manifests but never call `cronSched.Register()`. CronJobs submitted via NATS or HTTP are silently accepted but never scheduled. Only the filesystem watcher path registers cron jobs.
 
-2. **No container port mapping.** Pods cannot expose ports to the host. Jupyter notebooks, TensorBoard dashboards, and model serving endpoints running inside pods are inaccessible. The K8s manifest `ports` field is ignored by the parser and executor.
+2. **Manifest file removal is a no-op.** The watcher emits a `Removed` event when a manifest file is deleted, but `main.go:308` only logs a message. Pods created from the removed manifest continue running. Cron jobs remain registered. There is no way to undeploy workloads by removing their manifest files.
 
-3. **No init containers.** ML workflows often require setup steps before training starts: downloading model weights, preparing datasets, generating configuration files. K8s init containers run sequentially to completion before main containers. Spark parses only the `containers` field and ignores `initContainers`.
+3. **HTTP/NATS delete does not release scheduler resources.** The `handleDeletePod` HTTP handler and the NATS delete handler call `StopPod` and `RemovePod` but never call `scheduler.RemovePod()` or `tracker.Release()`. Deleted pods leave their CPU/memory/GPU allocations permanently consumed until the next Spark restart.
 
-4. **No GPU device assignment.** The `--gpu-max` flag is declared but unused (`_ = gpuMax`). All GPU-requesting pods receive `--device nvidia.com/gpu=all`, giving every pod access to all GPUs. On multi-GPU hosts, this prevents proper isolation. Spark should assign specific GPU device IDs via `NVIDIA_VISIBLE_DEVICES` and limit concurrent GPU pods.
+4. **Restart counter never incremented.** `PodRecord.Restarts` is declared, persisted in SQLite, surfaced in the API, and emitted as `spark_pod_restarts_total` in Prometheus metrics, but it is never incremented. The reconciler re-queues pods to `StatusPending` on restart but does not call any increment function. The metric always reports 0.
 
-5. **No image management API.** Container images can only be pulled implicitly when a pod starts. There is no way to pre-load images, check if an image exists, or list available images via the HTTP API. Pre-pulling large ML model images (often 10-50 GB) avoids cold-start delays.
+5. **StatusScheduled and StatusPreempted pods stuck forever.** The reconciler's `reconcileOnce()` only handles `StatusPending` and `StatusRunning`. A pod that reaches `StatusScheduled` (between scheduling and creation) and then has its `CreatePod` call panic or timeout remains stuck. A preempted pod stays in `StatusPreempted` indefinitely with no path back to `StatusPending`.
+
+6. **StreamPodLogs process not Wait()-ed.** `StreamPodLogs` starts a `podman pod logs --follow` process but does not call `cmd.Wait()` after the context closes. The process may become a zombie until the Go runtime garbage-collects it.
+
+7. **parseMemory missing Ki suffix.** `parseMemory()` handles Gi, Mi, G, and M suffixes but not Ki. A manifest using `512Ki` parses as 0 MB. This is an uncommon unit for ML workloads but breaks K8s compatibility.
 
 ### Objectives
 
-1. Add HTTP pod exec endpoint for running commands inside containers.
-2. Parse container port declarations from manifests and map them via podman `--publish`.
-3. Support init containers that run sequentially before main containers.
-4. Implement GPU device assignment with `NVIDIA_VISIBLE_DEVICES` and `--gpu-max` enforcement.
-5. Add HTTP endpoints for listing and pulling container images.
+1. Fix all 7 broken wiring paths so that CronJobs, deletes, restarts, and stuck pods work correctly.
+2. Fix the 2 operational defects (zombie processes, memory parsing).
+3. Add securityContext passthrough for privileged ML containers.
+4. Reach zero broken use cases in the manifest.
 
 ### Non-Goals
 
-- Interactive TTY/shell exec (single command execution only for v1.4.0).
-- Service discovery or DNS-based routing to exposed ports.
-- Sidecar containers (init containers only, no concurrent sidecars).
-- GPU time-slicing or MIG (Multi-Instance GPU) partitioning.
-- Image build or push (pull and list only).
+- envFrom / configMapRef / secretRef support (v1.6.0 -- requires new ConfigMap/Secret store).
+- CronJob HTTP management endpoints (v1.6.0 -- depends on stable cron registration first).
+- Liveness/readiness probes (significant new subsystem, not a wiring fix).
+- GPU count-to-memory normalization (requires design decision on resource model; tracked separately).
 
 ### Constraints
 
@@ -40,43 +42,38 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 - HTTP routing via `net/http.ServeMux` with Go 1.22+ method-aware patterns. See ADR-009.
 - Standard `flag` package for CLI flags.
 - Podman CLI only (no podman API socket).
-- GPU device assignment via `NVIDIA_VISIBLE_DEVICES` environment variable (standard NVIDIA Container Toolkit mechanism).
 
 ### Success Metrics
 
-- `curl -X POST localhost:8080/api/v1/pods/NAME/exec -d '{"command":["ls","-la"]}'` returns stdout/stderr JSON.
-- Pod with `containerPort: 8888` and `hostPort: 8888` is accessible on `localhost:8888`.
-- Pod with init containers: init containers run sequentially, main containers start only after all init containers succeed.
-- With `--gpu-max 1`, a second GPU-requesting pod is queued (not scheduled) while the first is running.
-- `curl localhost:8080/api/v1/images` returns JSON list of available images.
 - `go test ./... -race -timeout 120s` passes with all new tests.
+- CronJob submitted via `nats pub req.spark.apply` triggers on schedule.
+- CronJob submitted via `curl -X POST /api/v1/pods` triggers on schedule.
+- Deleting a manifest file from the watch directory stops the corresponding pod.
+- `curl -X DELETE /api/v1/pods/myapp` releases resources visible in `GET /api/v1/resources`.
+- Pod restart counter increments on reconciler re-queue, visible in `GET /api/v1/pods/{name}` and `/metrics`.
+- Preempted pod returns to Pending on next reconcile pass.
+- `podman ps` shows no zombie `podman pod logs` processes after SSE stream disconnects.
 
 ## Discovery Summary
 
 **Current architecture** (from docs/design.md):
-- 13 packages, 31 use cases (all WIRED).
-- HTTP API: 9 endpoints + auth middleware + Prometheus metrics on :8080.
-- Executor interface: CreatePod, StopPod, PodStatus, RemovePod, ListPods, PodStats, PodLogs, StreamPodLogs. No Exec, no port mapping, no init container orchestration.
-- Manifest types: PodSpec has Containers but no InitContainers or Ports. ContainerSpec has no Ports field.
-- Scheduler: ResourceTracker tracks CPUMillis, MemoryMB, GPUMemoryMB. No GPU device ID tracking. `--gpu-max` flag unused.
-- GPU detection: `gpu.GPUInfo` has GPUCount field. Device IDs not enumerated.
-- CI/CD: GitHub Actions with build/test/vet/staticcheck + release-please + goreleaser. Already operational.
+- 13 packages, 36 use cases (all WIRED prior to this audit).
+- HTTP API: 12 endpoints + auth middleware + Prometheus metrics on :8080.
+- NATS: 4 request/reply subjects + events + logs + heartbeat.
+- Filesystem: manifest directory watcher with SHA-256 change detection.
 
-**Key interfaces to extend**:
-- `manifest.ContainerSpec`: add `Ports []ContainerPort` field.
-- `manifest.PodSpec`: add `InitContainers []ContainerSpec` field.
-- `executor.Executor`: add `ExecPod(ctx, name, command) (stdout, stderr, exitCode, error)`.
-- `executor.PodmanExecutor.CreatePod`: handle init containers (sequential), port mapping (`--publish`), GPU device env var.
-- `scheduler.ResourceTracker`: add GPU device slot tracking alongside memory tracking.
-- `gpu.Detect()`: enumerate device IDs (0, 1, ..., N-1).
-- `internal/api`: add POST /exec, GET /images, POST /images/pull endpoints.
+**Gaps discovered** (7 broken, 2 defects):
+- UC-037: NATS apply ignores CronJobs (never calls Register).
+- UC-038: HTTP apply ignores CronJobs (never calls Register).
+- UC-039: Watcher Removed event is a no-op.
+- UC-040: Delete handlers do not release scheduler resources.
+- UC-041: Restarts counter never incremented.
+- UC-042: StatusScheduled/StatusPreempted pods stuck forever.
+- UC-046: StreamPodLogs zombie processes.
+- parseMemory missing Ki suffix (breaks K8s compat).
+- securityContext not parsed (needed for privileged ML containers).
 
-**Use cases affected**:
-- UC-032 (pod exec): new operational use case.
-- UC-033 (port mapping): new networking use case.
-- UC-034 (init containers): new pod lifecycle use case.
-- UC-035 (GPU device assignment): extends UC-005 scheduling and UC-014 GPU detection.
-- UC-036 (image management): new operational use case.
+**Use case manifest**: .claude/scratch/usecases-manifest.json (46 total: 36 WIRED, 7 BROKEN, 3 PLANNED).
 
 ## Scope and Deliverables
 
@@ -84,175 +81,165 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 
 | ID | Deliverable | Acceptance Criteria |
 |----|-------------|---------------------|
-| D1 | Pod exec endpoint | POST /api/v1/pods/{name}/exec runs a command, returns stdout/stderr/exitCode JSON |
-| D2 | Container port mapping | Parser reads ports, executor maps with --publish, ports visible in pod detail |
-| D3 | Init containers | Parser reads initContainers, executor runs them sequentially before main containers |
-| D4 | GPU device assignment | Scheduler assigns device IDs, executor sets NVIDIA_VISIBLE_DEVICES, --gpu-max enforced |
-| D5 | Image management API | GET /api/v1/images lists images, POST /api/v1/images/pull pulls by name:tag |
+| D1 | CronJob registration on all ingestion paths | CronJobs register via NATS, HTTP, and filesystem |
+| D2 | Manifest removal triggers pod deletion | Removing a file stops pods and unregisters cron jobs |
+| D3 | Delete releases scheduler resources | Resources freed immediately on delete |
+| D4 | Restart counter works | Restarts increments on re-queue, visible in API and metrics |
+| D5 | Stuck pod recovery | StatusScheduled and StatusPreempted pods recover |
+| D6 | StreamPodLogs cleanup | No zombie processes after SSE disconnect |
+| D7 | parseMemory Ki support | 512Ki parses as 0 MB (0.5 MB, rounds to 0), 1024Ki parses as 1 MB |
+| D8 | securityContext passthrough | runAsUser, privileged, capabilities forwarded to podman |
 
 ### Out of Scope
 
-- Interactive TTY exec or WebSocket shell
-- Service discovery or port-based routing
-- Sidecar containers
-- GPU MIG or time-slicing
-- Image build or push
+- envFrom / configMapRef / secretRef support
+- CronJob HTTP management endpoints
+- Liveness/readiness probes
+- GPU count-to-memory normalization
 
 ## Checkable Work Breakdown
 
-### E34: Pod Exec
+### E40: CronJob Registration Fixes
 
-- [x] T34.1 Add ExecPod method to executor  Owner: TBD  Est: 45m  verifies: [UC-032]
-  - Add to `executor.Executor` interface: `ExecPod(ctx context.Context, podName string, containerName string, command []string) ([]byte, []byte, int, error)` returning (stdout, stderr, exitCode, err).
-  - Implement in `PodmanExecutor`: run `podman exec <podName>-<containerName> <command...>`.
-  - Capture stdout and stderr separately using `cmd.StdoutPipe()` and `cmd.StderrPipe()`.
-  - Return exit code from `cmd.ProcessState.ExitCode()`.
-  - If containerName is empty, default to the first container: `<podName>-<spec.Containers[0].Name>`.
-  - Create tests with stub command runner.
-  - Acceptance: `go test -race ./internal/executor/` passes.
+- [ ] T40.1 Wire CronJob registration into NATS apply handler  Owner: TBD  Est: 30m  verifies: [UC-037]
+  - Update `internal/bus/handler_apply.go` `RegisterApplyHandler` to accept a `cronSched` parameter.
+  - After iterating CronJobs, call `cronSched.Register(cj)` for each.
+  - Update `main.go` to pass `cronSched` to `RegisterApplyHandler`.
+  - Create tests: NATS apply with CronJob manifest calls Register.
+  - Acceptance: `go test -race ./internal/bus/` passes. CronJob registered.
 
-- [x] T34.2 Add pod exec HTTP endpoint in internal/api  Owner: TBD  Est: 45m  verifies: [UC-032]
-  - Depends on: T34.1.
-  - Create `internal/api/pods_exec.go`:
-    - `POST /api/v1/pods/{name}/exec` handler.
-    - Request body JSON: `{"command":["ls","-la"],"container":"worker"}` (container optional).
-    - Verify pod exists and is Running (404 if not found, 400 if not running).
-    - Call `executor.ExecPod(ctx, name, container, command)`.
-    - Response JSON: `{"stdout":"...","stderr":"...","exit_code":0}`.
-    - 400 if command is empty.
-  - Register route in server.go.
-  - Create tests: exec success, pod not found, pod not running, empty command.
+- [ ] T40.2 Wire CronJob registration into HTTP apply handler  Owner: TBD  Est: 30m  verifies: [UC-038]
+  - Add `cronSched` field to `api.Server` struct.
+  - Update `handleApplyPod` to call `cronSched.Register(cj)` for each CronJob in `result.CronJobs`.
+  - Update `NewServer` to accept and store `cronSched`.
+  - Update `main.go` to pass `cronSched` when creating the API server.
+  - Create tests: HTTP POST with CronJob manifest calls Register.
   - Acceptance: `go test -race ./internal/api/` passes.
 
-### E35: Container Port Mapping
+### E41: Manifest Removal Handling
 
-- [x] T35.1 Add port types to manifest and parse from YAML  Owner: TBD  Est: 45m  verifies: [UC-033]
-  - Add to `manifest.ContainerSpec`:
-    - `Ports []ContainerPort`
-  - Define `type ContainerPort struct { ContainerPort int; HostPort int; Protocol string }`.
-  - Protocol defaults to "tcp" if not specified.
-  - Update the container parser (in parse.go or the relevant parser functions) to extract `ports` from each container in the YAML:
-    ```yaml
-    ports:
-      - containerPort: 8888
-        hostPort: 8888
-        protocol: TCP
-    ```
-  - Create tests: parse ports, default protocol, missing hostPort (use containerPort).
-  - Acceptance: `go test -race ./internal/manifest/` passes. Ports are parsed correctly.
+- [ ] T41.1 Implement manifest removal handler in main.go  Owner: TBD  Est: 45m  verifies: [UC-039]
+  - In the watcher `Removed` case in `main.go`:
+    1. Track which pods and cron jobs came from each manifest file path (add a `sourcePath` field to PodRecord or maintain a map in main.go).
+    2. On Removed event: look up pods by source path, call `executor.StopPod`, `executor.RemovePod`, `store.Delete`, `scheduler.RemovePod` for each.
+    3. Unregister cron jobs from `cronSched` by name.
+  - Add `Unregister(name string)` method to `cron.Scheduler` if it does not exist.
+  - Create tests: manifest removal stops pods and unregisters cron jobs.
+  - Acceptance: `go test -race ./internal/cron/` and `go build ./cmd/spark` pass.
 
-- [x] T35.2 Wire port mapping into executor CreatePod  Owner: TBD  Est: 30m  verifies: [UC-033]
-  - Depends on: T35.1.
-  - Update `executor.buildRunArgs`: for each port in container.Ports:
-    - Add `--publish <hostPort>:<containerPort>/<protocol>` to podman args.
-    - If HostPort is 0, omit the host port (podman assigns a random port).
-  - Actually, in podman, ports must be added during `pod create`, not `run`. Update `CreatePod` to add `--publish` args to the pod create command (not the container run command).
-  - Create tests: verify --publish args in pod create command.
-  - Acceptance: `go test -race ./internal/executor/` passes.
+- [ ] T41.2 Add source path tracking to state store  Owner: TBD  Est: 30m  verifies: [UC-039]
+  - Add `SourcePath string` field to `state.PodRecord`.
+  - Set it when a pod is applied from the watcher (pass the file path through to `store.Apply`).
+  - Add `ListBySourcePath(path string) []PodRecord` query method to `PodStore`.
+  - Persist `SourcePath` in SQLite schema (add column, update SavePod/LoadPods).
+  - Create tests for `ListBySourcePath`.
+  - Acceptance: `go test -race ./internal/state/` passes.
 
-- [x] T35.3 Expose ports in pod detail API response  Owner: TBD  Est: 15m  verifies: [UC-033]
-  - Depends on: T35.1.
-  - Update the pod detail JSON response in `pods_query.go` to include ports from the pod spec.
-  - No new endpoint -- extend existing GET /api/v1/pods/{name} response.
-  - Create test: apply pod with ports, GET detail, verify ports in response.
+### E42: Delete Releases Scheduler Resources
+
+- [ ] T42.1 Release scheduler resources on HTTP delete  Owner: TBD  Est: 30m  verifies: [UC-040]
+  - Update `handleDeletePod` in `internal/api/pods_mutate.go` to call `s.scheduler.RemovePod(name)` after stopping the pod.
+  - Add `scheduler` field to `api.Server` struct (or use an interface with RemovePod method).
+  - Update `NewServer` to accept and store the scheduler reference.
+  - Update `main.go` to pass the scheduler when creating the API server.
+  - Create tests: delete pod, verify RemovePod called on scheduler.
   - Acceptance: `go test -race ./internal/api/` passes.
 
-### E36: Init Containers
+- [ ] T42.2 Release scheduler resources on NATS delete  Owner: TBD  Est: 30m  verifies: [UC-040]
+  - Update `internal/bus/handler_delete.go` `RegisterDeleteHandler` to accept a scheduler parameter.
+  - Call `scheduler.RemovePod(name)` after stopping the pod.
+  - Replace `context.TODO()` with a proper context from the bus handler.
+  - Update `main.go` to pass the scheduler to `RegisterDeleteHandler`.
+  - Create tests: NATS delete calls scheduler.RemovePod.
+  - Acceptance: `go test -race ./internal/bus/` passes.
 
-- [x] T36.1 Add InitContainers field to PodSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-034]
-  - Add to `manifest.PodSpec`: `InitContainers []ContainerSpec`.
-  - Update Pod parser to extract `initContainers` from the YAML spec (same structure as `containers`).
-  - Create tests: parse init containers, empty init containers, init + main containers.
+### E43: Restart Counter Fix
+
+- [ ] T43.1 Increment restart counter in reconciler  Owner: TBD  Est: 30m  verifies: [UC-041]
+  - In `reconcileRunning` in `internal/reconciler/reconciler.go`:
+    - When re-queuing a pod to `StatusPending` (policy Always or OnFailure), call `r.store.IncrementRestarts(pod.Spec.Name)`.
+  - Add `IncrementRestarts(name string)` method to `state.PodStore` if it does not exist (distinct from `IncrementRetry`).
+  - The method should increment `PodRecord.Restarts` and persist to SQLite.
+  - Create tests: reconciler restart increments counter, verify via store.Get.
+  - Acceptance: `go test -race ./internal/reconciler/` and `go test -race ./internal/state/` pass.
+
+### E44: Stuck Pod Recovery
+
+- [ ] T44.1 Handle StatusScheduled and StatusPreempted in reconciler  Owner: TBD  Est: 45m  verifies: [UC-042]
+  - In `reconcileOnce` in `internal/reconciler/reconciler.go`, add cases for:
+    - `StatusScheduled`: check if the pod exists in podman. If running, update to `StatusRunning`. If not found, reset to `StatusPending` to retry scheduling.
+    - `StatusPreempted`: reset to `StatusPending` so the scheduler can re-evaluate. The preempted pod will be re-scheduled when resources become available.
+  - Add a staleness check: if a pod has been in `StatusScheduled` for more than 30 seconds, force reset to `StatusPending`.
+  - Create tests: scheduled pod reset, preempted pod reset, stale scheduled pod timeout.
+  - Acceptance: `go test -race ./internal/reconciler/` passes.
+
+### E45: StreamPodLogs Process Cleanup
+
+- [ ] T45.1 Add cmd.Wait() to StreamPodLogs  Owner: TBD  Est: 15m  verifies: [UC-046]
+  - In `internal/executor/logs.go` `StreamPodLogs`:
+    - After the context is done or the scanner loop exits, call `cmd.Wait()` to reap the child process.
+    - Use a deferred call or a goroutine that waits on context cancellation.
+  - Create test: verify that after cancelling the context, the command process is properly waited on.
+  - Acceptance: `go test -race ./internal/executor/` passes.
+
+### E46: parseMemory Ki Suffix
+
+- [ ] T46.1 Add Ki suffix support to parseMemory  Owner: TBD  Est: 15m  verifies: [infrastructure]
+  - In `internal/manifest/yaml.go` `parseMemory`:
+    - Add case for `Ki` suffix: parse value, divide by 1024 to get MB (e.g., 1024Ki = 1 MB, 512Ki = 0 MB).
+    - Add case for `K` suffix: parse value, divide by 1000 to get MB.
+  - Create tests: 1024Ki=1, 512Ki=0, 2048Ki=2, 1K=0, 2000K=2.
   - Acceptance: `go test -race ./internal/manifest/` passes.
 
-- [x] T36.2 Execute init containers sequentially in CreatePod  Owner: TBD  Est: 45m  verifies: [UC-034]
-  - Depends on: T36.1.
-  - Update `PodmanExecutor.CreatePod`:
-    1. After pod create, run each init container sequentially (not in background, use `podman run` without `-d`).
-    2. Wait for each init container to complete (`cmd.Wait()`).
-    3. If any init container exits non-zero, return error immediately (do not start main containers).
-    4. After all init containers succeed, start main containers as before (with `-d`).
-  - Init containers use the same volume mounts, env vars, and network as main containers.
-  - Init containers are named `<podName>-init-<index>-<name>`.
-  - Create tests with stub: verify init containers run before main, verify failure stops execution.
+### E47: Security Context Passthrough
+
+- [ ] T47.1 Add SecurityContext to ContainerSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-043]
+  - Add `SecurityContext` struct to `internal/manifest/types.go`:
+    ```go
+    type SecurityContext struct {
+        RunAsUser    int
+        RunAsNonRoot bool
+        Privileged   bool
+        AddCaps      []string // capabilities.add
+        DropCaps     []string // capabilities.drop
+    }
+    ```
+  - Add `SecurityContext *SecurityContext` field to `ContainerSpec`.
+  - Update `parseContainer` in `parse.go` to extract `securityContext` from YAML.
+  - Create tests: parse securityContext with all fields, partial fields, missing.
+  - Acceptance: `go test -race ./internal/manifest/` passes.
+
+- [ ] T47.2 Wire security context into executor buildRunArgs  Owner: TBD  Est: 30m  verifies: [UC-043]
+  - Depends on: T47.1.
+  - In `internal/executor/podman.go` `buildRunArgs`:
+    - If `SecurityContext.RunAsUser` is set, add `--user <uid>`.
+    - If `SecurityContext.Privileged` is true, add `--privileged`.
+    - For each cap in `AddCaps`, add `--cap-add <cap>`.
+    - For each cap in `DropCaps`, add `--cap-drop <cap>`.
+  - Create tests: verify podman args for each securityContext field.
   - Acceptance: `go test -race ./internal/executor/` passes.
 
-### E37: GPU Device Assignment
+### E48: Integration Wiring and Verification
 
-- [x] T37.1 Add GPU device enumeration to gpu package  Owner: TBD  Est: 30m  verifies: [UC-035]
-  - Update `gpu.GPUInfo` to include `DeviceIDs []int` field (e.g., [0, 1, 2, 3]).
-  - Update `gpu.Detect()` / `gpu.DetectWithFallback()` to populate device IDs by parsing nvidia-smi output.
-  - For single-GPU hosts like DGX Spark, DeviceIDs = [0].
-  - For multi-GPU: parse `nvidia-smi -L` to count devices, assign IDs 0 through N-1.
-  - Create tests with stub nvidia-smi output.
-  - Acceptance: `go test -race ./internal/gpu/` passes.
-
-- [x] T37.2 Add GPU device slot tracking to scheduler  Owner: TBD  Est: 45m  verifies: [UC-035]
-  - Add to `ResourceTracker`:
-    - `gpuDevices []int`: list of all GPU device IDs.
-    - `gpuMax int`: max concurrent GPU pods (from --gpu-max flag).
-    - `gpuAssignments map[string][]int`: pod name -> assigned device IDs.
-  - Update `NewResourceTracker` to accept device IDs and gpuMax.
-  - Update `Allocate`: if pod requests GPUMemoryMB > 0, assign a free device ID. If no device available (all assigned or gpuMax reached), return error.
-  - Update `Release`: free the device IDs for the released pod.
-  - Add `AssignedGPUs(name string) []int` getter.
-  - Create tests: allocate GPU, release GPU, exceed gpuMax, multi-device assignment.
-  - Acceptance: `go test -race ./internal/scheduler/` passes.
-
-- [x] T37.3 Set NVIDIA_VISIBLE_DEVICES in executor  Owner: TBD  Est: 30m  verifies: [UC-035]
-  - Depends on: T37.2.
-  - Update `executor.CreatePod` to accept an optional `gpuDevices []int` parameter (or read from a context/spec).
-  - In `buildRunArgs`: if GPU devices are assigned, add `--env NVIDIA_VISIBLE_DEVICES=<comma-separated IDs>` instead of `--device nvidia.com/gpu=all`.
-  - If no GPU devices assigned (non-GPU pod), do not add GPU flags.
-  - Update reconciler and main.go to pass GPU assignments from scheduler to executor.
-  - Create tests: verify NVIDIA_VISIBLE_DEVICES env var in args.
-  - Acceptance: `go test -race ./internal/executor/` passes.
-
-### E38: Image Management API
-
-- [x] T38.1 Add image list and pull methods to executor  Owner: TBD  Est: 30m  verifies: [UC-036]
-  - Add to `executor.Executor` interface:
-    - `ListImages(ctx context.Context) ([]ImageInfo, error)`.
-    - `PullImage(ctx context.Context, name string) error`.
-  - Define `type ImageInfo struct { Name string; Tag string; Size string; Created string }`.
-  - Implement in `PodmanExecutor`:
-    - `ListImages`: run `podman images --format json`, parse JSON output.
-    - `PullImage`: run `podman pull <name>`. Return error if pull fails.
-  - Note: `ImageExists` and `PullIfNeeded` already exist in `internal/executor/image.go`. Extend or reuse.
-  - Create tests with stub.
-  - Acceptance: `go test -race ./internal/executor/` passes.
-
-- [x] T38.2 Add image management HTTP endpoints  Owner: TBD  Est: 30m  verifies: [UC-036]
-  - Depends on: T38.1.
-  - Create `internal/api/images.go`:
-    - `GET /api/v1/images` handler: calls `executor.ListImages()`, returns JSON array.
-    - `POST /api/v1/images/pull` handler: reads body `{"image":"name:tag"}`, calls `executor.PullImage()`, returns 200 on success, 400 on failure.
-  - Register routes in server.go.
-  - Create tests: list images, pull image, pull invalid image.
-  - Acceptance: `go test -race ./internal/api/` passes.
-
-### E39: Integration Wiring
-
-- [x] T39.1 Wire GPU device assignment into main.go and reconciler  Owner: TBD  Est: 45m  verifies: [UC-032, UC-033, UC-034, UC-035, UC-036]
-  - Depends on: T34.1, T34.2, T35.1, T35.2, T36.1, T36.2, T37.1, T37.2, T37.3, T38.1, T38.2.
+- [ ] T48.1 Update main.go for all new wiring  Owner: TBD  Est: 30m  verifies: [UC-037, UC-038, UC-039, UC-040, UC-041, UC-042, UC-043, UC-046]
+  - Depends on: T40.1, T40.2, T41.1, T41.2, T42.1, T42.2, T43.1, T44.1, T45.1, T46.1, T47.1, T47.2.
   - Update `cmd/spark/main.go`:
-    - Pass GPU device IDs and `*gpuMax` to `NewResourceTracker`.
-    - Pass GPU assignments from scheduler to executor in reconciler loop.
-  - Update `reconciler.Reconciler` to retrieve GPU assignments when creating pods.
-  - Ensure all new HTTP routes are registered.
+    - Pass `cronSched` to `RegisterApplyHandler` and `api.NewServer`.
+    - Pass `scheduler` to `api.NewServer` and `RegisterDeleteHandler`.
+    - Implement manifest removal handler in watcher callback.
   - Acceptance: `go build ./...` and `go vet ./...` pass.
 
-- [x] T39.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
-  - Depends on: T39.1.
+- [ ] T48.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
+  - Depends on: T48.1.
   - Run `go test ./... -race -timeout 120s`. Zero failures.
   - Run `go vet ./...`. Zero warnings.
   - Acceptance: All tests pass, zero lint warnings.
 
-- [x] T39.3 Update README and design docs for v1.4.0  Owner: TBD  Est: 30m  verifies: [infrastructure]
-  - Depends on: T39.2.
-  - Update README.md: add exec, ports, init containers, GPU device assignment, image management sections.
-  - Update docs/design.md: add new interfaces and invariants.
-  - Acceptance: README accurately describes all v1.4.0 features.
+- [ ] T48.3 Update design docs for v1.5.0  Owner: TBD  Est: 15m  verifies: [infrastructure]
+  - Depends on: T48.2.
+  - Update docs/design.md: note wiring fixes, securityContext support.
+  - Update README.md if any new user-facing behavior.
+  - Acceptance: Docs accurately reflect current system.
 
 ## Parallel Work
 
@@ -260,59 +247,58 @@ Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NAT
 
 | Track | Tasks | Description |
 |-------|-------|-------------|
-| A: Pod Exec | T34.1, T34.2 | Executor exec + HTTP endpoint |
-| B: Port Mapping | T35.1, T35.2, T35.3 | Manifest ports + executor + API |
-| C: Init Containers | T36.1, T36.2 | Manifest init + executor orchestration |
-| D: GPU Devices | T37.1, T37.2, T37.3 | GPU enumeration + scheduler + executor |
-| E: Image Management | T38.1, T38.2 | Executor list/pull + HTTP endpoints |
+| A: CronJob Registration | T40.1, T40.2 | Wire cron scheduler into NATS and HTTP apply |
+| B: Manifest Removal | T41.1, T41.2 | Handle file deletion in watcher |
+| C: Delete Resources | T42.1, T42.2 | Release scheduler allocations on delete |
+| D: Reconciler Fixes | T43.1, T44.1 | Restart counter + stuck pod recovery |
+| E: Executor Fixes | T45.1 | StreamPodLogs process cleanup |
+| F: Parser Fixes | T46.1, T47.1 | Ki suffix + securityContext parsing |
+| G: Security Context | T47.2 | Wire securityContext into executor (depends on T47.1) |
 
-Sync point: T39.1 requires all tracks to complete before wiring.
+Sync point: T48.1 requires all tracks to complete before integration wiring.
 
 ### Waves
 
-### Wave 1: Independent Components (8 agents)
-- [x] T34.1 Add ExecPod method to executor  verifies: [UC-032]
-- [x] T35.1 Add port types to manifest and parse from YAML  verifies: [UC-033]
-- [x] T36.1 Add InitContainers field to PodSpec and parse from YAML  verifies: [UC-034]
-- [x] T37.1 Add GPU device enumeration to gpu package  verifies: [UC-035]
-- [x] T37.2 Add GPU device slot tracking to scheduler  verifies: [UC-035]
-- [x] T38.1 Add image list and pull methods to executor  verifies: [UC-036]
-- [x] T35.3 Expose ports in pod detail API response  verifies: [UC-033]
-- [x] T34.2 Add pod exec HTTP endpoint in internal/api  verifies: [UC-032]
+### Wave 1: Independent Fixes (10 agents)
+- [ ] T40.1 Wire CronJob registration into NATS apply handler  verifies: [UC-037]
+- [ ] T40.2 Wire CronJob registration into HTTP apply handler  verifies: [UC-038]
+- [ ] T41.2 Add source path tracking to state store  verifies: [UC-039]
+- [ ] T42.1 Release scheduler resources on HTTP delete  verifies: [UC-040]
+- [ ] T42.2 Release scheduler resources on NATS delete  verifies: [UC-040]
+- [ ] T43.1 Increment restart counter in reconciler  verifies: [UC-041]
+- [ ] T44.1 Handle StatusScheduled and StatusPreempted in reconciler  verifies: [UC-042]
+- [ ] T45.1 Add cmd.Wait() to StreamPodLogs  verifies: [UC-046]
+- [ ] T46.1 Add Ki suffix support to parseMemory  verifies: [infrastructure]
+- [ ] T47.1 Add SecurityContext to ContainerSpec and parse from YAML  verifies: [UC-043]
 
-### Wave 2: Dependent Components (4 agents)
-- [x] T35.2 Wire port mapping into executor CreatePod  verifies: [UC-033]
-- [x] T36.2 Execute init containers sequentially in CreatePod  verifies: [UC-034]
-- [x] T37.3 Set NVIDIA_VISIBLE_DEVICES in executor  verifies: [UC-035]
-- [x] T38.2 Add image management HTTP endpoints  verifies: [UC-036]
+### Wave 2: Dependent Components (2 agents)
+- [ ] T41.1 Implement manifest removal handler in main.go  verifies: [UC-039]
+- [ ] T47.2 Wire security context into executor buildRunArgs  verifies: [UC-043]
+
+Note: T41.1 depends on T41.2 (source path tracking). T47.2 depends on T47.1 (securityContext types).
 
 ### Wave 3: Integration and Verification (3 agents)
-- [x] T39.1 Wire GPU device assignment into main.go and reconciler  verifies: [UC-032, UC-033, UC-034, UC-035, UC-036]
-- [x] T39.2 Run full test suite and lint  verifies: [infrastructure]
-- [x] T39.3 Update README and design docs for v1.4.0  verifies: [infrastructure]
-
-Note: T34.2 depends on T34.1 but can run in Wave 1 if assigned to the same agent sequentially. T35.2 depends on T35.1. T36.2 depends on T36.1. T37.3 depends on T37.2. T38.2 depends on T38.1. Wave 3 tasks depend on all prior waves.
+- [ ] T48.1 Update main.go for all new wiring  verifies: [UC-037, UC-038, UC-039, UC-040, UC-041, UC-042, UC-043, UC-046]
+- [ ] T48.2 Run full test suite and lint  verifies: [infrastructure]
+- [ ] T48.3 Update design docs for v1.5.0  verifies: [infrastructure]
 
 ## Timeline and Milestones
 
 | ID | Milestone | Dependencies | Exit Criteria |
 |----|-----------|--------------|---------------|
-| M1 | Pod exec functional | T34.1, T34.2 | Exec command returns stdout/stderr via HTTP |
-| M2 | Port mapping functional | T35.1, T35.2, T35.3 | Pod with ports accessible on host |
-| M3 | Init containers functional | T36.1, T36.2 | Init containers run sequentially before main |
-| M4 | GPU device assignment functional | T37.1, T37.2, T37.3 | NVIDIA_VISIBLE_DEVICES set, --gpu-max enforced |
-| M5 | Wired, tested, documented | T39.1, T39.2, T39.3 | Full integration passes, README updated |
+| M1 | CronJob registration works on all paths | T40.1, T40.2 | CronJob registers via NATS, HTTP, and filesystem |
+| M2 | Delete path complete | T41.1, T41.2, T42.1, T42.2 | Delete releases resources, manifest removal stops pods |
+| M3 | Reconciler hardened | T43.1, T44.1 | Restart counter works, stuck pods recover |
+| M4 | Wired, tested, documented | T48.1, T48.2, T48.3 | Full integration passes, docs updated |
 
 ## Risk Register
 
 | ID | Risk | Impact | Likelihood | Mitigation |
 |----|------|--------|------------|------------|
-| R1 | podman exec with separate stdout/stderr piping race conditions | Medium | Medium | Use cmd.Output() for simple cases. For large output, use goroutines with WaitGroup. |
-| R2 | Port conflicts on host when multiple pods expose same port | High | Medium | Return clear error message. Do not retry with different port -- user must resolve. |
-| R3 | Init container failure leaves pod in inconsistent state | High | Low | On init failure: remove all init containers, remove the pod, mark as Failed in store. |
-| R4 | NVIDIA_VISIBLE_DEVICES format varies across driver versions | Medium | Low | Use comma-separated integer device IDs (0,1,2). This is the universal format. |
-| R5 | Large image pulls block the HTTP handler for minutes | Medium | High | Pull in a goroutine. Return 202 Accepted with a status message. Poll for completion via image list. |
-| R6 | GPU device tracking inconsistent after crash recovery | Medium | Medium | On startup recovery, query podman for running GPU pods, re-register device assignments. |
+| R1 | Adding cronSched to NATS/HTTP handlers changes function signatures | Low | High | Keep the interface narrow: pass only the Register method, not the full scheduler. |
+| R2 | Source path tracking requires SQLite schema migration | Medium | High | Add column with ALTER TABLE ADD COLUMN. SQLite supports this without full migration. |
+| R3 | Manifest removal race with watcher poll interval | Low | Medium | Use store lookup by source path. If path was re-added between polls, the new manifest will re-apply. |
+| R4 | StatusPreempted -> Pending creates scheduling thrash | Medium | Low | Only reset to Pending once per reconcile cycle. The scheduler's anti-thrash logic (3 preemptions in 5 min) prevents loops. |
 
 ## Operating Procedure
 
@@ -328,27 +314,32 @@ Note: T34.2 depends on T34.1 but can run in Wave 1 if assigned to the same agent
 - Rebase and merge (not squash, not merge commits).
 - Each commit is a small, logical unit touching one package.
 - HTTP tests use `httptest.NewServer` (no real network binding).
-- Executor tests use stub command runner (no podman dependency in CI).
-- Init container tests verify sequential execution and failure propagation.
-- GPU tests verify device ID assignment and release.
+- Bus tests use mock bus (no NATS dependency in CI).
+- Reconciler tests use stub executor and store.
 
 ## Progress Log
 
 ### 2026-03-20: Plan created
-- Trimmed completed v1.3.0 plan. v1.3.0 knowledge preserved in docs/devlog.md (2026-03-19 entry) and docs/adr/010-011.
-- Updated use case manifest: UC-026 through UC-031 marked WIRED. Added UC-032 through UC-036 as PLANNED.
-- Created plan for v1.4.0: pod exec, port mapping, init containers, GPU device assignment, image management.
-- 15 tasks across 3 waves. 8 agents in Wave 1, 4 in Wave 2, 3 in Wave 3.
+- Audited codebase post-v1.4.0 delivery. Found 7 broken wiring paths and 2 operational defects.
+- Updated use case manifest: UC-032 through UC-036 marked WIRED. Added UC-037 through UC-046 (7 BROKEN, 3 PLANNED).
+- Created plan for v1.5.0: 15 tasks across 3 waves (10+2+3 agents).
+- Prioritized wiring integrity over new features. Non-goals: envFrom, CronJob HTTP endpoints, probes.
 
 ## Hand-off Notes
 
 - Spark is a single-binary Go pod orchestrator for GPU hosts. See docs/design.md for architecture.
-- v1.3.0 is complete: Prometheus metrics, HTTP auth, pod logs/events via HTTP, JSON logging, emptyDir volumes. All 31 use cases WIRED.
+- v1.4.0 is complete: pod exec, port mapping, init containers, GPU device assignment, image management. All 36 use cases WIRED.
+- This plan fixes 7 broken wiring paths discovered during a post-v1.4.0 audit.
+- The core issue: NATS and HTTP apply handlers parse CronJobs but never register them. Delete handlers do not release scheduler resources. Reconciler does not handle stuck states.
 - CI/CD is operational: GitHub Actions with build/test/vet/staticcheck + release-please + goreleaser.
-- This plan adds five features: pod exec, port mapping, init containers, GPU device assignment, image management.
-- Pod exec uses `podman exec <container> <command>`. Container naming: `<podName>-<containerName>`.
-- Port mapping: ports declared in manifest, mapped via `podman pod create --publish`. Must be on pod create, not container run.
-- Init containers: run sequentially without `-d` flag. Fail-fast on non-zero exit.
-- GPU device assignment: `NVIDIA_VISIBLE_DEVICES` env var replaces `--device nvidia.com/gpu=all`. Device IDs from nvidia-smi. `--gpu-max` limits concurrent GPU pods.
-- Image management: extends existing image.go with ListImages and HTTP endpoints.
 - DGX Spark target: `ssh ndungu@192.168.86.250` (Ubuntu arm64, NVIDIA Grace CPU, 1 GPU 128GB unified memory).
+
+### Completed Versions
+
+| Version | Features | Use Cases |
+|---------|----------|-----------|
+| v1.0.0 | Core orchestrator: podman executor, NATS bus, manifest parser, reconciler, scheduler, watcher | UC-001 through UC-010 |
+| v1.1.0 | SQLite persistence, pod recovery, retention pruning | UC-011 through UC-017 |
+| v1.2.0 | HTTP REST API, priority preemption, CronJob, Deployment, StatefulSet | UC-018 through UC-025 |
+| v1.3.0 | Prometheus metrics, HTTP auth, pod logs/events, JSON logging, emptyDir volumes | UC-026 through UC-031 |
+| v1.4.0 | Pod exec, port mapping, init containers, GPU device assignment, image management | UC-032 through UC-036 |

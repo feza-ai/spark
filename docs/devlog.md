@@ -1,5 +1,20 @@
 # Spark Development Log
 
+## 2026-03-20: v1.4.0 Container Operations and GPU Device Management
+
+**Type:** finding
+**Tags:** v1.4.0, exec, ports, init-containers, gpu-devices, images
+
+**Problem:** v1.3.0 lacked pod exec, container port mapping, init containers, GPU device isolation, and image management API.
+**Root cause:** N/A -- planned feature delivery.
+**Fix:** Delivered 5 features across 15 tasks in 3 parallel waves (8+4+3 agents):
+- Pod exec: POST /api/v1/pods/{name}/exec runs commands inside containers, returns stdout/stderr/exitCode JSON.
+- Container port mapping: manifest ports parsed, mapped via `podman pod create --publish`.
+- Init containers: parsed from initContainers field, run sequentially before main containers, fail-fast on non-zero exit.
+- GPU device assignment: nvidia-smi device enumeration, scheduler tracks device slots, NVIDIA_VISIBLE_DEVICES env var replaces --device nvidia.com/gpu=all, --gpu-max enforced.
+- Image management: GET /api/v1/images lists images, POST /api/v1/images/pull pulls by name:tag.
+**Impact:** 36 use cases (UC-001 through UC-036) all WIRED. 13 packages, all tests pass. HTTP API now has 12 endpoints + auth + metrics.
+
 ## 2026-03-19: v1.3.0 Observability, Security, and Operational Maturity
 
 **Type:** finding

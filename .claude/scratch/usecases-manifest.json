@@ -30,49 +30,19 @@
   {"id":"UC-029","domain":"observability","name":"Pod events via HTTP","interfaces":["http"],"priority":"P1","status":"WIRED"},
   {"id":"UC-030","domain":"observability","name":"Structured JSON logging","interfaces":["library"],"priority":"P1","status":"WIRED"},
   {"id":"UC-031","domain":"pods","name":"EmptyDir volume support","interfaces":["library"],"priority":"P1","status":"WIRED"},
-  {
-    "id": "UC-032",
-    "domain": "pods",
-    "name": "Exec into running container",
-    "description": "POST /api/v1/pods/{name}/exec runs a command inside a running container and returns stdout/stderr. Used for debugging ML training jobs.",
-    "interfaces": ["http"],
-    "priority": "P0",
-    "status": "PLANNED"
-  },
-  {
-    "id": "UC-033",
-    "domain": "pods",
-    "name": "Container port mapping",
-    "description": "Pods can declare containerPort and hostPort in their spec. Spark maps ports via podman --publish. Enables access to Jupyter notebooks, TensorBoard, model serving endpoints.",
-    "interfaces": ["http", "library"],
-    "priority": "P0",
-    "status": "PLANNED"
-  },
-  {
-    "id": "UC-034",
-    "domain": "pods",
-    "name": "Init containers",
-    "description": "PodSpec supports initContainers that run sequentially to completion before main containers start. Used for model weight download, data preparation, config generation.",
-    "interfaces": ["library"],
-    "priority": "P0",
-    "status": "PLANNED"
-  },
-  {
-    "id": "UC-035",
-    "domain": "scheduling",
-    "name": "GPU device assignment",
-    "description": "Scheduler assigns specific GPU device IDs to pods via NVIDIA_VISIBLE_DEVICES. Honors --gpu-max to limit concurrent GPU pods. Tracks per-device allocation.",
-    "interfaces": ["library"],
-    "priority": "P1",
-    "status": "PLANNED"
-  },
-  {
-    "id": "UC-036",
-    "domain": "pods",
-    "name": "Image management via HTTP",
-    "description": "GET /api/v1/images lists available container images. POST /api/v1/images/pull pulls an image. Enables pre-loading images before pod creation.",
-    "interfaces": ["http"],
-    "priority": "P1",
-    "status": "PLANNED"
-  }
+  {"id":"UC-032","domain":"pods","name":"Exec into running container","interfaces":["http"],"priority":"P0","status":"WIRED"},
+  {"id":"UC-033","domain":"pods","name":"Container port mapping","interfaces":["http","library"],"priority":"P0","status":"WIRED"},
+  {"id":"UC-034","domain":"pods","name":"Init containers","interfaces":["library"],"priority":"P0","status":"WIRED"},
+  {"id":"UC-035","domain":"scheduling","name":"GPU device assignment","interfaces":["library"],"priority":"P1","status":"WIRED"},
+  {"id":"UC-036","domain":"pods","name":"Image management via HTTP","interfaces":["http"],"priority":"P1","status":"WIRED"},
+  {"id":"UC-037","domain":"cron","name":"CronJob via NATS apply","description":"CronJobs submitted via NATS req.spark.apply are registered with the cron scheduler, not just acknowledged.","interfaces":["nats"],"priority":"P0","status":"BROKEN"},
+  {"id":"UC-038","domain":"cron","name":"CronJob via HTTP apply","description":"CronJobs submitted via POST /api/v1/pods are registered with the cron scheduler.","interfaces":["http"],"priority":"P0","status":"BROKEN"},
+  {"id":"UC-039","domain":"ingestion","name":"Manifest removal triggers pod deletion","description":"Removing a manifest file from the watch directory deletes the corresponding pods and unregisters cron jobs.","interfaces":["filesystem"],"priority":"P1","status":"BROKEN"},
+  {"id":"UC-040","domain":"pods","name":"Delete pod releases scheduler resources","description":"Deleting a pod via HTTP or NATS releases its CPU/memory/GPU allocations from the scheduler immediately.","interfaces":["http","nats"],"priority":"P0","status":"BROKEN"},
+  {"id":"UC-041","domain":"reconciliation","name":"Restart counter incremented on re-queue","description":"When the reconciler re-queues a pod (restart policy Always or OnFailure), the Restarts counter is incremented.","interfaces":["library"],"priority":"P1","status":"BROKEN"},
+  {"id":"UC-042","domain":"reconciliation","name":"Stuck pod recovery","description":"Pods stuck in StatusScheduled or StatusPreempted are recovered by the reconciler instead of staying in that state forever.","interfaces":["library"],"priority":"P1","status":"BROKEN"},
+  {"id":"UC-043","domain":"pods","name":"Security context passthrough","description":"securityContext fields (runAsUser, runAsNonRoot, capabilities, privileged) are parsed from manifests and forwarded to podman run args.","interfaces":["library"],"priority":"P1","status":"PLANNED"},
+  {"id":"UC-044","domain":"pods","name":"ConfigMap and Secret env injection","description":"envFrom with configMapRef/secretRef and valueFrom with secretKeyRef/fieldRef are parsed and resolved.","interfaces":["library"],"priority":"P2","status":"PLANNED"},
+  {"id":"UC-045","domain":"cron","name":"CronJob HTTP management","description":"HTTP endpoints to list registered cron jobs, inspect next-run times, and unregister schedules.","interfaces":["http"],"priority":"P2","status":"PLANNED"},
+  {"id":"UC-046","domain":"observability","name":"StreamPodLogs process cleanup","description":"StreamPodLogs calls cmd.Wait() after context closes to prevent zombie processes.","interfaces":["library"],"priority":"P1","status":"BROKEN"}
 ]

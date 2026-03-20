@@ -7,16 +7,16 @@ Single-binary Go pod orchestrator for single-node GPU hosts. Reads K8s-compatibl
 ```
 cmd/spark/          Entry point: flags, startup, signal handling
 internal/
-  api/              HTTP REST API handlers (health, resources, pod CRUD, logs, events, metrics, auth)
+  api/              HTTP REST API handlers (health, resources, pod CRUD, exec, logs, events, metrics, images, auth)
   bus/              NATS bus abstraction, protocol handlers, event/log publishers
   cron/             Cron expression parser and scheduled job trigger
   metrics/          Prometheus metrics collector and text renderer
-  executor/         Podman interface: pod create, stop, logs, image pull, stats
-  gpu/              GPU detection (nvidia-smi) and system resource detection
+  executor/         Podman interface: pod create, exec, stop, logs, image list/pull, stats, port mapping, init containers
+  gpu/              GPU detection (nvidia-smi), device ID enumeration, and system resource detection
   lifecycle/        Graceful shutdown coordinator with pod draining
-  manifest/         K8s YAML parser (Pod, Job, CronJob, Deployment, StatefulSet)
+  manifest/         K8s YAML parser (Pod, Job, CronJob, Deployment, StatefulSet) with ports and init containers
   reconciler/       Desired-state reconciliation loop, pod recovery, resource sync
-  scheduler/        Resource-aware scheduling with priority preemption
+  scheduler/        Resource-aware scheduling with priority preemption and GPU device slot tracking
   state/            Pod state store (in-memory + SQLite WAL persistence)
   watcher/          Manifest directory poller (SHA-256 change detection)
 ```
@@ -25,8 +25,8 @@ internal/
 
 1. Manifest arrives via NATS (`req.spark.apply`), HTTP API (`POST /api/v1/pods`), or filesystem watcher.
 2. Parser extracts PodSpec(s) from the manifest kind.
-3. Scheduler checks resource availability; preempts lower-priority pods if needed.
-4. Executor creates podman pod(s) on the shared `spark-net` network.
+3. Scheduler checks resource availability (CPU, memory, GPU devices); preempts lower-priority pods if needed.
+4. Executor runs init containers sequentially, then creates main containers in podman pod(s) on the shared `spark-net` network with port mappings.
 5. State store tracks desired vs actual state.
 6. Reconciler (5s loop) restarts crashed services and retries failed jobs.
 7. Events, logs, and heartbeats publish over NATS.
@@ -38,13 +38,16 @@ internal/
 - Reconciler never stops service pods on spark shutdown. Service pods persist in podman across restarts.
 - All pods join `spark-net` for name-based pod-to-pod communication.
 - CronJob concurrency policies: Allow (always create), Forbid (skip if active), Replace (delete active, create new).
+- GPU device isolation: scheduler assigns specific device IDs via `NVIDIA_VISIBLE_DEVICES`; `--gpu-max` limits concurrent GPU pods.
+- Init containers run sequentially to completion before main containers start. Any init failure aborts the pod.
+- Container ports declared in manifests are mapped via `podman pod create --publish`.
 
 ## Interfaces
 
-- **HTTP**: GET /healthz, GET /metrics, GET /api/v1/resources, GET /api/v1/pods, GET /api/v1/pods/{name}, GET /api/v1/pods/{name}/logs, GET /api/v1/pods/{name}/events, POST /api/v1/pods, DELETE /api/v1/pods/{name}. Bearer token auth middleware (optional via --api-token-file; /healthz and /metrics exempt).
+- **HTTP**: GET /healthz, GET /metrics, GET /api/v1/resources, GET /api/v1/pods, GET /api/v1/pods/{name}, GET /api/v1/pods/{name}/logs, GET /api/v1/pods/{name}/events, POST /api/v1/pods, POST /api/v1/pods/{name}/exec, DELETE /api/v1/pods/{name}, GET /api/v1/images, POST /api/v1/images/pull. Bearer token auth middleware (optional via --api-token-file; /healthz and /metrics exempt).
 - **NATS**: req.spark.{apply,delete,get,list}, evt.spark.{event}.{pod}, log.spark.{pod}, heartbeat.spark.{node}
 - **Filesystem**: manifest directory watch (poll every 5s, SHA-256 checksums)
-- **Podman CLI**: pod create, pod stop, pod rm, pod logs, pod stats, image exists, image pull, network create
+- **Podman CLI**: pod create (--publish), pod stop, pod rm, pod logs, pod stats, exec, run (init containers), image exists, image pull, image list (--format json), network create
 
 ## Decisions
 
