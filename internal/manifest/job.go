@@ -151,7 +151,30 @@ func parseContainer(cm map[string]interface{}) ContainerSpec {
 	}
 
 	c.Resources = parseResources(getMap(cm, "resources"))
+	c.SecurityContext = parseSecurityContext(getMap(cm, "securityContext"))
 	return c
+}
+
+func parseSecurityContext(sc map[string]interface{}) *SecurityContext {
+	if sc == nil {
+		return nil
+	}
+	ctx := &SecurityContext{
+		RunAsUser:    getInt(sc, "runAsUser"),
+		RunAsNonRoot: getString(sc, "runAsNonRoot") == "true",
+		Privileged:   getString(sc, "privileged") == "true",
+	}
+	for _, v := range getList(sc, "capabilities", "add") {
+		if s, ok := v.(string); ok {
+			ctx.AddCaps = append(ctx.AddCaps, s)
+		}
+	}
+	for _, v := range getList(sc, "capabilities", "drop") {
+		if s, ok := v.(string); ok {
+			ctx.DropCaps = append(ctx.DropCaps, s)
+		}
+	}
+	return ctx
 }
 
 func parseResources(rm map[string]interface{}) ResourceRequirements {
