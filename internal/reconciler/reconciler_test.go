@@ -27,6 +27,11 @@ type stubExecutor struct {
 	listErr     error
 	podStats    map[string]executor.PodResourceUsage
 	podStatsErr error
+
+	// Probe stubs.
+	execProbeExit int
+	execProbeErr  error
+	httpProbeErr  error
 }
 
 func newStubExecutor() *stubExecutor {
@@ -127,11 +132,15 @@ func (s *stubExecutor) PullImage(_ context.Context, _ string) error {
 }
 
 func (s *stubExecutor) ExecProbe(_ context.Context, _ string, _ string, _ []string, _ time.Duration) (int, error) {
-	return 0, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.execProbeExit, s.execProbeErr
 }
 
 func (s *stubExecutor) HTTPProbe(_ context.Context, _ int, _ string, _ time.Duration) error {
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.httpProbeErr
 }
 
 func (s *stubExecutor) setStatus(name string, st executor.Status) {
@@ -1023,4 +1032,185 @@ func TestReconcileScheduledAndPreempted(t *testing.T) {
 // This is used to simulate staleness in tests.
 func backdateLastEvent(store *state.PodStore, name string, d time.Duration) {
 	store.BackdateLastEvent(name, d)
+}
+
+// testPodSpecWithProbe creates a PodSpec with a liveness probe on the first container.
+func testPodSpecWithExecProbe(name string, initialDelay, period, failure, timeout int) manifest.PodSpec {
+	return manifest.PodSpec{
+		Name:          name,
+		RestartPolicy: "Always",
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:  "main",
+				Image: "test:latest",
+				Resources: manifest.ResourceRequirements{
+					Requests: manifest.ResourceList{CPUMillis: 100, MemoryMB: 128},
+				},
+				LivenessProbe: &manifest.ProbeSpec{
+					Exec:                &manifest.ExecProbe{Command: []string{"cat", "/tmp/healthy"}},
+					InitialDelaySeconds: initialDelay,
+					PeriodSeconds:       period,
+					FailureThreshold:    failure,
+					TimeoutSeconds:      timeout,
+				},
+			},
+		},
+	}
+}
+
+func testPodSpecWithHTTPProbe(name string, port int, path string, initialDelay, period, failure, timeout int) manifest.PodSpec {
+	return manifest.PodSpec{
+		Name:          name,
+		RestartPolicy: "Always",
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:  "main",
+				Image: "test:latest",
+				Resources: manifest.ResourceRequirements{
+					Requests: manifest.ResourceList{CPUMillis: 100, MemoryMB: 128},
+				},
+				LivenessProbe: &manifest.ProbeSpec{
+					HTTPGet:             &manifest.HTTPGetProbe{Path: path, Port: port},
+					InitialDelaySeconds: initialDelay,
+					PeriodSeconds:       period,
+					FailureThreshold:    failure,
+					TimeoutSeconds:      timeout,
+				},
+			},
+		},
+	}
+}
+
+func TestLivenessProbe(t *testing.T) {
+	tests := []struct {
+		name       string
+		podSpec    manifest.PodSpec
+		setup      func(exec *stubExecutor, r *Reconciler)
+		ticks      int
+		wantStatus state.PodStatus
+		wantStops  int
+	}{
+		{
+			name:    "exec probe passes: no restart",
+			podSpec: testPodSpecWithExecProbe("probe-ok", 0, 1, 3, 1),
+			setup: func(exec *stubExecutor, r *Reconciler) {
+				// Exec probe returns 0 (healthy) by default.
+				// Backdate the probe state so it fires immediately.
+				r.probeStates["probe-ok"] = &probeState{
+					started: time.Now().Add(-10 * time.Second),
+				}
+			},
+			ticks:      3,
+			wantStatus: state.StatusRunning,
+			wantStops:  0,
+		},
+		{
+			name:    "exec probe fails FailureThreshold times: restart triggered",
+			podSpec: testPodSpecWithExecProbe("probe-fail", 0, 1, 3, 1),
+			setup: func(exec *stubExecutor, r *Reconciler) {
+				exec.mu.Lock()
+				exec.execProbeExit = 1
+				exec.mu.Unlock()
+				// Pre-populate probe state with 2 failures and a lastCheck in the past
+				// so the next check fires and hits the threshold.
+				r.probeStates["probe-fail"] = &probeState{
+					started:             time.Now().Add(-10 * time.Second),
+					lastCheck:           time.Now().Add(-10 * time.Second),
+					consecutiveFailures: 2,
+				}
+			},
+			ticks:      1,
+			wantStatus: state.StatusPending,
+			wantStops:  1,
+		},
+		{
+			name:    "HTTP probe fails: restart triggered",
+			podSpec: testPodSpecWithHTTPProbe("http-fail", 8080, "/healthz", 0, 1, 2, 1),
+			setup: func(exec *stubExecutor, r *Reconciler) {
+				exec.mu.Lock()
+				exec.httpProbeErr = errors.New("connection refused")
+				exec.mu.Unlock()
+				// Pre-populate with 1 failure so next check triggers restart.
+				r.probeStates["http-fail"] = &probeState{
+					started:             time.Now().Add(-10 * time.Second),
+					lastCheck:           time.Now().Add(-10 * time.Second),
+					consecutiveFailures: 1,
+				}
+			},
+			ticks:      1,
+			wantStatus: state.StatusPending,
+			wantStops:  1,
+		},
+		{
+			name:    "initial delay respected: no probing during delay",
+			podSpec: testPodSpecWithExecProbe("probe-delay", 3600, 1, 1, 1),
+			setup: func(exec *stubExecutor, r *Reconciler) {
+				exec.mu.Lock()
+				exec.execProbeExit = 1
+				exec.mu.Unlock()
+				// Probe was just started; 3600s delay means no probes will fire.
+			},
+			ticks:      5,
+			wantStatus: state.StatusRunning,
+			wantStops:  0,
+		},
+		{
+			name:    "probe passes after failures: counter resets",
+			podSpec: testPodSpecWithExecProbe("probe-reset", 0, 1, 3, 1),
+			setup: func(exec *stubExecutor, r *Reconciler) {
+				// Set up probe state with 2 consecutive failures (one away from threshold).
+				r.probeStates["probe-reset"] = &probeState{
+					started:             time.Now().Add(-10 * time.Second),
+					lastCheck:           time.Now().Add(-10 * time.Second),
+					consecutiveFailures: 2,
+				}
+				// Probe will pass (exit code 0) -- failures should reset.
+			},
+			ticks:      1,
+			wantStatus: state.StatusRunning,
+			wantStops:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := state.NewPodStore()
+			sched := newTestScheduler()
+			exec := newStubExecutor()
+			r := NewReconciler(store, sched, exec, time.Second)
+
+			store.Apply(tt.podSpec)
+
+			// First tick: schedule and create the pod.
+			r.reconcileOnce(context.Background())
+
+			rec, ok := store.Get(tt.podSpec.Name)
+			if !ok || rec.Status != state.StatusRunning {
+				t.Fatalf("expected Running after scheduling, got %v", rec.Status)
+			}
+
+			// Apply test-specific setup (probe behavior).
+			if tt.setup != nil {
+				tt.setup(exec, r)
+			}
+
+			// Run the specified number of ticks to check probes.
+			for i := 0; i < tt.ticks; i++ {
+				r.reconcileOnce(context.Background())
+			}
+
+			rec, ok = store.Get(tt.podSpec.Name)
+			if !ok {
+				t.Fatal("pod not found in store")
+			}
+			if rec.Status != tt.wantStatus {
+				t.Fatalf("expected status %s, got %s", tt.wantStatus, rec.Status)
+			}
+
+			stops := exec.getStops()
+			if len(stops) != tt.wantStops {
+				t.Fatalf("expected %d stops, got %d: %v", tt.wantStops, len(stops), stops)
+			}
+		})
+	}
 }

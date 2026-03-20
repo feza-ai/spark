@@ -11,12 +11,21 @@ import (
 	"github.com/feza-ai/spark/internal/state"
 )
 
+// probeState tracks liveness probe state for a running pod.
+type probeState struct {
+	consecutiveFailures int
+	lastCheck           time.Time
+	started             time.Time
+}
+
 // Reconciler drives the control loop that moves pods from desired to actual state.
 type Reconciler struct {
 	store     *state.PodStore
 	scheduler *scheduler.Scheduler
 	executor  executor.Executor
 	interval  time.Duration
+
+	probeStates map[string]*probeState
 
 	onStatusChange func(podName, status, message string)
 	onPodRunning   func(podName string)
@@ -26,10 +35,11 @@ type Reconciler struct {
 // NewReconciler creates a reconciler that ticks at the given interval.
 func NewReconciler(store *state.PodStore, sched *scheduler.Scheduler, exec executor.Executor, interval time.Duration) *Reconciler {
 	return &Reconciler{
-		store:     store,
-		scheduler: sched,
-		executor:  exec,
-		interval:  interval,
+		store:       store,
+		scheduler:   sched,
+		executor:    exec,
+		interval:    interval,
+		probeStates: make(map[string]*probeState),
 	}
 }
 
@@ -228,6 +238,8 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 	}
 
 	if st.Running {
+		// Check liveness probes for the first container.
+		r.checkLivenessProbe(ctx, pod)
 		return
 	}
 
@@ -236,6 +248,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 	if r.onPodStopped != nil {
 		r.onPodStopped(pod.Spec.Name)
 	}
+
+	// Clean up probe state for exited pods.
+	delete(r.probeStates, pod.Spec.Name)
 
 	// Release scheduler resources.
 	r.scheduler.RemovePod(pod.Spec.Name)
@@ -314,6 +329,109 @@ func (r *Reconciler) reconcileScheduled(ctx context.Context, pod state.PodRecord
 	r.scheduler.RemovePod(pod.Spec.Name)
 	r.updateStatus(pod.Spec.Name, state.StatusPending, "reset from scheduled: pod not found after timeout")
 	slog.Warn("scheduled pod reset to pending", "pod", pod.Spec.Name)
+}
+
+// checkLivenessProbe checks the liveness probe of the first container in a running pod.
+// If the probe fails FailureThreshold consecutive times, the pod is stopped and set to
+// StatusPending to trigger a restart.
+func (r *Reconciler) checkLivenessProbe(ctx context.Context, pod state.PodRecord) {
+	if len(pod.Spec.Containers) == 0 {
+		return
+	}
+	probe := pod.Spec.Containers[0].LivenessProbe
+	if probe == nil {
+		return
+	}
+
+	now := time.Now()
+	ps, ok := r.probeStates[pod.Spec.Name]
+	if !ok {
+		// First time seeing this pod: initialize probe state.
+		r.probeStates[pod.Spec.Name] = &probeState{
+			started: now,
+		}
+		return
+	}
+
+	// Respect InitialDelaySeconds.
+	if now.Sub(ps.started) < time.Duration(probe.InitialDelaySeconds)*time.Second {
+		return
+	}
+
+	// Respect PeriodSeconds.
+	period := probe.PeriodSeconds
+	if period <= 0 {
+		period = 10
+	}
+	if !ps.lastCheck.IsZero() && now.Sub(ps.lastCheck) < time.Duration(period)*time.Second {
+		return
+	}
+
+	ps.lastCheck = now
+
+	timeout := time.Duration(probe.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+
+	// Execute the probe.
+	var probeErr error
+	if probe.Exec != nil {
+		containerName := pod.Spec.Containers[0].Name
+		exitCode, err := r.executor.ExecProbe(ctx, pod.Spec.Name, containerName, probe.Exec.Command, timeout)
+		if err != nil {
+			probeErr = err
+		} else if exitCode != 0 {
+			probeErr = fmt.Errorf("exec probe exited %d", exitCode)
+		}
+	} else if probe.HTTPGet != nil {
+		probeErr = r.executor.HTTPProbe(ctx, probe.HTTPGet.Port, probe.HTTPGet.Path, timeout)
+	}
+
+	if probeErr == nil {
+		// Success: reset failure counter.
+		ps.consecutiveFailures = 0
+		return
+	}
+
+	// Failure.
+	ps.consecutiveFailures++
+	threshold := probe.FailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	slog.Warn("liveness probe failed", "pod", pod.Spec.Name, "failures", ps.consecutiveFailures, "threshold", threshold, "err", probeErr)
+
+	if ps.consecutiveFailures >= threshold {
+		slog.Info("liveness probe exceeded failure threshold, restarting pod", "pod", pod.Spec.Name)
+
+		// Stop the pod.
+		gracePeriod := pod.Spec.TerminationGracePeriodSeconds
+		if gracePeriod == 0 {
+			gracePeriod = 10
+		}
+		if err := r.executor.StopPod(ctx, pod.Spec.Name, gracePeriod); err != nil {
+			slog.Error("failed to stop pod after liveness failure", "pod", pod.Spec.Name, "err", err)
+			return
+		}
+
+		if r.onPodStopped != nil {
+			r.onPodStopped(pod.Spec.Name)
+		}
+
+		// Clean up probe state and scheduler resources.
+		delete(r.probeStates, pod.Spec.Name)
+		r.scheduler.RemovePod(pod.Spec.Name)
+
+		// Increment restarts and set to Pending to trigger reschedule.
+		r.store.IncrementRestarts(pod.Spec.Name)
+		r.updateStatus(pod.Spec.Name, state.StatusPending, "liveness probe failed")
+	}
+}
+
+// CleanupProbeState removes probe state for a pod. Call when a pod is deleted.
+func (r *Reconciler) CleanupProbeState(podName string) {
+	delete(r.probeStates, podName)
 }
 
 // reconcilePreempted resets a preempted pod to Pending so the scheduler can
