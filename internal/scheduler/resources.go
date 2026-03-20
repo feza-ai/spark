@@ -11,6 +11,7 @@ import (
 type Resources struct {
 	CPUMillis   int
 	MemoryMB    int
+	GPUCount    int
 	GPUMemoryMB int
 }
 
@@ -33,6 +34,7 @@ func NewResourceTracker(total Resources, systemReserve Resources, gpuDevices []i
 		allocatable: Resources{
 			CPUMillis:   total.CPUMillis - systemReserve.CPUMillis,
 			MemoryMB:    total.MemoryMB - systemReserve.MemoryMB,
+			GPUCount:    total.GPUCount - systemReserve.GPUCount,
 			GPUMemoryMB: total.GPUMemoryMB - systemReserve.GPUMemoryMB,
 		},
 		allocations: make(map[string]manifest.ResourceList),
@@ -159,6 +161,7 @@ func (rt *ResourceTracker) Allocatable() Resources {
 	return Resources{
 		CPUMillis:   rt.allocatable.CPUMillis,
 		MemoryMB:    rt.allocatable.MemoryMB,
+		GPUCount:    rt.allocatable.GPUCount,
 		GPUMemoryMB: rt.allocatable.GPUMemoryMB,
 	}
 }
@@ -180,6 +183,7 @@ func (rt *ResourceTracker) availableLocked() Resources {
 	return Resources{
 		CPUMillis:   rt.allocatable.CPUMillis - alloc.CPUMillis,
 		MemoryMB:    rt.allocatable.MemoryMB - alloc.MemoryMB,
+		GPUCount:    rt.allocatable.GPUCount - alloc.GPUCount,
 		GPUMemoryMB: rt.allocatable.GPUMemoryMB - alloc.GPUMemoryMB,
 	}
 }
@@ -189,6 +193,7 @@ func (rt *ResourceTracker) allocatedLocked() Resources {
 	for _, a := range rt.allocations {
 		r.CPUMillis += a.CPUMillis
 		r.MemoryMB += a.MemoryMB
+		r.GPUCount += a.GPUCount
 		r.GPUMemoryMB += a.GPUMemoryMB
 	}
 	return r
