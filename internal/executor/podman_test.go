@@ -86,6 +86,80 @@ func TestBuildRunArgs_GPUFlag(t *testing.T) {
 	}
 }
 
+func TestFormatDeviceIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		ids  []int
+		want string
+	}{
+		{"single", []int{0}, "0"},
+		{"multiple", []int{0, 1, 2}, "0,1,2"},
+		{"non-contiguous", []int{1, 3}, "1,3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatDeviceIDs(tt.ids)
+			if got != tt.want {
+				t.Errorf("formatDeviceIDs(%v) = %q, want %q", tt.ids, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInjectGPUDevices(t *testing.T) {
+	container := manifest.ContainerSpec{
+		Name:  "app",
+		Image: "myimage:latest",
+		Resources: manifest.ResourceRequirements{
+			Limits: manifest.ResourceList{GPUMemoryMB: 4096},
+		},
+	}
+	args := buildRunArgs("mypod", container, nil, "spark-net")
+	injected := injectGPUDevices(args, []int{0, 2})
+
+	// Should have NVIDIA_VISIBLE_DEVICES env var
+	envVal := "NVIDIA_VISIBLE_DEVICES=0,2"
+	idx := slices.Index(injected, envVal)
+	if idx < 1 || injected[idx-1] != "--env" {
+		t.Errorf("expected --env %s in args, got %v", envVal, injected)
+	}
+
+	// Should still have --device nvidia.com/gpu=all
+	if !slices.Contains(injected, "nvidia.com/gpu=all") {
+		t.Errorf("expected --device nvidia.com/gpu=all in args, got %v", injected)
+	}
+
+	// Image should still be present
+	if !slices.Contains(injected, "myimage:latest") {
+		t.Errorf("expected image myimage:latest in args, got %v", injected)
+	}
+}
+
+func TestInjectGPUDevices_NoGPUDevices(t *testing.T) {
+	// When no GPUDevices are set but GPUMemoryMB > 0, buildRunArgs should
+	// still add --device nvidia.com/gpu=all (fallback behavior).
+	container := manifest.ContainerSpec{
+		Name:  "app",
+		Image: "myimage:latest",
+		Resources: manifest.ResourceRequirements{
+			Limits: manifest.ResourceList{GPUMemoryMB: 4096},
+		},
+	}
+	args := buildRunArgs("mypod", container, nil, "spark-net")
+
+	// Should have --device nvidia.com/gpu=all
+	if !slices.Contains(args, "nvidia.com/gpu=all") {
+		t.Errorf("expected --device nvidia.com/gpu=all in args, got %v", args)
+	}
+
+	// Should NOT have NVIDIA_VISIBLE_DEVICES
+	for _, a := range args {
+		if a == "NVIDIA_VISIBLE_DEVICES" || (len(a) > 24 && a[:24] == "NVIDIA_VISIBLE_DEVICES=") {
+			t.Errorf("unexpected NVIDIA_VISIBLE_DEVICES in args: %v", args)
+		}
+	}
+}
+
 func TestBuildRunArgs_ResourceLimits(t *testing.T) {
 	container := manifest.ContainerSpec{
 		Name:  "app",
