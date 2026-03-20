@@ -19,6 +19,7 @@ type GPUInfo struct {
 	MemoryUsedMB       int
 	UtilizationPercent int
 	GPUCount           int
+	DeviceIDs          []int
 }
 
 // Detect runs nvidia-smi and returns aggregated GPU information.
@@ -141,6 +142,12 @@ func parseCSV(output string) (GPUInfo, error) {
 
 	// Average utilization across GPUs.
 	info.UtilizationPercent = info.UtilizationPercent / info.GPUCount
+
+	// Assign sequential device IDs.
+	info.DeviceIDs = make([]int, info.GPUCount)
+	for i := range info.DeviceIDs {
+		info.DeviceIDs[i] = i
+	}
 
 	return info, nil
 }
