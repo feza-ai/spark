@@ -114,6 +114,10 @@ func (s *stubExecutor) StreamPodLogs(_ context.Context, _ string, _ int) (io.Rea
 	return nil, nil
 }
 
+func (s *stubExecutor) ExecPod(_ context.Context, _ string, _ string, _ []string) ([]byte, []byte, int, error) {
+	return nil, nil, 0, nil
+}
+
 func (s *stubExecutor) setStatus(name string, st executor.Status) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

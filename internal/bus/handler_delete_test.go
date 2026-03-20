@@ -54,6 +54,10 @@ func (e *stubExecutor) StreamPodLogs(_ context.Context, _ string, _ int) (io.Rea
 	return nil, nil
 }
 
+func (e *stubExecutor) ExecPod(_ context.Context, _ string, _ string, _ []string) ([]byte, []byte, int, error) {
+	return nil, nil, 0, nil
+}
+
 func TestDeleteHandler_ExistingPod(t *testing.T) {
 	bus := NewStubBus()
 	store := state.NewPodStore()

@@ -303,6 +303,69 @@ func TestBuildRunArgs_EmptyDirVolumes(t *testing.T) {
 	}
 }
 
+func TestBuildExecArgs(t *testing.T) {
+	tests := []struct {
+		name          string
+		podName       string
+		containerName string
+		command       []string
+		want          []string
+	}{
+		{
+			name:          "with container name",
+			podName:       "mypod",
+			containerName: "worker",
+			command:       []string{"ls", "-la"},
+			want:          []string{"exec", "mypod-worker", "ls", "-la"},
+		},
+		{
+			name:          "single command",
+			podName:       "web",
+			containerName: "app",
+			command:       []string{"whoami"},
+			want:          []string{"exec", "web-app", "whoami"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildExecArgs(tt.podName, tt.containerName, tt.command)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("buildExecArgs(%q, %q, %v) = %v, want %v", tt.podName, tt.containerName, tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildExecArgs_NoContainer(t *testing.T) {
+	tests := []struct {
+		name    string
+		podName string
+		command []string
+		want    []string
+	}{
+		{
+			name:    "no container name",
+			podName: "mypod",
+			command: []string{"echo", "hello"},
+			want:    []string{"exec", "mypod", "echo", "hello"},
+		},
+		{
+			name:    "empty container name",
+			podName: "worker-pod",
+			command: []string{"/bin/sh", "-c", "date"},
+			want:    []string{"exec", "worker-pod", "/bin/sh", "-c", "date"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildExecArgs(tt.podName, "", tt.command)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("buildExecArgs(%q, \"\", %v) = %v, want %v", tt.podName, tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildRunArgs_MixedVolumes(t *testing.T) {
 	container := manifest.ContainerSpec{
 		Name:  "app",

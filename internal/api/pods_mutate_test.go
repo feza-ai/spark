@@ -64,6 +64,10 @@ func (e *stubExecutor) StreamPodLogs(_ context.Context, _ string, _ int) (io.Rea
 	return nil, nil
 }
 
+func (e *stubExecutor) ExecPod(_ context.Context, _ string, _ string, _ []string) ([]byte, []byte, int, error) {
+	return nil, nil, 0, nil
+}
+
 func newMutateTestServer(t *testing.T) (*Server, *state.PodStore, *stubExecutor) {
 	t.Helper()
 	store := state.NewPodStore()
