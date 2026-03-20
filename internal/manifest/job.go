@@ -194,11 +194,11 @@ func parseResourceList(rm map[string]interface{}) ResourceList {
 	return ResourceList{
 		CPUMillis:   parseCPU(getString(rm, "cpu")),
 		MemoryMB:    parseMemory(getString(rm, "memory")),
-		GPUMemoryMB: parseGPU(getString(rm, "nvidia.com/gpu")),
+		GPUCount:  parseGPU(getString(rm, "nvidia.com/gpu")),
 	}
 }
 
-// parseGPU converts a GPU count string to GPUMemoryMB.
+// parseGPU converts a GPU count string (e.g. "2") to an integer.
 func parseGPU(s string) int {
 	if s == "" {
 		return 0

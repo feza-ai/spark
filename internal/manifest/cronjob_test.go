@@ -104,8 +104,8 @@ spec:
 	if c.Resources.Requests.MemoryMB != 32768 {
 		t.Errorf("Memory = %d, want 32768", c.Resources.Requests.MemoryMB)
 	}
-	if c.Resources.Requests.GPUMemoryMB != 1 {
-		t.Errorf("GPU = %d, want 1", c.Resources.Requests.GPUMemoryMB)
+	if c.Resources.Requests.GPUCount != 1 {
+		t.Errorf("GPUCount = %d, want 1", c.Resources.Requests.GPUCount)
 	}
 }
 

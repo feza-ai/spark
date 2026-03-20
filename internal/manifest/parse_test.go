@@ -126,8 +126,8 @@ spec:
 	if c.Resources.Requests.MemoryMB != 8192 {
 		t.Errorf("requests.memory = %d, want 8192", c.Resources.Requests.MemoryMB)
 	}
-	if c.Resources.Requests.GPUMemoryMB != 1 {
-		t.Errorf("requests.gpu = %d, want 1", c.Resources.Requests.GPUMemoryMB)
+	if c.Resources.Requests.GPUCount != 1 {
+		t.Errorf("requests.gpuCount = %d, want 1", c.Resources.Requests.GPUCount)
 	}
 	if c.Resources.Limits.CPUMillis != 4000 {
 		t.Errorf("limits.cpu = %d, want 4000", c.Resources.Limits.CPUMillis)

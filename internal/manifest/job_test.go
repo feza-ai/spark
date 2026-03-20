@@ -154,8 +154,11 @@ func TestParseJob(t *testing.T) {
 				if c.Resources.Requests.MemoryMB != 8192 {
 					t.Errorf("requests.memory = %d MB, want 8192", c.Resources.Requests.MemoryMB)
 				}
-				if c.Resources.Requests.GPUMemoryMB != 1 {
-					t.Errorf("requests.gpu = %d, want 1", c.Resources.Requests.GPUMemoryMB)
+				if c.Resources.Requests.GPUCount != 1 {
+					t.Errorf("requests.gpuCount = %d, want 1", c.Resources.Requests.GPUCount)
+				}
+				if c.Resources.Requests.GPUMemoryMB != 0 {
+					t.Errorf("requests.gpuMemoryMB = %d, want 0", c.Resources.Requests.GPUMemoryMB)
 				}
 				if c.Resources.Limits.CPUMillis != 4000 {
 					t.Errorf("limits.cpu = %d millis, want 4000", c.Resources.Limits.CPUMillis)
@@ -163,8 +166,8 @@ func TestParseJob(t *testing.T) {
 				if c.Resources.Limits.MemoryMB != 16384 {
 					t.Errorf("limits.memory = %d MB, want 16384", c.Resources.Limits.MemoryMB)
 				}
-				if c.Resources.Limits.GPUMemoryMB != 1 {
-					t.Errorf("limits.gpu = %d, want 1", c.Resources.Limits.GPUMemoryMB)
+				if c.Resources.Limits.GPUCount != 1 {
+					t.Errorf("limits.gpuCount = %d, want 1", c.Resources.Limits.GPUCount)
 				}
 			},
 		},
@@ -314,6 +317,117 @@ spec:
 			}
 			if tt.check != nil {
 				tt.check(t, pods)
+			}
+		})
+	}
+}
+
+func TestParseGPU(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"2", 2},
+		{"1", 1},
+		{"0", 0},
+		{"", 0},
+		{"4", 4},
+		{"8", 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parseGPU(tt.input)
+			if got != tt.want {
+				t.Errorf("parseGPU(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseGPUCount_ResourceList(t *testing.T) {
+	tests := []struct {
+		name         string
+		yaml         string
+		wantGPUCount int
+		wantGPUMemMB int
+	}{
+		{
+			name: "nvidia.com/gpu: 2 produces GPUCount=2, GPUMemoryMB=0",
+			yaml: `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gpu-job
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: nvidia/cuda
+          resources:
+            requests:
+              nvidia.com/gpu: "2"
+`,
+			wantGPUCount: 2,
+			wantGPUMemMB: 0,
+		},
+		{
+			name: "no GPU specified",
+			yaml: `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cpu-job
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: busybox
+          resources:
+            requests:
+              cpu: "1"
+              memory: 512Mi
+`,
+			wantGPUCount: 0,
+			wantGPUMemMB: 0,
+		},
+		{
+			name: "nvidia.com/gpu: 1",
+			yaml: `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: single-gpu
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: nvidia/cuda
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+`,
+			wantGPUCount: 1,
+			wantGPUMemMB: 0,
+		},
+	}
+
+	classes := DefaultPriorityClasses()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := ParseYAML([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("ParseYAML: %v", err)
+			}
+			pods, err := parseJob(root, classes)
+			if err != nil {
+				t.Fatalf("parseJob: %v", err)
+			}
+			c := pods[0].Containers[0]
+			if c.Resources.Requests.GPUCount != tt.wantGPUCount {
+				t.Errorf("GPUCount = %d, want %d", c.Resources.Requests.GPUCount, tt.wantGPUCount)
+			}
+			if c.Resources.Requests.GPUMemoryMB != tt.wantGPUMemMB {
+				t.Errorf("GPUMemoryMB = %d, want %d", c.Resources.Requests.GPUMemoryMB, tt.wantGPUMemMB)
 			}
 		})
 	}

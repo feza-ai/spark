@@ -87,8 +87,8 @@ spec:
 		t.Errorf("Requests.MemoryMB = %d, want 8192", got)
 	}
 	// nvidia.com/gpu: "1" -> 1
-	if got := c.Resources.Requests.GPUMemoryMB; got != 1 {
-		t.Errorf("Requests.GPUMemoryMB = %d, want 1", got)
+	if got := c.Resources.Requests.GPUCount; got != 1 {
+		t.Errorf("Requests.GPUCount = %d, want 1", got)
 	}
 	// limits: cpu: 500m -> 500
 	if got := c.Resources.Limits.CPUMillis; got != 500 {
