@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -55,6 +56,14 @@ func (s *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, err
 
 func (s *stubExecutor) PodStats(_ context.Context, _ string) (executor.PodResourceUsage, error) {
 	return executor.PodResourceUsage{}, nil
+}
+
+func (s *stubExecutor) PodLogs(_ context.Context, _ string, _ int) ([]byte, error) {
+	return nil, nil
+}
+
+func (s *stubExecutor) StreamPodLogs(_ context.Context, _ string, _ int) (io.ReadCloser, error) {
+	return nil, nil
 }
 
 func (s *stubExecutor) getStopCalls() []string {

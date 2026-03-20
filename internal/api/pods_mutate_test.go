@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,6 +54,14 @@ func (e *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, err
 
 func (e *stubExecutor) PodStats(_ context.Context, _ string) (executor.PodResourceUsage, error) {
 	return executor.PodResourceUsage{}, nil
+}
+
+func (e *stubExecutor) PodLogs(_ context.Context, _ string, _ int) ([]byte, error) {
+	return nil, nil
+}
+
+func (e *stubExecutor) StreamPodLogs(_ context.Context, _ string, _ int) (io.ReadCloser, error) {
+	return nil, nil
 }
 
 func newMutateTestServer(t *testing.T) (*Server, *state.PodStore, *stubExecutor) {

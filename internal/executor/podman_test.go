@@ -256,3 +256,33 @@ func TestBuildRunArgs_PodAndContainerName(t *testing.T) {
 		t.Errorf("expected --name mypod-worker in args, got %v", args)
 	}
 }
+
+func TestBuildPodLogsArgs_WithTail(t *testing.T) {
+	got := buildPodLogsArgs("mypod", 100)
+	want := []string{"pod", "logs", "--tail", "100", "mypod"}
+	if !slices.Equal(got, want) {
+		t.Errorf("buildPodLogsArgs(mypod, 100) = %v, want %v", got, want)
+	}
+}
+
+func TestBuildPodLogsArgs_NoTail(t *testing.T) {
+	got := buildPodLogsArgs("mypod", 0)
+	want := []string{"pod", "logs", "mypod"}
+	if !slices.Equal(got, want) {
+		t.Errorf("buildPodLogsArgs(mypod, 0) = %v, want %v", got, want)
+	}
+	if slices.Contains(got, "--tail") {
+		t.Errorf("expected no --tail flag when tail=0, got %v", got)
+	}
+}
+
+func TestBuildStreamPodLogsArgs(t *testing.T) {
+	got := buildStreamPodLogsArgs("mypod", 50)
+	want := []string{"pod", "logs", "--follow", "--tail", "50", "mypod"}
+	if !slices.Equal(got, want) {
+		t.Errorf("buildStreamPodLogsArgs(mypod, 50) = %v, want %v", got, want)
+	}
+	if !slices.Contains(got, "--follow") {
+		t.Errorf("expected --follow flag in args, got %v", got)
+	}
+}

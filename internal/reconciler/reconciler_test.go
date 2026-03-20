@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -103,6 +104,14 @@ func (s *stubExecutor) PodStats(_ context.Context, name string) (executor.PodRes
 		}
 	}
 	return executor.PodResourceUsage{}, nil
+}
+
+func (s *stubExecutor) PodLogs(_ context.Context, _ string, _ int) ([]byte, error) {
+	return nil, nil
+}
+
+func (s *stubExecutor) StreamPodLogs(_ context.Context, _ string, _ int) (io.ReadCloser, error) {
+	return nil, nil
 }
 
 func (s *stubExecutor) setStatus(name string, st executor.Status) {
