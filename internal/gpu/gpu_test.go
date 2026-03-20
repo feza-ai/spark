@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -21,6 +22,7 @@ func TestParseCSV(t *testing.T) {
 				MemoryUsedMB:       512,
 				UtilizationPercent: 35,
 				GPUCount:           1,
+				DeviceIDs:          []int{0},
 			},
 		},
 		{
@@ -32,6 +34,7 @@ func TestParseCSV(t *testing.T) {
 				MemoryUsedMB:       3072,
 				UtilizationPercent: 60,
 				GPUCount:           2,
+				DeviceIDs:          []int{0, 1},
 			},
 		},
 		{
@@ -58,6 +61,7 @@ func TestParseCSV(t *testing.T) {
 				MemoryUsedMB:       1024,
 				UtilizationPercent: 50,
 				GPUCount:           1,
+				DeviceIDs:          []int{0},
 			},
 		},
 		{
@@ -69,6 +73,7 @@ func TestParseCSV(t *testing.T) {
 				MemoryUsedMB:       256,
 				UtilizationPercent: 10,
 				GPUCount:           1,
+				DeviceIDs:          []int{0},
 			},
 		},
 		{
@@ -80,6 +85,7 @@ func TestParseCSV(t *testing.T) {
 				MemoryUsedMB:       0,
 				UtilizationPercent: 0,
 				GPUCount:           1,
+				DeviceIDs:          []int{0},
 			},
 		},
 		{
@@ -91,6 +97,7 @@ func TestParseCSV(t *testing.T) {
 				MemoryUsedMB:       0,
 				UtilizationPercent: 5,
 				GPUCount:           1,
+				DeviceIDs:          []int{0},
 			},
 		},
 		{
@@ -102,6 +109,7 @@ func TestParseCSV(t *testing.T) {
 				MemoryUsedMB:       0,
 				UtilizationPercent: 42,
 				GPUCount:           1,
+				DeviceIDs:          []int{0},
 			},
 		},
 		{
@@ -113,6 +121,7 @@ func TestParseCSV(t *testing.T) {
 				MemoryUsedMB:       1024,
 				UtilizationPercent: 25,
 				GPUCount:           2,
+				DeviceIDs:          []int{0, 1},
 			},
 		},
 	}
@@ -129,10 +138,36 @@ func TestParseCSV(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseCSV() unexpected error: %v", err)
 			}
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("parseCSV() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDeviceIDs_SingleGPU(t *testing.T) {
+	info, err := parseCSV("NVIDIA A100, 81920, 1024, 50\n")
+	if err != nil {
+		t.Fatalf("parseCSV() unexpected error: %v", err)
+	}
+	want := []int{0}
+	if !reflect.DeepEqual(info.DeviceIDs, want) {
+		t.Errorf("DeviceIDs = %v, want %v", info.DeviceIDs, want)
+	}
+}
+
+func TestDeviceIDs_MultiGPU(t *testing.T) {
+	input := "NVIDIA A100, 81920, 1024, 50\n" +
+		"NVIDIA A100, 81920, 2048, 60\n" +
+		"NVIDIA A100, 81920, 512, 40\n" +
+		"NVIDIA A100, 81920, 1024, 70\n"
+	info, err := parseCSV(input)
+	if err != nil {
+		t.Fatalf("parseCSV() unexpected error: %v", err)
+	}
+	want := []int{0, 1, 2, 3}
+	if !reflect.DeepEqual(info.DeviceIDs, want) {
+		t.Errorf("DeviceIDs = %v, want %v", info.DeviceIDs, want)
 	}
 }
 
