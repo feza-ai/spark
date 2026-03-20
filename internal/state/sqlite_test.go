@@ -320,3 +320,45 @@ func TestPruneBefore(t *testing.T) {
 		t.Error("old-pod should have been pruned")
 	}
 }
+
+func TestSourcePathSQLiteRoundTrip(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourcePath string
+	}{
+		{"non-empty path", "/etc/spark/manifests/app.yaml"},
+		{"empty path", ""},
+		{"path with spaces", "/tmp/my manifests/pod.yaml"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := OpenSQLite(":memory:")
+			if err != nil {
+				t.Fatalf("OpenSQLite: %v", err)
+			}
+			defer store.Close()
+
+			rec := &PodRecord{
+				Spec:       manifest.PodSpec{Name: "sp-pod"},
+				Status:     StatusRunning,
+				SourcePath: tt.sourcePath,
+			}
+			if err := store.SavePod(rec); err != nil {
+				t.Fatalf("SavePod: %v", err)
+			}
+
+			pods, err := store.LoadAll()
+			if err != nil {
+				t.Fatalf("LoadAll: %v", err)
+			}
+			got := pods["sp-pod"]
+			if got == nil {
+				t.Fatal("expected sp-pod in loaded pods")
+			}
+			if got.SourcePath != tt.sourcePath {
+				t.Errorf("SourcePath = %q, want %q", got.SourcePath, tt.sourcePath)
+			}
+		})
+	}
+}

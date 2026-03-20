@@ -345,3 +345,93 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestListBySourcePath(t *testing.T) {
+	tests := []struct {
+		name      string
+		pods      []struct{ podName, sourcePath string }
+		queryPath string
+		wantCount int
+		wantNames []string
+	}{
+		{
+			name: "matching pods returned",
+			pods: []struct{ podName, sourcePath string }{
+				{"pod-a", "/tmp/app.yaml"},
+				{"pod-b", "/tmp/app.yaml"},
+				{"pod-c", "/tmp/other.yaml"},
+			},
+			queryPath: "/tmp/app.yaml",
+			wantCount: 2,
+			wantNames: []string{"pod-a", "pod-b"},
+		},
+		{
+			name: "no matches",
+			pods: []struct{ podName, sourcePath string }{
+				{"pod-a", "/tmp/app.yaml"},
+			},
+			queryPath: "/tmp/missing.yaml",
+			wantCount: 0,
+		},
+		{
+			name:      "empty store",
+			pods:      nil,
+			queryPath: "/tmp/app.yaml",
+			wantCount: 0,
+		},
+		{
+			name: "empty source path matches empty query",
+			pods: []struct{ podName, sourcePath string }{
+				{"pod-a", ""},
+			},
+			queryPath: "",
+			wantCount: 1,
+			wantNames: []string{"pod-a"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewPodStore()
+			for _, p := range tt.pods {
+				s.Apply(podSpec(p.podName))
+				s.mu.Lock()
+				s.pods[p.podName].SourcePath = p.sourcePath
+				s.mu.Unlock()
+			}
+
+			result := s.ListBySourcePath(tt.queryPath)
+			if len(result) != tt.wantCount {
+				t.Fatalf("expected %d pods, got %d", tt.wantCount, len(result))
+			}
+
+			if tt.wantNames != nil {
+				nameSet := map[string]bool{}
+				for _, r := range result {
+					nameSet[r.Spec.Name] = true
+				}
+				for _, wn := range tt.wantNames {
+					if !nameSet[wn] {
+						t.Errorf("expected pod %q in results", wn)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestSourcePathPreservedOnGet(t *testing.T) {
+	s := NewPodStore()
+	s.Apply(podSpec("pod-a"))
+	s.mu.Lock()
+	s.pods["pod-a"].SourcePath = "/tmp/app.yaml"
+	s.mu.Unlock()
+
+	rec, ok := s.Get("pod-a")
+	if !ok {
+		t.Fatal("expected pod-a to exist")
+	}
+	if rec.SourcePath != "/tmp/app.yaml" {
+		t.Fatalf("expected SourcePath %q, got %q", "/tmp/app.yaml", rec.SourcePath)
+	}
+}
