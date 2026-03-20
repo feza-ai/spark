@@ -18,7 +18,7 @@ func TestMetricsEndpoint(t *testing.T) {
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
 	)
 	collector := metrics.NewCollector(store, tracker, nil)
-	srv := NewServer(store, tracker, nil, nil, nil, collector)
+	srv := NewServer(store, tracker, nil, nil, nil, collector, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()

@@ -18,10 +18,13 @@ type Server struct {
 	sqlStore        *state.SQLiteStore
 	collector       *metrics.Collector
 	mux             *http.ServeMux
+	handler         http.Handler
 }
 
 // NewServer creates a Server and registers all HTTP routes.
-func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector) *Server {
+// If token is non-empty, all routes (except /healthz and /metrics) require
+// Bearer token authentication.
+func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, token string) *Server {
 	s := &Server{
 		store:           store,
 		tracker:         tracker,
@@ -36,10 +39,16 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 	s.registerPodQueryRoutes()
 	s.registerPodMutateRoutes()
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
+
+	if token != "" {
+		s.handler = NewAuthMiddleware(token).Wrap(s.mux)
+	} else {
+		s.handler = s.mux
+	}
 	return s
 }
 
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
