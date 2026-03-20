@@ -159,7 +159,7 @@ func main() {
 		"batch":           20000,
 	}
 	bus.RegisterApplyHandler(b, store, priorityClasses)
-	bus.RegisterDeleteHandler(b, store, exec)
+	bus.RegisterDeleteHandler(b, store, exec, nil) // scheduler wired in T48.1
 	bus.RegisterGetHandler(b, store)
 	bus.RegisterListHandler(b, store)
 	slog.Info("NATS handlers registered")
