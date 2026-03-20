@@ -14,6 +14,7 @@ func TestPublishOnceProducesCorrectJSON(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16000},
 		scheduler.Resources{CPUMillis: 200, MemoryMB: 512, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	store := state.NewPodStore()
 
@@ -73,6 +74,7 @@ func TestPublishOncePodCounts(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
+	nil, 0,
 	)
 	store := state.NewPodStore()
 

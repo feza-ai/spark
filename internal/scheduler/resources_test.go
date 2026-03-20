@@ -12,6 +12,7 @@ func newTestTracker() *ResourceTracker {
 	return NewResourceTracker(
 		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
 		Resources{CPUMillis: 500, MemoryMB: 512, GPUMemoryMB: 0},
+		nil, 0,
 	)
 }
 
@@ -239,6 +240,7 @@ func TestConcurrentAllocateRelease(t *testing.T) {
 	rt := NewResourceTracker(
 		Resources{CPUMillis: 100000, MemoryMB: 100000, GPUMemoryMB: 100000},
 		Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+		nil, 0,
 	)
 
 	var wg sync.WaitGroup
@@ -257,5 +259,97 @@ func TestConcurrentAllocateRelease(t *testing.T) {
 	avail := rt.Available()
 	if avail.CPUMillis != 100000 {
 		t.Errorf("expected 100000 CPU millis after concurrent ops, got %d", avail.CPUMillis)
+	}
+}
+
+func TestGPUSlotAllocation(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0, 1, 2, 3}, 4,
+	)
+
+	err := rt.Allocate("gpu-pod", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 4096})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gpus := rt.AssignedGPUs("gpu-pod")
+	if len(gpus) != 1 {
+		t.Fatalf("expected 1 GPU assigned, got %d", len(gpus))
+	}
+	if gpus[0] != 0 {
+		t.Errorf("expected GPU device 0, got %d", gpus[0])
+	}
+}
+
+func TestGPUSlotRelease(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0, 1}, 2,
+	)
+
+	err := rt.Allocate("gpu-pod", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 4096})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rt.Release("gpu-pod")
+
+	gpus := rt.AssignedGPUs("gpu-pod")
+	if gpus != nil {
+		t.Errorf("expected no GPUs after release, got %v", gpus)
+	}
+
+	// Device should be available again.
+	err = rt.Allocate("gpu-pod-2", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 4096})
+	if err != nil {
+		t.Fatalf("unexpected error after release: %v", err)
+	}
+	gpus = rt.AssignedGPUs("gpu-pod-2")
+	if len(gpus) != 1 || gpus[0] != 0 {
+		t.Errorf("expected device 0 reassigned, got %v", gpus)
+	}
+}
+
+func TestGPUSlotLimit(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0}, 1,
+	)
+
+	err := rt.Allocate("gpu-pod-1", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 4096})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	err = rt.Allocate("gpu-pod-2", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 4096})
+	if err == nil {
+		t.Fatal("expected error when GPU slot limit reached")
+	}
+	if err.Error() != "GPU slot limit reached" {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestGPUSlotDisabled(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		nil, 0,
+	)
+
+	// GPU allocation should work based on memory only.
+	err := rt.Allocate("gpu-pod", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUMemoryMB: 4096})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No GPU device assigned when slot tracking is disabled.
+	gpus := rt.AssignedGPUs("gpu-pod")
+	if gpus != nil {
+		t.Errorf("expected no GPU assignments when disabled, got %v", gpus)
 	}
 }

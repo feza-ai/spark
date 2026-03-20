@@ -145,7 +145,7 @@ func main() {
 		CPUMillis: *systemReserveCPU,
 		MemoryMB:  *systemReserveMem,
 	}
-	tracker := scheduler.NewResourceTracker(total, reserve)
+	tracker := scheduler.NewResourceTracker(total, reserve, nil, 0)
 	sched := scheduler.NewScheduler(tracker)
 
 	// 6. Create executor.

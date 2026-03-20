@@ -86,6 +86,7 @@ func newTestScheduler() *scheduler.Scheduler {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 0},
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+	nil, 0,
 	)
 	return scheduler.NewScheduler(tracker)
 }
