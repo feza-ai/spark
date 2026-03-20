@@ -68,6 +68,14 @@ func NewPodmanExecutor(network string) *PodmanExecutor {
 func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) error {
 	// Create the pod.
 	args := []string{"pod", "create", "--name", spec.Name, "--network", p.network}
+
+	// Collect port mappings from all containers — ports must be published at pod creation time.
+	for _, c := range spec.Containers {
+		for _, port := range c.Ports {
+			args = append(args, "--publish", formatPublish(port))
+		}
+	}
+
 	slog.Info("creating pod", "cmd", "podman", "args", args)
 	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
 	if err != nil {
@@ -84,6 +92,18 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 		}
 	}
 	return nil
+}
+
+// formatPublish formats a ContainerPort as a --publish value for podman pod create.
+func formatPublish(p manifest.ContainerPort) string {
+	proto := p.Protocol
+	if proto == "" {
+		proto = "tcp"
+	}
+	if p.HostPort == 0 {
+		return strconv.Itoa(p.ContainerPort) + "/" + proto
+	}
+	return strconv.Itoa(p.HostPort) + ":" + strconv.Itoa(p.ContainerPort) + "/" + proto
 }
 
 // buildRunArgs constructs the arguments for a podman run command.

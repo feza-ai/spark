@@ -438,3 +438,124 @@ func TestBuildStreamPodLogsArgs(t *testing.T) {
 		t.Errorf("expected --follow flag in args, got %v", got)
 	}
 }
+
+func TestFormatPublish(t *testing.T) {
+	tests := []struct {
+		name string
+		port manifest.ContainerPort
+		want string
+	}{
+		{
+			name: "explicit host port and protocol",
+			port: manifest.ContainerPort{ContainerPort: 80, HostPort: 8080, Protocol: "tcp"},
+			want: "8080:80/tcp",
+		},
+		{
+			name: "udp protocol",
+			port: manifest.ContainerPort{ContainerPort: 53, HostPort: 5353, Protocol: "udp"},
+			want: "5353:53/udp",
+		},
+		{
+			name: "random host port",
+			port: manifest.ContainerPort{ContainerPort: 3000, HostPort: 0, Protocol: "tcp"},
+			want: "3000/tcp",
+		},
+		{
+			name: "default protocol",
+			port: manifest.ContainerPort{ContainerPort: 443, HostPort: 8443},
+			want: "8443:443/tcp",
+		},
+		{
+			name: "random host port default protocol",
+			port: manifest.ContainerPort{ContainerPort: 9090},
+			want: "9090/tcp",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatPublish(tt.port)
+			if got != tt.want {
+				t.Errorf("formatPublish(%+v) = %q, want %q", tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreatePod_WithPorts(t *testing.T) {
+	spec := manifest.PodSpec{
+		Name: "web",
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:  "nginx",
+				Image: "nginx:latest",
+				Ports: []manifest.ContainerPort{
+					{ContainerPort: 80, HostPort: 8080, Protocol: "tcp"},
+					{ContainerPort: 443, HostPort: 8443, Protocol: "tcp"},
+				},
+			},
+			{
+				Name:  "sidecar",
+				Image: "sidecar:latest",
+				Ports: []manifest.ContainerPort{
+					{ContainerPort: 9090, HostPort: 9090, Protocol: "tcp"},
+				},
+			},
+		},
+	}
+
+	// Build the pod create args the same way CreatePod does.
+	args := []string{"pod", "create", "--name", spec.Name, "--network", "spark-net"}
+	for _, c := range spec.Containers {
+		for _, port := range c.Ports {
+			args = append(args, "--publish", formatPublish(port))
+		}
+	}
+
+	// Verify all three --publish flags are present with correct values.
+	wantPublish := []string{"8080:80/tcp", "8443:443/tcp", "9090:9090/tcp"}
+	for _, want := range wantPublish {
+		idx := slices.Index(args, want)
+		if idx < 1 || args[idx-1] != "--publish" {
+			t.Errorf("expected --publish %s in args, got %v", want, args)
+		}
+	}
+}
+
+func TestCreatePod_PortRandomHost(t *testing.T) {
+	spec := manifest.PodSpec{
+		Name: "app",
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:  "api",
+				Image: "api:latest",
+				Ports: []manifest.ContainerPort{
+					{ContainerPort: 3000, HostPort: 0},
+					{ContainerPort: 8080, HostPort: 0, Protocol: "udp"},
+				},
+			},
+		},
+	}
+
+	args := []string{"pod", "create", "--name", spec.Name, "--network", "spark-net"}
+	for _, c := range spec.Containers {
+		for _, port := range c.Ports {
+			args = append(args, "--publish", formatPublish(port))
+		}
+	}
+
+	// HostPort=0 should omit the host port portion.
+	wantPublish := []string{"3000/tcp", "8080/udp"}
+	for _, want := range wantPublish {
+		idx := slices.Index(args, want)
+		if idx < 1 || args[idx-1] != "--publish" {
+			t.Errorf("expected --publish %s in args, got %v", want, args)
+		}
+	}
+
+	// Ensure no colon-prefixed format (like ":3000/tcp") leaked in.
+	for _, a := range args {
+		if len(a) > 0 && a[0] == ':' {
+			t.Errorf("unexpected colon-prefixed publish value: %s", a)
+		}
+	}
+}
