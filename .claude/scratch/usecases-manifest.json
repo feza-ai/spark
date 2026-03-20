@@ -1,0 +1,281 @@
+[
+  {
+    "id": "UC-001",
+    "domain": "pods",
+    "name": "Apply pod",
+    "description": "Accept a K8s manifest via NATS req.spark.apply, parse it (Pod/Job/Deployment/StatefulSet/CronJob), and add pods to the store in Pending state for scheduling",
+    "interfaces": ["nats"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-002",
+    "domain": "pods",
+    "name": "Delete pod",
+    "description": "Delete a pod via NATS req.spark.delete: stop in podman, remove from store, cascade delete from SQLite",
+    "interfaces": ["nats"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-003",
+    "domain": "pods",
+    "name": "Get pod status",
+    "description": "Query a single pod's full status via NATS req.spark.get: name, status, priority, timestamps, restarts, event history",
+    "interfaces": ["nats"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-004",
+    "domain": "pods",
+    "name": "List pods",
+    "description": "List all pods (optionally filtered by status) via NATS req.spark.list: name, status, priority summaries",
+    "interfaces": ["nats"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-005",
+    "domain": "scheduling",
+    "name": "Resource-aware scheduling",
+    "description": "Scheduler admits pods only when CPU, memory, and GPU resources are available after system reserves. ResourceTracker tracks allocations per pod.",
+    "interfaces": ["library"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-006",
+    "domain": "scheduling",
+    "name": "Priority preemption",
+    "description": "Higher-priority pods can preempt lower-priority pods when resources are insufficient. Anti-thrash protection prevents repeated preemption (>3 in 5 min).",
+    "interfaces": ["library"],
+    "priority": "P1",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-007",
+    "domain": "reconciliation",
+    "name": "Pod lifecycle reconciliation",
+    "description": "5-second reconciler loop drives pods through pending -> scheduled -> running -> completed/failed. Checks actual podman state for running pods.",
+    "interfaces": ["library"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-008",
+    "domain": "reconciliation",
+    "name": "Restart policy",
+    "description": "Handles Always (always restart), OnFailure (retry with backoffLimit), and Never restart policies when pods exit",
+    "interfaces": ["library"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-009",
+    "domain": "cron",
+    "name": "CronJob scheduling",
+    "description": "CronScheduler ticks every 30s, fires registered CronJobs on schedule, supports Allow/Forbid/Replace concurrency policies, prunes job history",
+    "interfaces": ["library"],
+    "priority": "P1",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-010",
+    "domain": "ingestion",
+    "name": "Directory watcher",
+    "description": "Polls /etc/spark/manifests every 5s for YAML files. Detects add/modify/remove via SHA256 checksums. Applies pods and registers CronJobs. Persists to SQLite.",
+    "interfaces": ["filesystem"],
+    "priority": "P1",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-011",
+    "domain": "observability",
+    "name": "Heartbeat publishing",
+    "description": "Publishes node heartbeat to heartbeat.spark.{nodeId} at configurable interval. Includes CPU/RAM/GPU availability, pod counts, uptime.",
+    "interfaces": ["nats"],
+    "priority": "P1",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-012",
+    "domain": "observability",
+    "name": "Event publishing",
+    "description": "Publishes pod lifecycle events to evt.spark.{status}.{podName} on every status change (scheduled, running, completed, failed, preempted)",
+    "interfaces": ["nats"],
+    "priority": "P1",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-013",
+    "domain": "observability",
+    "name": "Log streaming",
+    "description": "Streams pod stdout/stderr to log.spark.{podName} via podman pod logs --follow. Batches lines (max 10, 100ms flush). Starts on Running, stops on exit.",
+    "interfaces": ["nats"],
+    "priority": "P1",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-014",
+    "domain": "hardware",
+    "name": "GPU detection and resource tracking",
+    "description": "Detects NVIDIA GPUs via nvidia-smi (model, memory, utilization, count). Detects system CPU/RAM. Feeds into scheduler ResourceTracker.",
+    "interfaces": ["library"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-015",
+    "domain": "persistence",
+    "name": "State persistence (SQLite)",
+    "description": "Persists all pod state to SQLite with WAL mode. Saves on status change, apply, and delete. Loads on startup. Schema: pods table + events table with CASCADE.",
+    "interfaces": ["library"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-016",
+    "domain": "persistence",
+    "name": "Pod recovery after restart",
+    "description": "On startup, loads persisted state from SQLite, queries podman for actual pods, reconciles: updates stale statuses, marks lost pods as Failed, logs orphans.",
+    "interfaces": ["library"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-017",
+    "domain": "persistence",
+    "name": "Retention pruning",
+    "description": "Every 10 minutes, prunes completed/failed pods older than --pod-retention (default 7d) from both in-memory store and SQLite.",
+    "interfaces": ["library"],
+    "priority": "P2",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-018",
+    "domain": "pods",
+    "name": "Apply pod via HTTP",
+    "description": "POST /api/v1/pods accepts a K8s YAML manifest, parses it, applies pods to the store, persists to SQLite. Returns JSON with pod names and statuses.",
+    "interfaces": ["http"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-019",
+    "domain": "pods",
+    "name": "Delete pod via HTTP",
+    "description": "DELETE /api/v1/pods/{name} stops the pod in podman, removes from store and SQLite. Returns JSON confirmation.",
+    "interfaces": ["http"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-020",
+    "domain": "pods",
+    "name": "Get pod via HTTP",
+    "description": "GET /api/v1/pods/{name} returns full pod detail (status, priority, timestamps, restarts, events) as JSON.",
+    "interfaces": ["http"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-021",
+    "domain": "pods",
+    "name": "List pods via HTTP",
+    "description": "GET /api/v1/pods returns all pods as JSON array. Optional ?status= query parameter for filtering.",
+    "interfaces": ["http"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-022",
+    "domain": "observability",
+    "name": "Health check endpoint",
+    "description": "GET /healthz returns HTTP 200 with {\"status\":\"ok\"} when spark is ready. Used by load balancers and monitoring.",
+    "interfaces": ["http"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-023",
+    "domain": "observability",
+    "name": "Resource usage endpoint",
+    "description": "GET /api/v1/resources returns current node resource state: allocatable, allocated, available CPU/memory/GPU as JSON.",
+    "interfaces": ["http"],
+    "priority": "P1",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-024",
+    "domain": "observability",
+    "name": "Resource reconciliation",
+    "description": "Periodically queries podman and nvidia-smi for actual resource usage of running pods. Compares actual vs requested, logs discrepancies, updates tracker.",
+    "interfaces": ["library"],
+    "priority": "P1",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-025",
+    "domain": "lifecycle",
+    "name": "Graceful shutdown",
+    "description": "On SIGTERM/SIGINT, stops accepting new pods, drains running pods (waits up to --shutdown-timeout), closes HTTP server, SQLite, and NATS cleanly.",
+    "interfaces": ["library"],
+    "priority": "P0",
+    "status": "WIRED"
+  },
+  {
+    "id": "UC-026",
+    "domain": "observability",
+    "name": "Prometheus metrics endpoint",
+    "description": "GET /metrics returns node and pod metrics in Prometheus text exposition format. Includes CPU, memory, GPU utilization, pod counts by status, scheduling and preemption counters, HTTP request totals.",
+    "interfaces": ["http"],
+    "priority": "P0",
+    "status": "PLANNED"
+  },
+  {
+    "id": "UC-027",
+    "domain": "security",
+    "name": "HTTP API authentication",
+    "description": "Bearer token authentication middleware on all HTTP endpoints except /healthz. Rejects unauthenticated requests with 401. Token configured via --api-token-file flag.",
+    "interfaces": ["http"],
+    "priority": "P0",
+    "status": "PLANNED"
+  },
+  {
+    "id": "UC-028",
+    "domain": "observability",
+    "name": "Pod logs via HTTP",
+    "description": "GET /api/v1/pods/{name}/logs returns recent pod log output as text/plain. Supports ?tail=N for last N lines and ?follow=true for SSE streaming.",
+    "interfaces": ["http"],
+    "priority": "P0",
+    "status": "PLANNED"
+  },
+  {
+    "id": "UC-029",
+    "domain": "observability",
+    "name": "Pod events via HTTP",
+    "description": "GET /api/v1/pods/{name}/events returns lifecycle event history from SQLite as JSON array. Supports ?since= for time filtering.",
+    "interfaces": ["http"],
+    "priority": "P1",
+    "status": "PLANNED"
+  },
+  {
+    "id": "UC-030",
+    "domain": "observability",
+    "name": "Structured JSON logging",
+    "description": "Configurable log output format via --log-format flag (text or json). JSON mode uses slog.JSONHandler for machine-parseable log aggregation.",
+    "interfaces": ["library"],
+    "priority": "P1",
+    "status": "PLANNED"
+  },
+  {
+    "id": "UC-031",
+    "domain": "pods",
+    "name": "EmptyDir volume support",
+    "description": "EmptyDir volumes create temporary directories that are mounted into containers and cleaned up on pod removal. Mapped to podman tmpfs mounts.",
+    "interfaces": ["library"],
+    "priority": "P1",
+    "status": "PLANNED"
+  }
+]
