@@ -31,6 +31,14 @@ type PodResourceUsage struct {
 	MemoryMB   int
 }
 
+// ImageInfo represents a container image stored locally.
+type ImageInfo struct {
+	ID      string
+	Names   []string
+	Size    string
+	Created string
+}
+
 // Executor defines the interface for pod lifecycle management.
 type Executor interface {
 	CreatePod(ctx context.Context, spec manifest.PodSpec) error
@@ -41,6 +49,8 @@ type Executor interface {
 	PodStats(ctx context.Context, name string) (PodResourceUsage, error)
 	PodLogs(ctx context.Context, name string, tail int) ([]byte, error)
 	StreamPodLogs(ctx context.Context, name string, tail int) (io.ReadCloser, error)
+	ListImages(ctx context.Context) ([]ImageInfo, error)
+	PullImage(ctx context.Context, name string) error
 }
 
 // PodmanExecutor implements Executor using podman CLI.

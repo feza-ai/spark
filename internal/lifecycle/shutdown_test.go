@@ -66,6 +66,14 @@ func (s *stubExecutor) StreamPodLogs(_ context.Context, _ string, _ int) (io.Rea
 	return nil, nil
 }
 
+func (s *stubExecutor) ListImages(_ context.Context) ([]executor.ImageInfo, error) {
+	return nil, nil
+}
+
+func (s *stubExecutor) PullImage(_ context.Context, _ string) error {
+	return nil
+}
+
 func (s *stubExecutor) getStopCalls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
