@@ -1,4 +1,4 @@
-# Spark: Observability, Security, and Operational Maturity (v1.3.0)
+# Spark: Container Operations and GPU Device Management (v1.4.0)
 
 ## Status: In Progress
 
@@ -6,82 +6,77 @@
 
 ### Problem Statement
 
-Spark v1.2.0 is a fully functional pod orchestrator with NATS messaging, HTTP REST API, SQLite persistence, resource reconciliation, and graceful shutdown. All 25 use cases are wired and verified. However, it has five operational gaps:
+Spark v1.3.0 is a production-ready pod orchestrator with 31 wired use cases: NATS messaging, HTTP REST API (9 endpoints + auth + metrics), SQLite persistence, resource-aware scheduling, graceful shutdown, Prometheus metrics, and structured logging. However, it has five operational gaps that limit its utility for ML workloads on the DGX:
 
-1. **No Prometheus metrics.** There is no /metrics endpoint for Prometheus scraping. GPU utilization, pod failure rates, scheduling throughput, and resource pressure cannot be monitored via Grafana or trigger alerts. On a production DGX running ML training jobs, blind spots in GPU and pod health are unacceptable.
+1. **No pod exec.** Operators cannot execute commands inside running containers. When an ML training job stalls or produces unexpected output, there is no way to inspect the container without SSH into the DGX and using podman directly. An HTTP exec endpoint (`POST /api/v1/pods/{name}/exec`) would enable remote debugging without direct host access.
 
-2. **No HTTP authentication.** The HTTP API accepts requests from any network client without credentials. Any process that can reach port 8080 can apply, delete, or inspect pods. For a GPU host running trading model training, this is a security gap.
+2. **No container port mapping.** Pods cannot expose ports to the host. Jupyter notebooks, TensorBoard dashboards, and model serving endpoints running inside pods are inaccessible. The K8s manifest `ports` field is ignored by the parser and executor.
 
-3. **No pod logs via HTTP.** Container logs are only accessible through NATS (log.spark.{pod}). Debugging a failed training job requires a NATS client library. Operators need `curl` access to pod logs for quick triage.
+3. **No init containers.** ML workflows often require setup steps before training starts: downloading model weights, preparing datasets, generating configuration files. K8s init containers run sequentially to completion before main containers. Spark parses only the `containers` field and ignores `initContainers`.
 
-4. **No pod events via HTTP.** Pod lifecycle events (scheduled, running, failed, preempted) are stored in SQLite and published over NATS, but there is no HTTP endpoint to query event history. Operators cannot audit pod lifecycle without a NATS client or direct SQLite access.
+4. **No GPU device assignment.** The `--gpu-max` flag is declared but unused (`_ = gpuMax`). All GPU-requesting pods receive `--device nvidia.com/gpu=all`, giving every pod access to all GPUs. On multi-GPU hosts, this prevents proper isolation. Spark should assign specific GPU device IDs via `NVIDIA_VISIBLE_DEVICES` and limit concurrent GPU pods.
 
-5. **No structured log output.** Spark uses slog with the default text handler. Log aggregation systems (CloudWatch, ELK, Loki) require JSON-formatted logs for structured querying. The log format is not configurable.
-
-6. **EmptyDir volumes not functional.** The manifest parser accepts emptyDir volumes but the executor does not create temporary directories for them. Pods that need scratch space (model checkpoints, intermediate data) cannot use emptyDir.
+5. **No image management API.** Container images can only be pulled implicitly when a pod starts. There is no way to pre-load images, check if an image exists, or list available images via the HTTP API. Pre-pulling large ML model images (often 10-50 GB) avoids cold-start delays.
 
 ### Objectives
 
-1. Add a Prometheus-compatible /metrics endpoint using stdlib-only text exposition format.
-2. Add bearer token authentication middleware to protect mutating and query endpoints.
-3. Add HTTP endpoints for pod logs (tail and streaming) and pod events (history query).
-4. Add configurable JSON log output for structured log aggregation.
-5. Wire emptyDir volumes to podman tmpfs mounts with automatic cleanup.
+1. Add HTTP pod exec endpoint for running commands inside containers.
+2. Parse container port declarations from manifests and map them via podman `--publish`.
+3. Support init containers that run sequentially before main containers.
+4. Implement GPU device assignment with `NVIDIA_VISIBLE_DEVICES` and `--gpu-max` enforcement.
+5. Add HTTP endpoints for listing and pulling container images.
 
 ### Non-Goals
 
-- Per-user or role-based authorization (single shared token is sufficient for single-node).
-- Histogram-based latency metrics (gauges and counters only for v1.3.0).
-- WebSocket streaming (SSE is sufficient for log follow).
-- Multi-node metric aggregation.
-- Token rotation without restart.
+- Interactive TTY/shell exec (single command execution only for v1.4.0).
+- Service discovery or DNS-based routing to exposed ports.
+- Sidecar containers (init containers only, no concurrent sidecars).
+- GPU time-slicing or MIG (Multi-Instance GPU) partitioning.
+- Image build or push (pull and list only).
 
 ### Constraints
 
 - Go standard library plus `nats.go` and `modernc.org/sqlite` (CGO_ENABLED=0). See ADR-001.
 - HTTP routing via `net/http.ServeMux` with Go 1.22+ method-aware patterns. See ADR-009.
-- Prometheus text exposition format v0.0.4 implemented without client_golang. See ADR-010.
-- Bearer token auth read from file at startup. See ADR-011.
 - Standard `flag` package for CLI flags.
-- Podman CLI only.
+- Podman CLI only (no podman API socket).
+- GPU device assignment via `NVIDIA_VISIBLE_DEVICES` environment variable (standard NVIDIA Container Toolkit mechanism).
 
 ### Success Metrics
 
-- `curl localhost:8080/metrics` returns valid Prometheus text format with node and pod metrics.
-- `curl -H "Authorization: Bearer <token>" localhost:8080/api/v1/pods` returns pod list; without header returns 401.
-- `curl localhost:8080/api/v1/pods/NAME/logs?tail=50` returns last 50 lines of pod logs.
-- `curl localhost:8080/api/v1/pods/NAME/events` returns JSON event history.
-- `./spark --log-format json` outputs JSON-structured log lines.
-- EmptyDir volumes create tmpfs mounts that are cleaned up on pod removal.
+- `curl -X POST localhost:8080/api/v1/pods/NAME/exec -d '{"command":["ls","-la"]}'` returns stdout/stderr JSON.
+- Pod with `containerPort: 8888` and `hostPort: 8888` is accessible on `localhost:8888`.
+- Pod with init containers: init containers run sequentially, main containers start only after all init containers succeed.
+- With `--gpu-max 1`, a second GPU-requesting pod is queued (not scheduled) while the first is running.
+- `curl localhost:8080/api/v1/images` returns JSON list of available images.
 - `go test ./... -race -timeout 120s` passes with all new tests.
 
 ## Discovery Summary
 
 **Current architecture** (from docs/design.md):
-- Interfaces: NATS (req.spark.*) + HTTP API (6 endpoints on :8080) + filesystem watcher.
-- HTTP server: `internal/api/server.go` registers routes on `http.ServeMux`. No middleware chain -- handlers are registered directly.
-- Logs: NATS only via `bus.LogStreamer` calling `executor.StreamLogs`. No HTTP log endpoint.
-- Events: stored in SQLite `events` table (pod_name, time, type, message). Published over NATS. No HTTP query.
-- Logging: `log/slog` with default text handler. No configuration.
-- Volumes: `manifest.VolumeSpec` has `HostPath` and `EmptyDir` fields. Executor `buildRunArgs` maps hostPath volumes but ignores emptyDir (creates invalid mount with empty source path).
+- 13 packages, 31 use cases (all WIRED).
+- HTTP API: 9 endpoints + auth middleware + Prometheus metrics on :8080.
+- Executor interface: CreatePod, StopPod, PodStatus, RemovePod, ListPods, PodStats, PodLogs, StreamPodLogs. No Exec, no port mapping, no init container orchestration.
+- Manifest types: PodSpec has Containers but no InitContainers or Ports. ContainerSpec has no Ports field.
+- Scheduler: ResourceTracker tracks CPUMillis, MemoryMB, GPUMemoryMB. No GPU device ID tracking. `--gpu-max` flag unused.
+- GPU detection: `gpu.GPUInfo` has GPUCount field. Device IDs not enumerated.
+- CI/CD: GitHub Actions with build/test/vet/staticcheck + release-please + goreleaser. Already operational.
 
 **Key interfaces to extend**:
-- `internal/api/server.go`: add /metrics, /api/v1/pods/{name}/logs, /api/v1/pods/{name}/events routes.
-- `internal/api/server.go`: wrap mux with auth middleware.
-- New `internal/metrics` package: metric collection and Prometheus text rendering.
-- `internal/executor/podman.go`: add `PodLogs(ctx, name, tail)` method and emptyDir tmpfs support.
-- `internal/state/sqlite.go`: add `ListEvents(podName, since)` query.
-- `cmd/spark/main.go`: add --api-token-file, --log-format flags.
+- `manifest.ContainerSpec`: add `Ports []ContainerPort` field.
+- `manifest.PodSpec`: add `InitContainers []ContainerSpec` field.
+- `executor.Executor`: add `ExecPod(ctx, name, command) (stdout, stderr, exitCode, error)`.
+- `executor.PodmanExecutor.CreatePod`: handle init containers (sequential), port mapping (`--publish`), GPU device env var.
+- `scheduler.ResourceTracker`: add GPU device slot tracking alongside memory tracking.
+- `gpu.Detect()`: enumerate device IDs (0, 1, ..., N-1).
+- `internal/api`: add POST /exec, GET /images, POST /images/pull endpoints.
 
 **Use cases affected**:
-- UC-026 (Prometheus metrics): new observability use case.
-- UC-027 (HTTP auth): new security use case.
-- UC-028 (pod logs via HTTP): extends UC-013 log streaming to HTTP.
-- UC-029 (pod events via HTTP): extends UC-012 event publishing to HTTP.
-- UC-030 (structured logging): operational improvement.
-- UC-031 (emptyDir volumes): fixes incomplete volume support.
-
-Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer-token-auth.md
+- UC-032 (pod exec): new operational use case.
+- UC-033 (port mapping): new networking use case.
+- UC-034 (init containers): new pod lifecycle use case.
+- UC-035 (GPU device assignment): extends UC-005 scheduling and UC-014 GPU detection.
+- UC-036 (image management): new operational use case.
 
 ## Scope and Deliverables
 
@@ -89,241 +84,175 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 | ID | Deliverable | Acceptance Criteria |
 |----|-------------|---------------------|
-| D1 | Prometheus metrics endpoint | GET /metrics returns valid text exposition format with node, pod, scheduler, and HTTP metrics |
-| D2 | HTTP bearer token auth | Middleware rejects unauthenticated requests with 401; /healthz and /metrics exempt |
-| D3 | Pod logs via HTTP | GET /api/v1/pods/{name}/logs returns text/plain with ?tail=N and ?follow=true (SSE) |
-| D4 | Pod events via HTTP | GET /api/v1/pods/{name}/events returns JSON event array with ?since= filter |
-| D5 | Structured JSON logging | --log-format json switches slog to JSONHandler |
-| D6 | EmptyDir volume support | EmptyDir volumes map to tmpfs mounts, cleaned up on pod removal |
+| D1 | Pod exec endpoint | POST /api/v1/pods/{name}/exec runs a command, returns stdout/stderr/exitCode JSON |
+| D2 | Container port mapping | Parser reads ports, executor maps with --publish, ports visible in pod detail |
+| D3 | Init containers | Parser reads initContainers, executor runs them sequentially before main containers |
+| D4 | GPU device assignment | Scheduler assigns device IDs, executor sets NVIDIA_VISIBLE_DEVICES, --gpu-max enforced |
+| D5 | Image management API | GET /api/v1/images lists images, POST /api/v1/images/pull pulls by name:tag |
 
 ### Out of Scope
 
-- Role-based access control or per-user tokens
-- Prometheus histogram metrics
-- WebSocket log streaming
-- Multi-node metric federation
-- Token rotation without restart
-- Container exec (pod exec into running containers)
+- Interactive TTY exec or WebSocket shell
+- Service discovery or port-based routing
+- Sidecar containers
+- GPU MIG or time-slicing
+- Image build or push
 
 ## Checkable Work Breakdown
 
-### E27: Prometheus Metrics
+### E34: Pod Exec
 
-- [x] T27.1 Create metrics collector and text renderer in internal/metrics  Owner: TBD  Est: 60m  verifies: [UC-026]
-  - Create `internal/metrics/collector.go`:
-    - `type Collector struct` with `store *state.PodStore`, `tracker *scheduler.ResourceTracker`, `scheduler *scheduler.Scheduler`.
-    - `NewCollector(store, tracker, scheduler) *Collector`.
-    - `Collect() []MetricFamily`: gathers all metrics at call time. Returns structured data.
-  - Create `internal/metrics/types.go`:
-    - `type MetricFamily struct { Name, Help, Type string; Metrics []Metric }`.
-    - `type Metric struct { Labels map[string]string; Value float64 }`.
-  - Metrics to collect:
-    - `spark_node_cpu_total_millis` (gauge): total CPU from ResourceTracker.
-    - `spark_node_cpu_available_millis` (gauge): available CPU.
-    - `spark_node_memory_total_mb` (gauge): total memory.
-    - `spark_node_memory_available_mb` (gauge): available memory.
-    - `spark_node_gpu_memory_total_mb` (gauge): total GPU memory.
-    - `spark_node_gpu_memory_available_mb` (gauge): available GPU memory.
-    - `spark_pods_total` (gauge, label: status): count of pods by status (Pending, Running, Completed, Failed).
-    - `spark_pod_restarts_total` (counter, label: pod): total restarts per pod.
-    - `spark_scheduling_attempts_total` (counter): total Schedule() calls.
-    - `spark_preemptions_total` (counter): total preemption events.
-  - Create `internal/metrics/render.go`:
-    - `Render(families []MetricFamily) []byte`: produces Prometheus text exposition format.
-    - Format: `# HELP name description\n# TYPE name type\nname{labels} value\n`.
-    - Escape label values per Prometheus spec (backslash, double-quote, newline).
-  - Create `internal/metrics/collector_test.go`:
-    - TestCollect_PodCounts: add pods with various statuses, verify spark_pods_total values.
-    - TestCollect_Resources: set tracker values, verify resource gauge values.
-    - TestRender_Format: verify output matches Prometheus text format exactly.
-    - TestRender_LabelEscaping: verify special characters in label values are escaped.
-  - Acceptance: `go test -race ./internal/metrics/` passes. Rendered output parses with promtool if available.
-
-- [x] T27.2 Add scheduling and preemption counters to scheduler  Owner: TBD  Est: 30m  verifies: [UC-026]
-  - Add atomic counters to `scheduler.Scheduler`:
-    - `scheduleAttempts int64`: incremented on every `Schedule()` call.
-    - `preemptionCount int64`: incremented on every successful preemption.
-  - Add getter methods: `ScheduleAttempts() int64`, `PreemptionCount() int64`.
-  - Increment `scheduleAttempts` at the top of `Schedule()`.
-  - Increment `preemptionCount` in the preemption execution path.
-  - Create tests in `internal/scheduler/scheduler_test.go`:
-    - TestScheduleAttempts: call Schedule() N times, verify counter.
-    - TestPreemptionCount: trigger preemptions, verify counter.
-  - Acceptance: `go test -race ./internal/scheduler/` passes. Counters are thread-safe.
-
-- [x] T27.3 Add /metrics HTTP handler in internal/api  Owner: TBD  Est: 30m  verifies: [UC-026]
-  - Add `internal/api/metrics.go`:
-    - `GET /metrics` handler: calls `collector.Collect()`, renders with `metrics.Render()`, writes `text/plain; version=0.0.4; charset=utf-8`.
-  - Extend `api.Server` struct to hold `*metrics.Collector`.
-  - Update `NewServer` to accept collector (or nil if metrics disabled).
-  - Register route: `mux.HandleFunc("GET /metrics", s.handleMetrics)`.
-  - Create `internal/api/metrics_test.go`:
-    - TestMetricsEndpoint: GET /metrics, verify 200, verify Content-Type, verify output contains expected metric names.
-    - TestMetricsEndpoint_Unauthenticated: verify /metrics is accessible without auth token (like /healthz).
-  - Acceptance: `go test -race ./internal/api/` passes. `curl /metrics` returns valid Prometheus text.
-
-### E28: HTTP Authentication
-
-- [x] T28.1 Create bearer token auth middleware in internal/api  Owner: TBD  Est: 45m  verifies: [UC-027]
-  - Create `internal/api/auth.go`:
-    - `type AuthMiddleware struct { token string }`.
-    - `NewAuthMiddleware(token string) *AuthMiddleware`.
-    - `Wrap(next http.Handler) http.Handler`: checks `Authorization: Bearer <token>` header.
-    - If token matches, call next.ServeHTTP.
-    - If token is empty string (no auth configured), call next.ServeHTTP (passthrough).
-    - If token does not match or header is missing, return 401 with `{"error":"unauthorized"}`.
-    - Exempt paths: /healthz, /metrics (checked by path prefix before token validation).
-  - Create `internal/api/auth_test.go`:
-    - TestAuth_ValidToken: request with correct Bearer token, verify 200.
-    - TestAuth_InvalidToken: request with wrong token, verify 401 JSON.
-    - TestAuth_MissingHeader: request without Authorization header, verify 401 JSON.
-    - TestAuth_HealthzExempt: GET /healthz without token, verify 200.
-    - TestAuth_MetricsExempt: GET /metrics without token, verify 200.
-    - TestAuth_Disabled: empty token string, all requests pass through.
-  - Acceptance: `go test -race ./internal/api/` passes. Auth middleware correctly gates access.
-
-- [x] T28.2 Wire auth middleware into server  Owner: TBD  Est: 15m  verifies: [UC-027]
-  - Depends on: T28.1.
-  - Update `api.NewServer` signature to accept an optional token string parameter.
-  - If token is non-empty, wrap `s.mux` with `AuthMiddleware.Wrap()` in `ServeHTTP()`.
-  - Update `cmd/spark/main.go`:
-    - Add `--api-token-file` flag (string, default empty): path to file containing the API token.
-    - If set, read file contents at startup, trim whitespace, pass to `api.NewServer`.
-    - If file does not exist or is unreadable, log error and exit.
-  - Update existing `api.NewServer` call sites in tests to pass empty token.
-  - Acceptance: `go build ./...` succeeds. `--api-token-file /path/to/token` enables auth.
-
-### E29: Pod Logs via HTTP
-
-- [x] T29.1 Add PodLogs method to executor  Owner: TBD  Est: 30m  verifies: [UC-028]
-  - Add to `executor.Executor` interface: `PodLogs(ctx context.Context, name string, tail int) ([]byte, error)`.
-  - Implement in `PodmanExecutor`:
-    - Run `podman pod logs --tail N NAME` (if tail > 0) or `podman pod logs NAME` (all logs).
-    - Return combined stdout/stderr output as bytes.
-  - Add `StreamPodLogs(ctx context.Context, name string, tail int) (io.ReadCloser, error)`:
-    - Run `podman pod logs --follow --tail N NAME`.
-    - Return the stdout pipe of the running command.
-    - Caller is responsible for closing the reader (which kills the process).
-  - Create tests in `internal/executor/podman_test.go`:
-    - TestPodLogs_Tail: verify correct args passed to podman (stub).
-    - TestStreamPodLogs_Args: verify --follow flag included.
+- [ ] T34.1 Add ExecPod method to executor  Owner: TBD  Est: 45m  verifies: [UC-032]
+  - Add to `executor.Executor` interface: `ExecPod(ctx context.Context, podName string, containerName string, command []string) ([]byte, []byte, int, error)` returning (stdout, stderr, exitCode, err).
+  - Implement in `PodmanExecutor`: run `podman exec <podName>-<containerName> <command...>`.
+  - Capture stdout and stderr separately using `cmd.StdoutPipe()` and `cmd.StderrPipe()`.
+  - Return exit code from `cmd.ProcessState.ExitCode()`.
+  - If containerName is empty, default to the first container: `<podName>-<spec.Containers[0].Name>`.
+  - Create tests with stub command runner.
   - Acceptance: `go test -race ./internal/executor/` passes.
 
-- [x] T29.2 Add pod logs HTTP endpoint in internal/api  Owner: TBD  Est: 45m  verifies: [UC-028]
-  - Depends on: T29.1.
-  - Create `internal/api/pods_logs.go`:
-    - `GET /api/v1/pods/{name}/logs` handler.
-    - Query params: `?tail=N` (default 100), `?follow=true` (default false).
-    - Non-follow mode:
-      1. Verify pod exists in store (404 if not).
-      2. Call `executor.PodLogs(ctx, name, tail)`.
-      3. Return response with Content-Type: text/plain.
-    - Follow mode:
-      1. Verify pod exists and is Running (400 if not running).
-      2. Set headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`.
-      3. Call `executor.StreamPodLogs(ctx, name, tail)`.
-      4. Read lines from the reader, write as SSE `data:` events.
-      5. Flush after each event.
-      6. Stop when reader closes (pod exits) or client disconnects (context cancelled).
-  - Register route: `mux.HandleFunc("GET /api/v1/pods/{name}/logs", s.handlePodLogs)`.
-  - Create `internal/api/pods_logs_test.go`:
-    - TestPodLogs_Tail: apply pod, GET /logs?tail=10, verify text/plain response.
-    - TestPodLogs_NotFound: GET /logs for nonexistent pod, verify 404.
-    - TestPodLogs_DefaultTail: GET /logs without ?tail, verify default 100 passed to executor.
-  - Acceptance: `go test -race ./internal/api/` passes. `curl /api/v1/pods/NAME/logs?tail=50` returns log lines.
-
-### E30: Pod Events via HTTP
-
-- [x] T30.1 Add ListEvents query to SQLiteStore  Owner: TBD  Est: 30m  verifies: [UC-029]
-  - Add to `state.SQLiteStore`:
-    - `ListEvents(podName string, since time.Time) ([]Event, error)`.
-    - `type Event struct { PodName string; Time time.Time; Type string; Message string }`.
-    - SQL: `SELECT pod_name, time, type, message FROM events WHERE pod_name = ? AND time >= ? ORDER BY time ASC`.
-    - If since is zero value, return all events for the pod.
-  - Create tests in `internal/state/sqlite_test.go`:
-    - TestListEvents_All: save 3 events, list all, verify count and order.
-    - TestListEvents_Since: save events at different times, filter by since, verify only recent events returned.
-    - TestListEvents_NoPod: list events for nonexistent pod, verify empty slice (not error).
-  - Acceptance: `go test -race ./internal/state/` passes.
-
-- [x] T30.2 Add pod events HTTP endpoint in internal/api  Owner: TBD  Est: 30m  verifies: [UC-029]
-  - Depends on: T30.1.
-  - Create `internal/api/pods_events.go`:
-    - `GET /api/v1/pods/{name}/events` handler.
-    - Query params: `?since=RFC3339` (optional time filter).
-    - Verify pod exists in store (404 if not).
-    - Call `sqlStore.ListEvents(name, since)`.
-    - Return JSON: `{"events":[{"time":"...","type":"...","message":"..."},...]}`
-    - If ?since is malformed, return 400.
-  - Register route: `mux.HandleFunc("GET /api/v1/pods/{name}/events", s.handlePodEvents)`.
-  - Create `internal/api/pods_events_test.go`:
-    - TestPodEvents_All: apply pod, save events, GET /events, verify JSON response.
-    - TestPodEvents_Since: filter by ?since, verify only matching events.
-    - TestPodEvents_NotFound: GET /events for nonexistent pod, verify 404.
-    - TestPodEvents_InvalidSince: malformed ?since, verify 400.
+- [ ] T34.2 Add pod exec HTTP endpoint in internal/api  Owner: TBD  Est: 45m  verifies: [UC-032]
+  - Depends on: T34.1.
+  - Create `internal/api/pods_exec.go`:
+    - `POST /api/v1/pods/{name}/exec` handler.
+    - Request body JSON: `{"command":["ls","-la"],"container":"worker"}` (container optional).
+    - Verify pod exists and is Running (404 if not found, 400 if not running).
+    - Call `executor.ExecPod(ctx, name, container, command)`.
+    - Response JSON: `{"stdout":"...","stderr":"...","exit_code":0}`.
+    - 400 if command is empty.
+  - Register route in server.go.
+  - Create tests: exec success, pod not found, pod not running, empty command.
   - Acceptance: `go test -race ./internal/api/` passes.
 
-### E31: Structured JSON Logging
+### E35: Container Port Mapping
 
-- [x] T31.1 Add --log-format flag and JSON handler setup  Owner: TBD  Est: 30m  verifies: [UC-030]
+- [ ] T35.1 Add port types to manifest and parse from YAML  Owner: TBD  Est: 45m  verifies: [UC-033]
+  - Add to `manifest.ContainerSpec`:
+    - `Ports []ContainerPort`
+  - Define `type ContainerPort struct { ContainerPort int; HostPort int; Protocol string }`.
+  - Protocol defaults to "tcp" if not specified.
+  - Update the container parser (in parse.go or the relevant parser functions) to extract `ports` from each container in the YAML:
+    ```yaml
+    ports:
+      - containerPort: 8888
+        hostPort: 8888
+        protocol: TCP
+    ```
+  - Create tests: parse ports, default protocol, missing hostPort (use containerPort).
+  - Acceptance: `go test -race ./internal/manifest/` passes. Ports are parsed correctly.
+
+- [ ] T35.2 Wire port mapping into executor CreatePod  Owner: TBD  Est: 30m  verifies: [UC-033]
+  - Depends on: T35.1.
+  - Update `executor.buildRunArgs`: for each port in container.Ports:
+    - Add `--publish <hostPort>:<containerPort>/<protocol>` to podman args.
+    - If HostPort is 0, omit the host port (podman assigns a random port).
+  - Actually, in podman, ports must be added during `pod create`, not `run`. Update `CreatePod` to add `--publish` args to the pod create command (not the container run command).
+  - Create tests: verify --publish args in pod create command.
+  - Acceptance: `go test -race ./internal/executor/` passes.
+
+- [ ] T35.3 Expose ports in pod detail API response  Owner: TBD  Est: 15m  verifies: [UC-033]
+  - Depends on: T35.1.
+  - Update the pod detail JSON response in `pods_query.go` to include ports from the pod spec.
+  - No new endpoint -- extend existing GET /api/v1/pods/{name} response.
+  - Create test: apply pod with ports, GET detail, verify ports in response.
+  - Acceptance: `go test -race ./internal/api/` passes.
+
+### E36: Init Containers
+
+- [ ] T36.1 Add InitContainers field to PodSpec and parse from YAML  Owner: TBD  Est: 30m  verifies: [UC-034]
+  - Add to `manifest.PodSpec`: `InitContainers []ContainerSpec`.
+  - Update Pod parser to extract `initContainers` from the YAML spec (same structure as `containers`).
+  - Create tests: parse init containers, empty init containers, init + main containers.
+  - Acceptance: `go test -race ./internal/manifest/` passes.
+
+- [ ] T36.2 Execute init containers sequentially in CreatePod  Owner: TBD  Est: 45m  verifies: [UC-034]
+  - Depends on: T36.1.
+  - Update `PodmanExecutor.CreatePod`:
+    1. After pod create, run each init container sequentially (not in background, use `podman run` without `-d`).
+    2. Wait for each init container to complete (`cmd.Wait()`).
+    3. If any init container exits non-zero, return error immediately (do not start main containers).
+    4. After all init containers succeed, start main containers as before (with `-d`).
+  - Init containers use the same volume mounts, env vars, and network as main containers.
+  - Init containers are named `<podName>-init-<index>-<name>`.
+  - Create tests with stub: verify init containers run before main, verify failure stops execution.
+  - Acceptance: `go test -race ./internal/executor/` passes.
+
+### E37: GPU Device Assignment
+
+- [ ] T37.1 Add GPU device enumeration to gpu package  Owner: TBD  Est: 30m  verifies: [UC-035]
+  - Update `gpu.GPUInfo` to include `DeviceIDs []int` field (e.g., [0, 1, 2, 3]).
+  - Update `gpu.Detect()` / `gpu.DetectWithFallback()` to populate device IDs by parsing nvidia-smi output.
+  - For single-GPU hosts like DGX Spark, DeviceIDs = [0].
+  - For multi-GPU: parse `nvidia-smi -L` to count devices, assign IDs 0 through N-1.
+  - Create tests with stub nvidia-smi output.
+  - Acceptance: `go test -race ./internal/gpu/` passes.
+
+- [ ] T37.2 Add GPU device slot tracking to scheduler  Owner: TBD  Est: 45m  verifies: [UC-035]
+  - Add to `ResourceTracker`:
+    - `gpuDevices []int`: list of all GPU device IDs.
+    - `gpuMax int`: max concurrent GPU pods (from --gpu-max flag).
+    - `gpuAssignments map[string][]int`: pod name -> assigned device IDs.
+  - Update `NewResourceTracker` to accept device IDs and gpuMax.
+  - Update `Allocate`: if pod requests GPUMemoryMB > 0, assign a free device ID. If no device available (all assigned or gpuMax reached), return error.
+  - Update `Release`: free the device IDs for the released pod.
+  - Add `AssignedGPUs(name string) []int` getter.
+  - Create tests: allocate GPU, release GPU, exceed gpuMax, multi-device assignment.
+  - Acceptance: `go test -race ./internal/scheduler/` passes.
+
+- [ ] T37.3 Set NVIDIA_VISIBLE_DEVICES in executor  Owner: TBD  Est: 30m  verifies: [UC-035]
+  - Depends on: T37.2.
+  - Update `executor.CreatePod` to accept an optional `gpuDevices []int` parameter (or read from a context/spec).
+  - In `buildRunArgs`: if GPU devices are assigned, add `--env NVIDIA_VISIBLE_DEVICES=<comma-separated IDs>` instead of `--device nvidia.com/gpu=all`.
+  - If no GPU devices assigned (non-GPU pod), do not add GPU flags.
+  - Update reconciler and main.go to pass GPU assignments from scheduler to executor.
+  - Create tests: verify NVIDIA_VISIBLE_DEVICES env var in args.
+  - Acceptance: `go test -race ./internal/executor/` passes.
+
+### E38: Image Management API
+
+- [ ] T38.1 Add image list and pull methods to executor  Owner: TBD  Est: 30m  verifies: [UC-036]
+  - Add to `executor.Executor` interface:
+    - `ListImages(ctx context.Context) ([]ImageInfo, error)`.
+    - `PullImage(ctx context.Context, name string) error`.
+  - Define `type ImageInfo struct { Name string; Tag string; Size string; Created string }`.
+  - Implement in `PodmanExecutor`:
+    - `ListImages`: run `podman images --format json`, parse JSON output.
+    - `PullImage`: run `podman pull <name>`. Return error if pull fails.
+  - Note: `ImageExists` and `PullIfNeeded` already exist in `internal/executor/image.go`. Extend or reuse.
+  - Create tests with stub.
+  - Acceptance: `go test -race ./internal/executor/` passes.
+
+- [ ] T38.2 Add image management HTTP endpoints  Owner: TBD  Est: 30m  verifies: [UC-036]
+  - Depends on: T38.1.
+  - Create `internal/api/images.go`:
+    - `GET /api/v1/images` handler: calls `executor.ListImages()`, returns JSON array.
+    - `POST /api/v1/images/pull` handler: reads body `{"image":"name:tag"}`, calls `executor.PullImage()`, returns 200 on success, 400 on failure.
+  - Register routes in server.go.
+  - Create tests: list images, pull image, pull invalid image.
+  - Acceptance: `go test -race ./internal/api/` passes.
+
+### E39: Integration Wiring
+
+- [ ] T39.1 Wire GPU device assignment into main.go and reconciler  Owner: TBD  Est: 45m  verifies: [UC-032, UC-033, UC-034, UC-035, UC-036]
+  - Depends on: T34.1, T34.2, T35.1, T35.2, T36.1, T36.2, T37.1, T37.2, T37.3, T38.1, T38.2.
   - Update `cmd/spark/main.go`:
-    - Add `--log-format` flag (string, default "text"): "text" or "json".
-    - Before any slog calls, configure the default logger:
-      - If "json": `slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))`.
-      - If "text": keep default (no change).
-      - If other value: log error "unknown log format" and exit.
-    - Move flag parsing and log setup to the very top of main(), before any other initialization.
-  - Create `cmd/spark/main_test.go` (or test via integration):
-    - TestLogFormatJSON: verify JSON handler produces valid JSON lines.
-    - TestLogFormatText: verify text handler produces human-readable output.
-  - Acceptance: `./spark --log-format json` outputs JSON log lines to stderr. `go build ./...` succeeds.
+    - Pass GPU device IDs and `*gpuMax` to `NewResourceTracker`.
+    - Pass GPU assignments from scheduler to executor in reconciler loop.
+  - Update `reconciler.Reconciler` to retrieve GPU assignments when creating pods.
+  - Ensure all new HTTP routes are registered.
+  - Acceptance: `go build ./...` and `go vet ./...` pass.
 
-### E32: EmptyDir Volume Support
-
-- [x] T32.1 Add emptyDir tmpfs mount support to executor  Owner: TBD  Est: 45m  verifies: [UC-031]
-  - Update `executor.buildRunArgs` in `internal/executor/podman.go`:
-    - When a VolumeMount references a volume with `EmptyDir: true`:
-      - Use `--mount type=tmpfs,destination=<mountPath>` instead of `--volume`.
-      - If ReadOnly is true on the mount, add `,ro` option.
-    - HostPath volumes continue to use `--volume` as before.
-  - Update `executor.PodmanExecutor.StopPod` and `RemovePod`: no change needed since tmpfs mounts are automatically cleaned up by podman when the container is removed.
-  - Create tests in `internal/executor/podman_test.go`:
-    - TestBuildRunArgs_EmptyDir: verify tmpfs mount args for emptyDir volume.
-    - TestBuildRunArgs_EmptyDirReadOnly: verify ro flag on tmpfs mount.
-    - TestBuildRunArgs_HostPath: verify existing hostPath behavior unchanged.
-    - TestBuildRunArgs_MixedVolumes: pod with both hostPath and emptyDir volumes.
-  - Acceptance: `go test -race ./internal/executor/` passes. EmptyDir volumes produce correct podman args.
-
-### E33: Integration Wiring
-
-- [x] T33.1 Wire metrics, auth, logs, events, log format, and emptyDir into main.go  Owner: TBD  Est: 45m  verifies: [UC-026, UC-027, UC-028, UC-029, UC-030, UC-031]
-  - Depends on: T27.1, T27.2, T27.3, T28.1, T28.2, T29.1, T29.2, T30.1, T30.2, T31.1, T32.1.
-  - Wire metrics collector into api.Server.
-  - Wire auth middleware token into api.Server.
-  - Ensure all new routes are registered.
-  - Verify emptyDir volumes work through the full apply path.
-  - Update `deploy/spark.service` to include new flags in documentation comments.
-  - Acceptance: Spark starts with all new features. `go build ./...` and `go vet ./...` pass.
-
-- [x] T33.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
-  - Depends on: T33.1.
+- [ ] T39.2 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
+  - Depends on: T39.1.
   - Run `go test ./... -race -timeout 120s`. Zero failures.
   - Run `go vet ./...`. Zero warnings.
   - Acceptance: All tests pass, zero lint warnings.
 
-- [ ] T33.3 Update README and design docs for v1.3.0  Owner: TBD  Est: 30m  verifies: [infrastructure]
-  - Depends on: T33.2.
-  - Update README.md:
-    - Add new CLI flags (--api-token-file, --log-format) to flags table.
-    - Add /metrics endpoint documentation.
-    - Add /api/v1/pods/{name}/logs and /api/v1/pods/{name}/events documentation.
-    - Add authentication section with Bearer token usage example.
-  - Update docs/design.md:
-    - Add internal/metrics to package layout.
-    - Add /metrics, /logs, /events to Interfaces section.
-    - Note auth middleware in HTTP section.
-  - Update CHANGELOG.md with v1.3.0 release notes if desired.
-  - Acceptance: README accurately describes all v1.3.0 features.
+- [ ] T39.3 Update README and design docs for v1.4.0  Owner: TBD  Est: 30m  verifies: [infrastructure]
+  - Depends on: T39.2.
+  - Update README.md: add exec, ports, init containers, GPU device assignment, image management sections.
+  - Update docs/design.md: add new interfaces and invariants.
+  - Acceptance: README accurately describes all v1.4.0 features.
 
 ## Parallel Work
 
@@ -331,59 +260,59 @@ Decision rationale: docs/adr/010-prometheus-metrics.md, docs/adr/011-http-bearer
 
 | Track | Tasks | Description |
 |-------|-------|-------------|
-| A: Prometheus Metrics | T27.1, T27.2, T27.3 | Metrics collector, counters, HTTP handler |
-| B: HTTP Authentication | T28.1, T28.2 | Auth middleware and wiring |
-| C: Pod Logs via HTTP | T29.1, T29.2 | Executor logs method and HTTP handler |
-| D: Pod Events via HTTP | T30.1, T30.2 | SQLite query and HTTP handler |
-| E: Structured Logging | T31.1 | Log format flag |
-| F: EmptyDir Volumes | T32.1 | Tmpfs mount support |
+| A: Pod Exec | T34.1, T34.2 | Executor exec + HTTP endpoint |
+| B: Port Mapping | T35.1, T35.2, T35.3 | Manifest ports + executor + API |
+| C: Init Containers | T36.1, T36.2 | Manifest init + executor orchestration |
+| D: GPU Devices | T37.1, T37.2, T37.3 | GPU enumeration + scheduler + executor |
+| E: Image Management | T38.1, T38.2 | Executor list/pull + HTTP endpoints |
 
-Sync point: T33.1 requires all tracks to complete before wiring.
+Sync point: T39.1 requires all tracks to complete before wiring.
 
 ### Waves
 
 ### Wave 1: Independent Components (8 agents)
-- [x] T27.1 Create metrics collector and text renderer in internal/metrics  verifies: [UC-026]
-- [x] T27.2 Add scheduling and preemption counters to scheduler  verifies: [UC-026]
-- [x] T28.1 Create bearer token auth middleware in internal/api  verifies: [UC-027]
-- [x] T29.1 Add PodLogs method to executor  verifies: [UC-028]
-- [x] T30.1 Add ListEvents query to SQLiteStore  verifies: [UC-029]
-- [x] T31.1 Add --log-format flag and JSON handler setup  verifies: [UC-030]
-- [x] T32.1 Add emptyDir tmpfs mount support to executor  verifies: [UC-031]
-- [x] T27.3 Add /metrics HTTP handler in internal/api  verifies: [UC-026]
+- [ ] T34.1 Add ExecPod method to executor  verifies: [UC-032]
+- [ ] T35.1 Add port types to manifest and parse from YAML  verifies: [UC-033]
+- [ ] T36.1 Add InitContainers field to PodSpec and parse from YAML  verifies: [UC-034]
+- [ ] T37.1 Add GPU device enumeration to gpu package  verifies: [UC-035]
+- [ ] T37.2 Add GPU device slot tracking to scheduler  verifies: [UC-035]
+- [ ] T38.1 Add image list and pull methods to executor  verifies: [UC-036]
+- [ ] T35.3 Expose ports in pod detail API response  verifies: [UC-033]
+- [ ] T34.2 Add pod exec HTTP endpoint in internal/api  verifies: [UC-032]
 
-### Wave 2: HTTP Handlers and Wiring (4 agents)
-- [x] T28.2 Wire auth middleware into server  verifies: [UC-027]
-- [x] T29.2 Add pod logs HTTP endpoint in internal/api  verifies: [UC-028]
-- [x] T30.2 Add pod events HTTP endpoint in internal/api  verifies: [UC-029]
-- [x] T33.1 Wire metrics, auth, logs, events, log format, and emptyDir into main.go  verifies: [UC-026, UC-027, UC-028, UC-029, UC-030, UC-031]
+### Wave 2: Dependent Components (4 agents)
+- [ ] T35.2 Wire port mapping into executor CreatePod  verifies: [UC-033]
+- [ ] T36.2 Execute init containers sequentially in CreatePod  verifies: [UC-034]
+- [ ] T37.3 Set NVIDIA_VISIBLE_DEVICES in executor  verifies: [UC-035]
+- [ ] T38.2 Add image management HTTP endpoints  verifies: [UC-036]
 
-### Wave 3: Verification (2 agents)
-- [x] T33.2 Run full test suite and lint  verifies: [infrastructure]
-- [ ] T33.3 Update README and design docs for v1.3.0  verifies: [infrastructure]
+### Wave 3: Integration and Verification (3 agents)
+- [ ] T39.1 Wire GPU device assignment into main.go and reconciler  verifies: [UC-032, UC-033, UC-034, UC-035, UC-036]
+- [ ] T39.2 Run full test suite and lint  verifies: [infrastructure]
+- [ ] T39.3 Update README and design docs for v1.4.0  verifies: [infrastructure]
 
-Note: T27.3 depends on T27.1 (needs collector) but can run in Wave 1 if T27.1 completes first or if the agent runs them sequentially. T28.2 depends on T28.1. T29.2 depends on T29.1. T30.2 depends on T30.1. T33.1 depends on all Wave 1 and Wave 2 tasks.
+Note: T34.2 depends on T34.1 but can run in Wave 1 if assigned to the same agent sequentially. T35.2 depends on T35.1. T36.2 depends on T36.1. T37.3 depends on T37.2. T38.2 depends on T38.1. Wave 3 tasks depend on all prior waves.
 
 ## Timeline and Milestones
 
 | ID | Milestone | Dependencies | Exit Criteria |
 |----|-----------|--------------|---------------|
-| M1 | Metrics collector and renderer tested | T27.1, T27.2, T27.3 | Prometheus text format output verified |
-| M2 | Auth middleware tested | T28.1, T28.2 | Bearer token validation working, exempt paths verified |
-| M3 | Pod logs endpoint tested | T29.1, T29.2 | Tail and streaming modes return correct output |
-| M4 | Pod events endpoint tested | T30.1, T30.2 | Event query with time filtering returns correct JSON |
-| M5 | Wired, tested, documented | T33.1, T33.2, T33.3 | Full integration passes, README updated |
+| M1 | Pod exec functional | T34.1, T34.2 | Exec command returns stdout/stderr via HTTP |
+| M2 | Port mapping functional | T35.1, T35.2, T35.3 | Pod with ports accessible on host |
+| M3 | Init containers functional | T36.1, T36.2 | Init containers run sequentially before main |
+| M4 | GPU device assignment functional | T37.1, T37.2, T37.3 | NVIDIA_VISIBLE_DEVICES set, --gpu-max enforced |
+| M5 | Wired, tested, documented | T39.1, T39.2, T39.3 | Full integration passes, README updated |
 
 ## Risk Register
 
 | ID | Risk | Impact | Likelihood | Mitigation |
 |----|------|--------|------------|------------|
-| R1 | Prometheus text format compliance issues | Medium | Low | Test with promtool lint if available. Comprehensive unit tests with known-good format samples. |
-| R2 | SSE log streaming leaks goroutines on client disconnect | High | Medium | Use request context cancellation to detect disconnect. Close podman logs process on context cancel. |
-| R3 | Auth middleware bypass via path manipulation | High | Low | Use exact path matching for exempt routes. No prefix matching beyond /healthz and /metrics. |
-| R4 | Large pod log output causes memory pressure | Medium | Medium | Default tail=100 limits output. Streaming mode uses io.Copy to pipe without buffering. |
-| R5 | SQLite ListEvents query slow on large event tables | Low | Low | Events are pruned with pod retention. Add index on (pod_name, time) if needed. |
-| R6 | EmptyDir tmpfs exhausts memory on DGX | Low | Low | tmpfs uses memory. Pods using emptyDir should declare memory requests that account for tmpfs usage. |
+| R1 | podman exec with separate stdout/stderr piping race conditions | Medium | Medium | Use cmd.Output() for simple cases. For large output, use goroutines with WaitGroup. |
+| R2 | Port conflicts on host when multiple pods expose same port | High | Medium | Return clear error message. Do not retry with different port -- user must resolve. |
+| R3 | Init container failure leaves pod in inconsistent state | High | Low | On init failure: remove all init containers, remove the pod, mark as Failed in store. |
+| R4 | NVIDIA_VISIBLE_DEVICES format varies across driver versions | Medium | Low | Use comma-separated integer device IDs (0,1,2). This is the universal format. |
+| R5 | Large image pulls block the HTTP handler for minutes | Medium | High | Pull in a goroutine. Return 202 Accepted with a status message. Poll for completion via image list. |
+| R6 | GPU device tracking inconsistent after crash recovery | Medium | Medium | On startup recovery, query podman for running GPU pods, re-register device assignments. |
 
 ## Operating Procedure
 
@@ -400,69 +329,26 @@ Note: T27.3 depends on T27.1 (needs collector) but can run in Wave 1 if T27.1 co
 - Each commit is a small, logical unit touching one package.
 - HTTP tests use `httptest.NewServer` (no real network binding).
 - Executor tests use stub command runner (no podman dependency in CI).
-- Auth tests verify both enabled and disabled (empty token) modes.
-- Metrics output tests verify exact Prometheus text format compliance.
+- Init container tests verify sequential execution and failure propagation.
+- GPU tests verify device ID assignment and release.
 
 ## Progress Log
 
-### 2026-03-19: Plan created
-- Trimmed completed v1.2.0 plan. v1.2.0 knowledge already preserved in docs/design.md and docs/adr/009-http-api.md.
-- Created plan for v1.3.0: observability (metrics, logs, events), security (auth), operational (JSON logging, emptyDir).
-- Created ADR 010 (docs/adr/010-prometheus-metrics.md): stdlib-only Prometheus text format.
-- Created ADR 011 (docs/adr/011-http-bearer-token-auth.md): bearer token auth with file-based token.
-- Updated use case manifest: UC-018 through UC-025 marked WIRED. Added UC-026 through UC-031 as PLANNED.
-- 14 tasks across 3 waves. 8 agents in Wave 1 (parallel), 4 in Wave 2 (parallel), 2 in Wave 3 (parallel).
+### 2026-03-20: Plan created
+- Trimmed completed v1.3.0 plan. v1.3.0 knowledge preserved in docs/devlog.md (2026-03-19 entry) and docs/adr/010-011.
+- Updated use case manifest: UC-026 through UC-031 marked WIRED. Added UC-032 through UC-036 as PLANNED.
+- Created plan for v1.4.0: pod exec, port mapping, init containers, GPU device assignment, image management.
+- 15 tasks across 3 waves. 8 agents in Wave 1, 4 in Wave 2, 3 in Wave 3.
 
 ## Hand-off Notes
 
 - Spark is a single-binary Go pod orchestrator for GPU hosts. See docs/design.md for architecture.
-- v1.2.0 is complete: HTTP API, resource reconciliation, graceful shutdown. All 25 use cases are WIRED.
-- This plan adds six features: Prometheus metrics, HTTP auth, pod logs/events via HTTP, JSON logging, emptyDir volumes.
-- Key constraint: stdlib only. Prometheus text format is hand-rendered (no client_golang). See ADR-010.
-- Auth is bearer token from file (--api-token-file). If flag not set, auth is disabled. See ADR-011.
-- Pod logs use `podman pod logs` for tail mode and `podman pod logs --follow` for SSE streaming.
-- Pod events query the existing SQLite `events` table. A new `ListEvents` method is needed on SQLiteStore.
-- EmptyDir volumes map to `--mount type=tmpfs,destination=PATH` in podman. No host directory needed.
-- DGX Spark target: `ssh ndungu@192.168.86.250` (Ubuntu arm64, NVIDIA Grace CPU).
-
-## Appendix
-
-### Prometheus Text Exposition Format Example
-
-```
-# HELP spark_node_cpu_total_millis Total CPU capacity in millicores
-# TYPE spark_node_cpu_total_millis gauge
-spark_node_cpu_total_millis 20000
-
-# HELP spark_pods_total Number of pods by status
-# TYPE spark_pods_total gauge
-spark_pods_total{status="Running"} 3
-spark_pods_total{status="Pending"} 1
-spark_pods_total{status="Completed"} 12
-spark_pods_total{status="Failed"} 0
-```
-
-### Bearer Token Authentication Example
-
-```bash
-# Create token file
-echo "my-secret-token" > /etc/spark/api-token
-
-# Start spark with auth enabled
-./spark --api-token-file /etc/spark/api-token
-
-# Authenticated request
-curl -H "Authorization: Bearer my-secret-token" http://localhost:8080/api/v1/pods
-
-# Unauthenticated health check (always allowed)
-curl http://localhost:8080/healthz
-```
-
-### SSE Log Streaming Example
-
-```bash
-# Stream logs (Server-Sent Events)
-curl -N http://localhost:8080/api/v1/pods/myapp/logs?follow=true&tail=10
-# data: 2026-03-19T10:00:01Z Starting training epoch 1...
-# data: 2026-03-19T10:00:02Z Loading dataset from /data/train.csv...
-```
+- v1.3.0 is complete: Prometheus metrics, HTTP auth, pod logs/events via HTTP, JSON logging, emptyDir volumes. All 31 use cases WIRED.
+- CI/CD is operational: GitHub Actions with build/test/vet/staticcheck + release-please + goreleaser.
+- This plan adds five features: pod exec, port mapping, init containers, GPU device assignment, image management.
+- Pod exec uses `podman exec <container> <command>`. Container naming: `<podName>-<containerName>`.
+- Port mapping: ports declared in manifest, mapped via `podman pod create --publish`. Must be on pod create, not container run.
+- Init containers: run sequentially without `-d` flag. Fail-fast on non-zero exit.
+- GPU device assignment: `NVIDIA_VISIBLE_DEVICES` env var replaces `--device nvidia.com/gpu=all`. Device IDs from nvidia-smi. `--gpu-max` limits concurrent GPU pods.
+- Image management: extends existing image.go with ListImages and HTTP endpoints.
+- DGX Spark target: `ssh ndungu@192.168.86.250` (Ubuntu arm64, NVIDIA Grace CPU, 1 GPU 128GB unified memory).
