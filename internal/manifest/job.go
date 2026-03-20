@@ -152,6 +152,7 @@ func parseContainer(cm map[string]interface{}) ContainerSpec {
 
 	c.Resources = parseResources(getMap(cm, "resources"))
 	c.SecurityContext = parseSecurityContext(getMap(cm, "securityContext"))
+	c.LivenessProbe = parseProbe(getMap(cm, "livenessProbe"))
 	return c
 }
 
@@ -206,6 +207,46 @@ func parseGPU(s string) int {
 	var n int
 	fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+func parseProbe(pm map[string]interface{}) *ProbeSpec {
+	if pm == nil {
+		return nil
+	}
+	probe := &ProbeSpec{
+		InitialDelaySeconds: getInt(pm, "initialDelaySeconds"),
+		PeriodSeconds:       getInt(pm, "periodSeconds"),
+		FailureThreshold:    getInt(pm, "failureThreshold"),
+		TimeoutSeconds:      getInt(pm, "timeoutSeconds"),
+	}
+	// Apply defaults.
+	if probe.PeriodSeconds == 0 {
+		probe.PeriodSeconds = 10
+	}
+	if probe.FailureThreshold == 0 {
+		probe.FailureThreshold = 3
+	}
+	if probe.TimeoutSeconds == 0 {
+		probe.TimeoutSeconds = 1
+	}
+	// Parse exec probe.
+	if execMap := getMap(pm, "exec"); execMap != nil {
+		ep := &ExecProbe{}
+		for _, v := range getList(execMap, "command") {
+			if s, ok := v.(string); ok {
+				ep.Command = append(ep.Command, s)
+			}
+		}
+		probe.Exec = ep
+	}
+	// Parse httpGet probe.
+	if httpMap := getMap(pm, "httpGet"); httpMap != nil {
+		probe.HTTPGet = &HTTPGetProbe{
+			Path: getString(httpMap, "path"),
+			Port: getInt(httpMap, "port"),
+		}
+	}
+	return probe
 }
 
 func parseVolume(vm map[string]interface{}) VolumeSpec {

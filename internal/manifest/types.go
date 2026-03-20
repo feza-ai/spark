@@ -50,6 +50,27 @@ type SecurityContext struct {
 	DropCaps     []string // from capabilities.drop
 }
 
+// ExecProbe describes a probe that runs a command inside the container.
+type ExecProbe struct {
+	Command []string
+}
+
+// HTTPGetProbe describes a probe that performs an HTTP GET request.
+type HTTPGetProbe struct {
+	Path string
+	Port int
+}
+
+// ProbeSpec describes a health probe for a container.
+type ProbeSpec struct {
+	Exec                *ExecProbe
+	HTTPGet             *HTTPGetProbe
+	InitialDelaySeconds int
+	PeriodSeconds       int // default 10
+	FailureThreshold    int // default 3
+	TimeoutSeconds      int // default 1
+}
+
 // ContainerSpec describes a single container within a pod.
 type ContainerSpec struct {
 	Name            string
@@ -61,6 +82,7 @@ type ContainerSpec struct {
 	VolumeMounts    []VolumeMount
 	Resources       ResourceRequirements
 	SecurityContext *SecurityContext
+	LivenessProbe   *ProbeSpec
 }
 
 // PodSpec is the internal representation of a schedulable pod.
