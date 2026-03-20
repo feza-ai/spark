@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,7 +40,18 @@ func main() {
 	httpAddr := flag.String("http-addr", ":8080", "HTTP listen address")
 	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "max time to drain pods on shutdown")
 	reconcileResourcesInterval := flag.Duration("reconcile-resources-interval", 60*time.Second, "resource reconciliation interval")
+	logFormat := flag.String("log-format", "text", "log output format (text or json)")
 	flag.Parse()
+
+	switch *logFormat {
+	case "json":
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	case "text":
+		// default, no change needed
+	default:
+		fmt.Fprintf(os.Stderr, "unknown log format: %s\n", *logFormat)
+		os.Exit(1)
+	}
 
 	slog.Info("spark starting",
 		"node", *nodeID,
