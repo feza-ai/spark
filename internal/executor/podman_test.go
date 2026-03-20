@@ -16,7 +16,7 @@ func TestBuildRunArgs_EnvMapping(t *testing.T) {
 			{Name: "BAZ", Value: "qux"},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net")
+	args := buildRunArgs("mypod", container, nil, "spark-net", true)
 
 	wantPairs := []string{"--env", "FOO=bar", "--env", "BAZ=qux"}
 	for i := 0; i < len(wantPairs); i += 2 {
@@ -40,7 +40,7 @@ func TestBuildRunArgs_VolumeMapping(t *testing.T) {
 		{Name: "data", HostPath: "/host/data"},
 		{Name: "config", HostPath: "/host/config"},
 	}
-	args := buildRunArgs("mypod", container, volumes, "spark-net")
+	args := buildRunArgs("mypod", container, volumes, "spark-net", true)
 
 	tests := []struct {
 		name string
@@ -77,7 +77,7 @@ func TestBuildRunArgs_GPUFlag(t *testing.T) {
 					Limits: manifest.ResourceList{GPUMemoryMB: tt.gpuMB},
 				},
 			}
-			args := buildRunArgs("mypod", container, nil, "spark-net")
+			args := buildRunArgs("mypod", container, nil, "spark-net", true)
 			hasGPU := slices.Contains(args, "nvidia.com/gpu=all")
 			if hasGPU != tt.wantGPU {
 				t.Errorf("GPU flag present=%v, want %v; args=%v", hasGPU, tt.wantGPU, args)
@@ -94,7 +94,7 @@ func TestBuildRunArgs_ResourceLimits(t *testing.T) {
 			Limits: manifest.ResourceList{CPUMillis: 2500, MemoryMB: 512},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net")
+	args := buildRunArgs("mypod", container, nil, "spark-net", true)
 
 	memIdx := slices.Index(args, "512m")
 	if memIdx < 1 || args[memIdx-1] != "--memory" {
@@ -114,7 +114,7 @@ func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
 		Command: []string{"/bin/sh", "-c"},
 		Args:    []string{"echo hello"},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net")
+	args := buildRunArgs("mypod", container, nil, "spark-net", true)
 
 	// Image should appear, followed by command and args.
 	imgIdx := slices.Index(args, "myimage:latest")
@@ -244,7 +244,7 @@ func TestBuildRunArgs_PodAndContainerName(t *testing.T) {
 		Name:  "worker",
 		Image: "myimage:latest",
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net")
+	args := buildRunArgs("mypod", container, nil, "spark-net", true)
 
 	podIdx := slices.Index(args, "--pod")
 	if podIdx < 0 || args[podIdx+1] != "mypod" {
@@ -294,7 +294,7 @@ func TestBuildRunArgs_EmptyDirVolumes(t *testing.T) {
 				Image:        "myimage:latest",
 				VolumeMounts: tt.mounts,
 			}
-			args := buildRunArgs("mypod", container, tt.volumes, "spark-net")
+			args := buildRunArgs("mypod", container, tt.volumes, "spark-net", true)
 			idx := slices.Index(args, tt.wantVal)
 			if idx < 1 || args[idx-1] != tt.wantFlag {
 				t.Errorf("expected %s %s in args, got %v", tt.wantFlag, tt.wantVal, args)
@@ -381,7 +381,7 @@ func TestBuildRunArgs_MixedVolumes(t *testing.T) {
 		{Name: "scratch", EmptyDir: true},
 		{Name: "config", HostPath: "/host/config"},
 	}
-	args := buildRunArgs("mypod", container, volumes, "spark-net")
+	args := buildRunArgs("mypod", container, volumes, "spark-net", true)
 
 	// hostPath volume for data
 	idx := slices.Index(args, "/host/data:/data")
@@ -557,5 +557,38 @@ func TestCreatePod_PortRandomHost(t *testing.T) {
 		if len(a) > 0 && a[0] == ':' {
 			t.Errorf("unexpected colon-prefixed publish value: %s", a)
 		}
+	}
+}
+
+func TestBuildRunArgs_NoDetach(t *testing.T) {
+	container := manifest.ContainerSpec{
+		Name:  "setup",
+		Image: "busybox:latest",
+	}
+	args := buildRunArgs("mypod", container, nil, "spark-net", false)
+
+	if slices.Contains(args, "-d") {
+		t.Errorf("expected no -d flag when detach=false, got %v", args)
+	}
+	if args[0] != "run" {
+		t.Errorf("expected first arg to be 'run', got %q", args[0])
+	}
+	// --pod should still be present
+	podIdx := slices.Index(args, "--pod")
+	if podIdx < 0 || args[podIdx+1] != "mypod" {
+		t.Errorf("expected --pod mypod in args, got %v", args)
+	}
+}
+
+func TestBuildRunArgs_InitContainerNaming(t *testing.T) {
+	container := manifest.ContainerSpec{
+		Name:  "init-0-setup",
+		Image: "busybox:latest",
+	}
+	args := buildRunArgs("mypod", container, nil, "spark-net", false)
+
+	nameIdx := slices.Index(args, "--name")
+	if nameIdx < 0 || args[nameIdx+1] != "mypod-init-0-setup" {
+		t.Errorf("expected --name mypod-init-0-setup in args, got %v", args)
 	}
 }
