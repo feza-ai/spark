@@ -144,6 +144,84 @@ func TestSaveEvent(t *testing.T) {
 	}
 }
 
+func TestListEvents(t *testing.T) {
+	store, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer store.Close()
+
+	// Create a pod for events
+	if err := store.SavePod(&PodRecord{
+		Spec:   manifest.PodSpec{Name: "le-pod"},
+		Status: StatusRunning,
+	}); err != nil {
+		t.Fatalf("SavePod: %v", err)
+	}
+
+	t1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 2, 1, 10, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+
+	for _, e := range []PodEvent{
+		{Time: t1, Type: "scheduled", Message: "first"},
+		{Time: t2, Type: "started", Message: "second"},
+		{Time: t3, Type: "running", Message: "third"},
+	} {
+		if err := store.SaveEvent("le-pod", e); err != nil {
+			t.Fatalf("SaveEvent: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name      string
+		podName   string
+		since     time.Time
+		wantCount int
+		wantFirst string
+	}{
+		{
+			name:      "All",
+			podName:   "le-pod",
+			since:     time.Time{},
+			wantCount: 3,
+			wantFirst: "scheduled",
+		},
+		{
+			name:      "Since",
+			podName:   "le-pod",
+			since:     t2,
+			wantCount: 2,
+			wantFirst: "started",
+		},
+		{
+			name:      "NoPod",
+			podName:   "nonexistent",
+			since:     time.Time{},
+			wantCount: 0,
+			wantFirst: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events, err := store.ListEvents(tt.podName, tt.since)
+			if err != nil {
+				t.Fatalf("ListEvents: %v", err)
+			}
+			if events == nil {
+				t.Fatal("ListEvents returned nil, want empty slice")
+			}
+			if len(events) != tt.wantCount {
+				t.Fatalf("got %d events, want %d", len(events), tt.wantCount)
+			}
+			if tt.wantCount > 0 && events[0].Type != tt.wantFirst {
+				t.Errorf("first event type = %q, want %q", events[0].Type, tt.wantFirst)
+			}
+		})
+	}
+}
+
 func TestDeletePod(t *testing.T) {
 	store, err := OpenSQLite(":memory:")
 	if err != nil {
