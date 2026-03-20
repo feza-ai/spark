@@ -51,6 +51,54 @@ func (cs *CronScheduler) Register(spec manifest.CronJobSpec) error {
 	return nil
 }
 
+// CronJobStatus represents the status of a registered CronJob.
+type CronJobStatus struct {
+	Name     string
+	Schedule string
+	LastRun  time.Time
+	NextRun  time.Time
+	RunCount int
+}
+
+// List returns the status of all registered CronJobs, sorted by name.
+func (cs *CronScheduler) List() []CronJobStatus {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	result := make([]CronJobStatus, 0, len(cs.jobs))
+	for name, entry := range cs.jobs {
+		result = append(result, CronJobStatus{
+			Name:     name,
+			Schedule: entry.spec.Schedule,
+			LastRun:  entry.lastRun,
+			NextRun:  entry.schedule.Next(entry.lastRun),
+			RunCount: entry.jobCount,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+	return result
+}
+
+// Get returns the status of a single CronJob by name.
+func (cs *CronScheduler) Get(name string) (CronJobStatus, bool) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	entry, ok := cs.jobs[name]
+	if !ok {
+		return CronJobStatus{}, false
+	}
+	return CronJobStatus{
+		Name:     name,
+		Schedule: entry.spec.Schedule,
+		LastRun:  entry.lastRun,
+		NextRun:  entry.schedule.Next(entry.lastRun),
+		RunCount: entry.jobCount,
+	}, true
+}
+
 // Unregister removes a CronJob.
 func (cs *CronScheduler) Unregister(name string) {
 	cs.mu.Lock()
