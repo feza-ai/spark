@@ -36,6 +36,7 @@ type PodRecord struct {
 	FinishedAt time.Time
 	Restarts   int
 	RetryCount int // for jobs with backoffLimit
+	SourcePath string
 }
 
 // PodStore is a thread-safe in-memory store for pod state.
@@ -221,4 +222,21 @@ func (s *PodStore) Names() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// ListBySourcePath returns all pod records with the given SourcePath.
+func (s *PodStore) ListBySourcePath(path string) []PodRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []PodRecord
+	for _, rec := range s.pods {
+		if rec.SourcePath == path {
+			cp := *rec
+			cp.Events = make([]PodEvent, len(rec.Events))
+			copy(cp.Events, rec.Events)
+			result = append(result, cp)
+		}
+	}
+	return result
 }
