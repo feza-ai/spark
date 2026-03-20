@@ -35,6 +35,7 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 	s.registerResourceRoutes()
 	s.registerPodQueryRoutes()
 	s.registerPodMutateRoutes()
+	s.mux.HandleFunc("GET /api/v1/pods/{name}/events", s.handlePodEvents)
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	return s
 }
