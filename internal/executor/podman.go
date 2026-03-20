@@ -74,9 +74,21 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 		return fmt.Errorf("podman pod create: %w: %s", err, out)
 	}
 
-	// Start each container in the pod.
+	// Run init containers sequentially (blocking, not detached).
+	for i, ic := range spec.InitContainers {
+		icCopy := ic
+		icCopy.Name = fmt.Sprintf("init-%d-%s", i, ic.Name)
+		runArgs := buildRunArgs(spec.Name, icCopy, spec.Volumes, p.network, false)
+		slog.Info("running init container", "cmd", "podman", "args", runArgs)
+		out, err := exec.CommandContext(ctx, "podman", runArgs...).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("init container %s failed: %w: %s", ic.Name, err, out)
+		}
+	}
+
+	// Start each main container in the pod (detached).
 	for _, c := range spec.Containers {
-		runArgs := buildRunArgs(spec.Name, c, spec.Volumes, p.network)
+		runArgs := buildRunArgs(spec.Name, c, spec.Volumes, p.network, true)
 		slog.Info("starting container", "cmd", "podman", "args", runArgs)
 		out, err := exec.CommandContext(ctx, "podman", runArgs...).CombinedOutput()
 		if err != nil {
@@ -87,8 +99,13 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 }
 
 // buildRunArgs constructs the arguments for a podman run command.
-func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []manifest.VolumeSpec, network string) []string {
-	args := []string{"run", "-d", "--pod", podName, "--name", podName + "-" + container.Name}
+// If detach is true, the container runs in the background (-d flag).
+func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []manifest.VolumeSpec, network string, detach bool) []string {
+	args := []string{"run"}
+	if detach {
+		args = append(args, "-d")
+	}
+	args = append(args, "--pod", podName, "--name", podName+"-"+container.Name)
 
 	for _, e := range container.Env {
 		args = append(args, "--env", e.Name+"="+e.Value)
