@@ -1,5 +1,19 @@
 # Spark Development Log
 
+## 2026-03-20: v1.6.0 GPU Count Model, Liveness Probes, CronJob Management, Node Info
+
+**Type:** finding
+**Tags:** v1.6.0, gpu, probes, cronjob, node-info
+
+**Problem:** GPU resource model conflated device count and memory (parseGPU set GPUMemoryMB=1 for nvidia.com/gpu:1). No liveness probes for stuck containers. No HTTP management of cron jobs. No hardware detail endpoint.
+**Root cause:** GPUMemoryMB was the only GPU field; parseGPU wrote device count into it. Liveness probes, cron management, and node info were not yet implemented.
+**Fix:** Delivered 12 tasks across 3 parallel waves (8+1+3 agents):
+- GPU count model: added GPUCount field to ResourceList, refactored parseGPU, updated scheduler to track device slots separately from memory, added heartbeat gpuCount field, reconciler GPU count drift detection.
+- Liveness probes: ProbeSpec (exec, HTTP) parsed from manifests, ExecProbe/HTTPProbe executor methods, reconciler polls probes on each tick respecting InitialDelaySeconds/PeriodSeconds/FailureThreshold, restarts on threshold breach.
+- CronJob HTTP management: CronScheduler.List()/Get() methods, GET /api/v1/cronjobs, GET /api/v1/cronjobs/{name}, DELETE /api/v1/cronjobs/{name}.
+- Node info: GET /api/v1/node returns hostname, OS, arch, CPU cores, memory, GPU model/count/device IDs/memory.
+**Impact:** 50 use cases (UC-001 through UC-050, excluding deferred UC-044 and UC-049). 48 WIRED, 2 PLANNED. 13 packages, 304 tests pass with -race. HTTP API now has 16 endpoints + auth + metrics.
+
 ## 2026-03-20: v1.5.0 Wiring Integrity and Reconciler Hardening
 
 **Type:** finding

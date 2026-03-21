@@ -1,5 +1,86 @@
 # Changelog
 
+## 1.6.0 (2026-03-20)
+
+### Features
+
+* **manifest:** add GPUCount field to ResourceList and refactor parseGPU to track device count separately from memory ([ef4c475](https://github.com/feza-ai/spark/commit/ef4c475))
+* **scheduler:** track GPUCount for device slot allocation ([5c26f52](https://github.com/feza-ai/spark/commit/5c26f52))
+* **reconciler:** add GPU count drift detection and liveness probe polling ([632c010](https://github.com/feza-ai/spark/commit/632c010), [adb91af](https://github.com/feza-ai/spark/commit/adb91af))
+* **manifest:** add ProbeSpec parsing for liveness probes (exec, HTTP) ([a97ae91](https://github.com/feza-ai/spark/commit/a97ae91))
+* **executor:** add ExecProbe and HTTPProbe methods ([fa386f6](https://github.com/feza-ai/spark/commit/fa386f6))
+* **cron:** add List and Get methods to CronScheduler ([acab267](https://github.com/feza-ai/spark/commit/acab267))
+* **api:** add CronJob HTTP management endpoints (list, get, delete) ([057f86c](https://github.com/feza-ai/spark/commit/057f86c))
+* **api:** add node info HTTP endpoint ([8a00031](https://github.com/feza-ai/spark/commit/8a00031))
+* **bus:** add gpuCount field to heartbeat payload ([454d936](https://github.com/feza-ai/spark/commit/454d936))
+* **spark:** wire v1.6.0 features into main.go ([8020129](https://github.com/feza-ai/spark/commit/8020129))
+
+## 1.5.0 (2026-03-20)
+
+### Features
+
+* **manifest:** add SecurityContext parsing from YAML (runAsUser, privileged, capabilities) ([83b69f0](https://github.com/feza-ai/spark/commit/83b69f0))
+* **executor:** wire security context into podman container args ([34a0d7b](https://github.com/feza-ai/spark/commit/34a0d7b))
+* **state:** add source path tracking to pod records ([aae0d46](https://github.com/feza-ai/spark/commit/aae0d46))
+* **spark:** implement manifest removal handler in watcher ([53b1015](https://github.com/feza-ai/spark/commit/53b1015))
+* **spark:** wire cronSched and scheduler into NATS/HTTP handlers ([683a095](https://github.com/feza-ai/spark/commit/683a095))
+* **api:** wire CronJob registration into HTTP apply handler ([9e4386b](https://github.com/feza-ai/spark/commit/9e4386b))
+* **bus:** wire CronJob registration into NATS apply handler ([6fd3fd0](https://github.com/feza-ai/spark/commit/6fd3fd0))
+
+### Bug Fixes
+
+* **api:** release scheduler resources on HTTP pod delete ([dd51b24](https://github.com/feza-ai/spark/commit/dd51b24))
+* **bus:** release scheduler resources on NATS pod delete ([75af525](https://github.com/feza-ai/spark/commit/75af525))
+* **reconciler:** increment restart counter on pod re-queue ([f1bec48](https://github.com/feza-ai/spark/commit/f1bec48))
+* **reconciler:** recover pods stuck in Scheduled or Preempted status ([35229ec](https://github.com/feza-ai/spark/commit/35229ec))
+* **executor:** reap zombie process in StreamPodLogs ([915d549](https://github.com/feza-ai/spark/commit/915d549))
+* **manifest:** add Ki and K suffix support to parseMemory ([24460f5](https://github.com/feza-ai/spark/commit/24460f5))
+
+## 1.4.0 (2026-03-19)
+
+### Features
+
+* **api:** add pod exec endpoint (POST /api/v1/pods/{name}/exec)
+* **manifest:** parse container port mappings from manifests
+* **executor:** forward port mappings via podman --publish
+* **manifest:** parse init containers from initContainers field
+* **executor:** run init containers sequentially before main containers
+* **gpu:** enumerate device IDs via nvidia-smi for per-pod GPU isolation
+* **scheduler:** track GPU device slot assignments via NVIDIA_VISIBLE_DEVICES
+* **api:** add image management endpoints (GET /api/v1/images, POST /api/v1/images/pull)
+
+## 1.3.0 (2026-03-19)
+
+### Features
+
+* **metrics:** add Prometheus metrics collector and text renderer (stdlib only)
+* **api:** add /metrics endpoint in Prometheus text exposition format
+* **api:** add bearer token auth middleware (--api-token-file, /healthz and /metrics exempt)
+* **api:** add pod logs endpoint with tail and SSE streaming
+* **api:** add pod events endpoint with time filtering
+* **cmd:** add --log-format flag for structured JSON logging
+* **manifest:** add emptyDir volume support (mapped to tmpfs)
+
+## 1.2.0 (2026-03-19)
+
+### Features
+
+* **api:** add HTTP REST API with health, resources, pod CRUD endpoints
+* **scheduler:** add priority-based preemption with anti-thrash protection
+* **manifest:** add CronJob kind parser with concurrency policies
+* **manifest:** add Deployment kind parser with replica management
+* **manifest:** add StatefulSet kind parser with ordinal naming
+* **reconciler:** add resource reconciliation with periodic sync
+* **lifecycle:** add graceful shutdown coordinator with pod draining
+
+## 1.1.0 (2026-03-19)
+
+### Features
+
+* **state:** add SQLite persistence with WAL mode (modernc.org/sqlite)
+* **reconciler:** add pod recovery from podman after restart
+* **state:** add retention pruning for completed/failed pods
+
 ## 1.0.0 (2026-03-19)
 
 

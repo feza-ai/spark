@@ -30,6 +30,14 @@ Single-binary Go pod orchestrator for GPU hosts. Accepts Kubernetes manifests an
 - **Init containers** -- sequential initialization containers before main containers (v1.4.0)
 - **GPU device assignment** -- per-pod GPU device isolation via NVIDIA_VISIBLE_DEVICES (v1.4.0)
 - **Image management** -- list and pull container images via HTTP API (v1.4.0)
+- **Security context** -- runAsUser, privileged, capabilities add/drop forwarded to podman (v1.5.0)
+- **Manifest removal** -- file deletion stops pods, releases resources, unregisters cron jobs (v1.5.0)
+- **CronJob registration on all paths** -- NATS, HTTP, and filesystem all register cron jobs (v1.5.0)
+- **Stuck pod recovery** -- Scheduled and Preempted pods recovered after timeout (v1.5.0)
+- **GPU count-based scheduling** -- `nvidia.com/gpu: N` allocates N device slots, separate from GPU memory (v1.6.0)
+- **Liveness probes** -- exec and HTTP probes with configurable thresholds; reconciler restarts on failure (v1.6.0)
+- **CronJob HTTP management** -- list, inspect, and unregister cron jobs via REST API (v1.6.0)
+- **Node info endpoint** -- GPU model, device count, device IDs, CPU, memory, OS via HTTP (v1.6.0)
 
 ## Quick Start
 
@@ -179,6 +187,50 @@ curl -X POST http://localhost:8080/api/v1/images/pull \
   -d '{"image":"localhost:5000/mymodel:latest"}'
 ```
 
+### Node Info
+
+```bash
+curl http://localhost:8080/api/v1/node
+```
+
+```json
+{
+  "hostname": "dgx-spark",
+  "os": "linux",
+  "arch": "arm64",
+  "cpu_cores": 72,
+  "memory_total_mb": 131072,
+  "gpu_model": "NVIDIA GH200",
+  "gpu_count": 1,
+  "gpu_device_ids": [0],
+  "gpu_memory_mb": 131072
+}
+```
+
+### List CronJobs
+
+```bash
+curl http://localhost:8080/api/v1/cronjobs
+```
+
+```json
+[
+  {"name": "train-nightly", "schedule": "0 2 * * *", "next_run": "2026-03-21T02:00:00Z", "run_count": 14}
+]
+```
+
+### Get CronJob
+
+```bash
+curl http://localhost:8080/api/v1/cronjobs/train-nightly
+```
+
+### Delete CronJob
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/cronjobs/train-nightly
+```
+
 ## Authentication
 
 When `--api-token-file` is set, all HTTP endpoints except `/healthz` and `/metrics` require a bearer token:
@@ -257,16 +309,17 @@ spec:
 ```
 cmd/spark/          Entry point: flags, startup, signal handling
 internal/
-  api/              HTTP REST API handlers (health, resources, pod CRUD)
+  api/              HTTP REST API handlers (health, resources, node, pods, exec, logs, events, images, cronjobs, metrics, auth)
   bus/              NATS bus abstraction, protocol handlers, event/log publishers
   cron/             Cron expression parser and scheduled job trigger
-  executor/         Podman interface: pod create, stop, logs, image pull, stats
-  gpu/              GPU detection (nvidia-smi) and system resource detection
+  executor/         Podman interface: pod create, stop, exec, logs, image pull, stats, liveness probes
+  gpu/              GPU detection (nvidia-smi), device enumeration, and system resource detection
   lifecycle/        Graceful shutdown coordinator with pod draining
-  manifest/         K8s YAML parser (Pod, Job, CronJob, Deployment, StatefulSet)
-  reconciler/       Desired-state reconciliation loop, pod recovery, resource sync
-  scheduler/        Resource-aware scheduling with priority preemption
-  state/            Pod state store (in-memory + SQLite WAL persistence)
+  manifest/         K8s YAML parser (Pod, Job, CronJob, Deployment, StatefulSet) with ports, init containers, securityContext, livenessProbe
+  metrics/          Prometheus metrics collector and text renderer
+  reconciler/       Desired-state reconciliation loop, pod recovery, resource sync, liveness probe polling
+  scheduler/        Resource-aware scheduling with priority preemption and GPU count-based device slot tracking
+  state/            Pod state store (in-memory + SQLite WAL persistence) with source path tracking
   watcher/          Manifest directory poller (SHA-256 change detection)
 ```
 
