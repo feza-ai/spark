@@ -82,7 +82,15 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 	slog.Info("creating pod", "cmd", "podman", "args", args)
 	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("podman pod create: %w: %s", err, out)
+		// If a stale pod exists in podman state, remove it and retry.
+		if strings.Contains(string(out), "already exists") || strings.Contains(string(out), "is in use") {
+			slog.Warn("stale pod exists, removing before retry", "pod", spec.Name)
+			_ = exec.CommandContext(ctx, "podman", "pod", "rm", "-f", spec.Name).Run()
+			out, err = exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+		}
+		if err != nil {
+			return fmt.Errorf("podman pod create: %w: %s", err, out)
+		}
 	}
 
 	// Run init containers sequentially (blocking, not detached).
