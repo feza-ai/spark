@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.1](https://github.com/feza-ai/spark/compare/v1.6.0...v1.6.1) (2026-04-08)
+
+
+### Bug Fixes
+
+* **executor:** inject GPU device when nvidia.com/gpu count is set ([dc9e010](https://github.com/feza-ai/spark/commit/dc9e010fd551b2fa388309f9b074a57cf3d296f0))
+* **executor:** remove stale pod before retry on 'already exists' ([8f30f6d](https://github.com/feza-ai/spark/commit/8f30f6d25214866d99d0b8a0fa9ea4d0855533f2)), closes [#7](https://github.com/feza-ai/spark/issues/7)
+
 ## 1.6.0 (2026-03-20)
 
 ### Features
