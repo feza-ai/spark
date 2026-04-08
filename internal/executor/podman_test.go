@@ -64,13 +64,21 @@ func TestBuildRunArgs_VolumeMapping(t *testing.T) {
 }
 
 func TestBuildRunArgs_GPUFlag(t *testing.T) {
+	// The --device nvidia.com/gpu=all flag must be injected whenever the
+	// container requests any GPU — by count (nvidia.com/gpu: "1", the
+	// k8s-standard key parsed into GPUCount) OR by memory (parsed into
+	// GPUMemoryMB). Previously only GPUMemoryMB gated this flag, which
+	// meant any manifest using the k8s-standard nvidia.com/gpu key ran
+	// without a GPU device and silently fell back to CPU.
 	tests := []struct {
 		name    string
-		gpuMB   int
+		limits  manifest.ResourceList
 		wantGPU bool
 	}{
-		{"no GPU", 0, false},
-		{"with GPU", 4096, true},
+		{"no GPU", manifest.ResourceList{}, false},
+		{"with GPU memory", manifest.ResourceList{GPUMemoryMB: 4096}, true},
+		{"with GPU count", manifest.ResourceList{GPUCount: 1}, true},
+		{"with GPU count and memory", manifest.ResourceList{GPUCount: 2, GPUMemoryMB: 8192}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -78,7 +86,7 @@ func TestBuildRunArgs_GPUFlag(t *testing.T) {
 				Name:  "app",
 				Image: "myimage:latest",
 				Resources: manifest.ResourceRequirements{
-					Limits: manifest.ResourceList{GPUMemoryMB: tt.gpuMB},
+					Limits: tt.limits,
 				},
 			}
 			args := buildRunArgs("mypod", container, nil, "spark-net", true)
