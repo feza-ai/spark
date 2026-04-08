@@ -195,7 +195,7 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 	if limits.CPUMillis > 0 {
 		args = append(args, "--cpus", fmt.Sprintf("%.1f", float64(limits.CPUMillis)/1000.0))
 	}
-	if limits.GPUMemoryMB > 0 {
+	if limits.GPUMemoryMB > 0 || limits.GPUCount > 0 {
 		args = append(args, "--device", "nvidia.com/gpu=all")
 	}
 
