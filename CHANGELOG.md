@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/feza-ai/spark/compare/v1.6.1...v1.7.0) (2026-04-14)
+
+
+### Features
+
+* **executor:** auto-generate NVIDIA CDI spec for GPU pods ([819529c](https://github.com/feza-ai/spark/commit/819529ca85d32d4e8c69deb3927c641375c21963))
+
 ## [1.6.1](https://github.com/feza-ai/spark/compare/v1.6.0...v1.6.1) (2026-04-08)
 
 
