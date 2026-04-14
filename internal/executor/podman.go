@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
@@ -60,6 +61,12 @@ type Executor interface {
 // PodmanExecutor implements Executor using podman CLI.
 type PodmanExecutor struct {
 	network string
+
+	// cdiOnce ensures the NVIDIA CDI spec is generated at most once per
+	// executor lifetime. Triggered on the first GPU pod creation so the
+	// CUDA runtime libraries are bind-mounted into the container.
+	cdiOnce sync.Once
+	cdiErr  error
 }
 
 // NewPodmanExecutor creates a new executor with the given network name.
@@ -69,6 +76,17 @@ func NewPodmanExecutor(network string) *PodmanExecutor {
 
 // CreatePod creates a pod and starts all containers defined in the spec.
 func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) error {
+	// If any container requests a GPU, ensure the NVIDIA CDI spec exists.
+	// Without it, `--device nvidia.com/gpu=all` injects only the device
+	// node — not the CUDA runtime libraries — and workloads fall back to CPU.
+	if podSpecRequestsGPU(spec) {
+		p.cdiOnce.Do(func() { p.cdiErr = ensureNvidiaCDI(ctx) })
+		if p.cdiErr != nil {
+			slog.Warn("nvidia CDI generation failed; GPU workloads may fall back to CPU",
+				"error", p.cdiErr)
+		}
+	}
+
 	// Create the pod.
 	args := []string{"pod", "create", "--name", spec.Name, "--network", p.network}
 
