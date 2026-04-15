@@ -1,5 +1,30 @@
 # Spark Development Log
 
+## 2026-04-15: Resolve open GitHub issues (#8, #10, #12)
+
+**Type:** finding
+**Tags:** reconciler, api, manifest, yaml, state, issue-8, issue-10, issue-12
+
+**Problem:**
+- #12: `DELETE /api/v1/pods/{name}` removed the Spark store record even when podman failed to stop/remove the pod, leaving orphaned podman pods that saturated the DGX (GPU/CPU). The reconciler logged `orphaned pod discovered` every ~5s forever without acting.
+- #10: Args/command values containing `://` (e.g. `nats://host:port`) were silently dropped by the hand-rolled YAML list parser because any `:` in an item was treated as a map separator.
+- #8: When `podman pod create` succeeded but container start failed (e.g., missing volume), the reconciler looped infinitely retrying. No `backoffLimit` enforcement, no terminal failure state, no visibility of the container-start error.
+
+**Root cause:**
+- #12: `handleDeletePod` called `executor.StopPod`/`RemovePod` as best-effort (errors ignored) then unconditionally removed the store record. Reconciler's orphan branch was log-only.
+- #10: `parseYAMLList` used `strings.Index(item, ":")`. YAML requires `:` to be followed by whitespace or EOL to act as a map separator; the parser did not enforce this and did not preserve quoted strings atomically.
+- #8: No fields existed on `PodRecord` to track failure state. Reconciler kept rescheduling failed pods without a ceiling.
+
+**Fix:**
+- #12: `handleDeletePod` returns 500 + `deleted:false` and preserves the store record when podman stop/remove fails. "no such pod" treated as success. Reconciler now actively removes orphans after a 30s grace window via `orphanFirstSeen` tracking.
+- #10: New `findMapSeparator` helper tracks quote state and only treats `:` as a map separator when followed by space/tab/EOL. Applied at both list-item and root parse sites.
+- #8: Added `Reason`, `StartAttempts`, `LastAttemptAt` to `state.PodRecord` with idempotent SQLite column migration. Parsed `spec.backoffLimit` (default 3, `0` disables retry). Reconciler enforces exponential backoff (5s, 10s, 20s, 40s, cap 60s) and transitions to `StatusFailed` terminally when `StartAttempts > BackoffLimit`. Both `startAttempts` and `reason` surface on `GET /api/v1/pods/{name}`.
+
+**Impact:**
+- 7 new commits on main (PRs #14 and #16) plus T56.3 API surface in wave-3-apis.
+- 304 tests pass with -race; no new linter findings.
+- Wire check: DELETE handler, reconciler.RecoverPods, reconciler.reconcilePending, YAML parser, and GET /api/v1/pods/{name} all exercise the new paths.
+
 ## 2026-03-20: v1.6.0 GPU Count Model, Liveness Probes, CronJob Management, Node Info
 
 **Type:** finding
