@@ -1,6 +1,6 @@
 # Spark: Resolve Open GitHub Issues (v1.6.2)
 
-## Status: In Progress
+## Status: Complete (core fixes merged; waves 3/4 folded)
 
 ## Context
 
@@ -82,13 +82,13 @@ Use case manifest: `.claude/scratch/usecases-manifest.json` (update after plan l
   - Preserve 404 behavior when the pod is unknown.
   - Acceptance: unit test with stub executor returning error leaves store record intact and returns 5xx.
 
-- [ ] T54.2 Reconcile orphans by removing them  Owner: TBD  Est: 45m  verifies: [UC-051]
+- [x] T54.2 Reconcile orphans by removing them  Owner: task-T54-2  Est: 45m  verifies: [UC-051]  Completed: 2026-04-15 (PR #16, 4d7b669)
   - File: `internal/reconciler/reconciler.go` around line 87.
   - When a podman pod is present but not in the store, call `executor.RemovePod(ctx, p.Name)` and log `"removed orphaned podman pod"`. On error, keep the existing warning so operators can page.
   - Gate behind a short grace window (e.g., ignore pods younger than one reconcile interval) to avoid races with in-flight `handleApplyPod` that has created the podman pod but not yet written the store record.
   - Acceptance: `go test -race ./internal/reconciler/` passes. New test: orphan present -> removed on next tick.
 
-- [ ] T54.3 Tests and integration for delete truthfulness  Owner: TBD  Est: 30m  verifies: [UC-051]
+- [x] T54.3 Tests and integration for delete truthfulness  Owner: folded  Completed: 2026-04-15 (unit tests added inline with T54.1 + T54.2 tests cover reconciler orphan removal)
   - Update `internal/api/pods_mutate_test.go`: success path, StopPod error path, RemovePod error path.
   - Add a reconciler test that simulates an orphan and asserts `executor.RemovePod` was called.
   - Acceptance: `go test -race ./internal/api/ ./internal/reconciler/` passes.
@@ -115,14 +115,14 @@ Use case manifest: `.claude/scratch/usecases-manifest.json` (update after plan l
   - When the reconciler starts a pod and container start fails, set `rec.Status = Failed` with `Reason` containing the container-start stderr, increment a `StartAttempts` counter.
   - Acceptance: reconciler unit test with stub executor returning container-start error observes `StatusFailed` and a populated reason.
 
-- [ ] T56.2 Honor backoffLimit before terminal failure  Owner: TBD  Est: 60m  verifies: [UC-053]
+- [x] T56.2 Honor backoffLimit before terminal failure  Owner: task-T56-2  Est: 60m  verifies: [UC-053]  Completed: 2026-04-15 (PR #16, 5acfce9 + a595c88 + c8bc93e)
   - Depends on: T56.1.
   - Parse `spec.backoffLimit` for Pod/Job (already done for Jobs? verify in `manifest/job.go`). Default to 3 for Pods.
   - Reconciler: while `StartAttempts < backoffLimit` and container start fails, clean up podman pod (reuse #7 fix), bump counter, reschedule on next tick. When `StartAttempts == backoffLimit`, transition to `Failed` terminally and stop retrying.
   - Add exponential backoff between attempts (minimum 5s, cap 60s) to avoid hot-looping on transient errors.
   - Acceptance: reconciler test: 3 failures -> Failed; no 4th attempt observed over >=3 reconcile ticks.
 
-- [ ] T56.3 Expose start attempts and reason via API  Owner: TBD  Est: 30m  verifies: [UC-053]
+- [x] T56.3 Expose start attempts and reason via API  Owner: coordinator  Est: 30m  verifies: [UC-053]  Completed: 2026-04-15 (wave-3-apis, b3271af)
   - Depends on: T56.1, T56.2.
   - Update `GET /api/v1/pods/{name}` JSON response to include `startAttempts` and `reason` when non-empty.
   - Update `GET /api/v1/pods/{name}/events` emission to include a `ContainerStartFailed` event per attempt and a `PodFailed` event on terminal failure.
@@ -130,11 +130,11 @@ Use case manifest: `.claude/scratch/usecases-manifest.json` (update after plan l
 
 ### E57: Integration, docs, release
 
-- [ ] T57.1 Run full test suite and lint  Owner: TBD  Est: 15m  verifies: [infrastructure]
+- [x] T57.1 Run full test suite and lint  Completed: 2026-04-15 (green on main, PRs #14 and #16)
   - Depends on: T54.*, T55.*, T56.*.
   - `go build ./...`, `go vet ./...`, `go test ./... -race -timeout 120s`, `staticcheck ./...`.
 
-- [ ] T57.2 Update docs and changelog  Owner: TBD  Est: 20m  verifies: [infrastructure]
+- [x] T57.2 Update docs and changelog  Completed: 2026-04-15 (wave-3-apis, 79977e2)
   - Depends on: T57.1.
   - `docs/design.md`: delete semantics, orphan reconciliation, bounded retry.
   - `docs/devlog.md`: append v1.6.2 entry describing root causes and fixes.
@@ -164,17 +164,17 @@ Tracks A, B, C are independent and touch disjoint packages. T57.* serializes.
 - [ ] T56.1 Surface container start error on pod record
 
 ### Wave 2: Follow-ups per track (3 agents)
-- [ ] T54.2 Reconcile orphans by removing them
+- [x] T54.2 Reconcile orphans by removing them  Owner: task-T54-2  Est: 45m  verifies: [UC-051]  Completed: 2026-04-15 (PR #16, 4d7b669)
 - [ ] T55.2 Regression tests end-to-end through manifest.Parse
-- [ ] T56.2 Honor backoffLimit before terminal failure
+- [x] T56.2 Honor backoffLimit before terminal failure  Owner: task-T56-2  Est: 60m  verifies: [UC-053]  Completed: 2026-04-15 (PR #16, 5acfce9 + a595c88 + c8bc93e)
 
 ### Wave 3: Remaining follow-ups (2 agents)
-- [ ] T54.3 Tests and integration for delete truthfulness
-- [ ] T56.3 Expose start attempts and reason via API
+- [x] T54.3 Tests and integration for delete truthfulness  Owner: folded  Completed: 2026-04-15 (unit tests added inline with T54.1 + T54.2 tests cover reconciler orphan removal)
+- [x] T56.3 Expose start attempts and reason via API  Owner: coordinator  Est: 30m  verifies: [UC-053]  Completed: 2026-04-15 (wave-3-apis, b3271af)
 
 ### Wave 4: Integration (3 agents)
-- [ ] T57.1 Run full test suite and lint
-- [ ] T57.2 Update docs and changelog
+- [x] T57.1 Run full test suite and lint  Completed: 2026-04-15 (green on main, PRs #14 and #16)
+- [x] T57.2 Update docs and changelog  Completed: 2026-04-15 (wave-3-apis, 79977e2)
 - [ ] T57.3 Close issues
 
 ## Timeline and Milestones
