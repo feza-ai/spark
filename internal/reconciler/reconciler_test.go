@@ -1181,6 +1181,44 @@ func TestReconcileScheduledTransientInspectErrorKeepsState(t *testing.T) {
 	}
 }
 
+// TestReconcileScheduledNoEventMissingPodResetsImmediately covers the
+// corner case where SQL persistence was interrupted mid-transition: the pod
+// is loaded back as StatusScheduled but has no Scheduled event. Without the
+// event the staleness check has no anchor, so the pod was previously wedged
+// forever. Now, if the podman pod is also missing, we reset to Pending
+// immediately so reconcilePending can retry.
+func TestReconcileScheduledNoEventMissingPodResetsImmediately(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("wedged", "Never", 0)
+
+	// Simulate corrupted-persistence state: pod was loaded back from SQL
+	// as Scheduled without any events. LoadFrom is the entry point for
+	// persisted state on startup, so this is exactly what the real bug
+	// looks like.
+	store.LoadFrom(map[string]*state.PodRecord{
+		"wedged": {
+			Spec:   spec,
+			Status: state.StatusScheduled,
+			// Events intentionally empty.
+		},
+	})
+
+	exec.mu.Lock()
+	exec.statusErr = errors.New("podman pod inspect: exit status 125: Error: no such pod wedged\n")
+	exec.mu.Unlock()
+
+	r.reconcileOnce(context.Background())
+
+	rec, _ := store.Get("wedged")
+	if rec.Status != state.StatusPending {
+		t.Fatalf("expected Pending after wedged reset, got %s", rec.Status)
+	}
+}
+
 // testPodSpecWithProbe creates a PodSpec with a liveness probe on the first container.
 func testPodSpecWithExecProbe(name string, initialDelay, period, failure, timeout int) manifest.PodSpec {
 	return manifest.PodSpec{
