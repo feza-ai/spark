@@ -76,7 +76,7 @@ Use case manifest: `.claude/scratch/usecases-manifest.json` (update after plan l
 
 ### E54: Issue #12 -- DELETE leaves orphaned podman pod
 
-- [ ] T54.1 Make DELETE truthful about podman state  Owner: TBD  Est: 45m  verifies: [UC-051]
+- [x] T54.1 Make DELETE truthful about podman state  Owner: task-T54-1  Est: 45m  verifies: [UC-051]  Completed: 2026-04-15 (PR #14, 8578c09)
   - File: `internal/api/pods_mutate.go`.
   - Change `handleDeletePod` to: (1) call `executor.StopPod(ctx, name, grace)` and propagate error; (2) call `executor.RemovePod` and propagate error; (3) only on success, release scheduler resources and call `store.Delete`; (4) on error, return `500` with `{"deleted": false, "error": "..."}` and keep the store record so clients can retry.
   - Preserve 404 behavior when the pod is unknown.
@@ -95,14 +95,14 @@ Use case manifest: `.claude/scratch/usecases-manifest.json` (update after plan l
 
 ### E55: Issue #10 -- args/command with `://` silently dropped
 
-- [ ] T55.1 Fix list-item scalar vs map detection  Owner: TBD  Est: 45m  verifies: [UC-052]
+- [x] T55.1 Fix list-item scalar vs map detection  Owner: task-T55-1  Est: 45m  verifies: [UC-052]  Completed: 2026-04-15 (PR #14, 50f7d7f)
   - File: `internal/manifest/yaml.go` around line 121.
   - Replace `strings.Index(itemContent, ":")` with a helper `findMapSeparator(s string) int` that returns -1 unless a `:` is followed by a space or end-of-string AND is not inside a quoted segment.
   - Apply the same helper in `parseYAMLLines` (line 42) for consistency so root/object keys behave the same way.
   - Leave quoted scalars (`"..."`, `'...'`) untouched.
   - Acceptance: new unit tests cover: `- "nats://10.88.0.1:4222"`, `- http://x/y`, `- key: value`, `- key:novalue` (still treated as map per YAML spec? no -- per YAML the `:` must be followed by space; this should be scalar. Document the choice with a comment.).
 
-- [ ] T55.2 Regression tests end-to-end through manifest.Parse  Owner: TBD  Est: 30m  verifies: [UC-052]
+- [x] T55.2 Regression tests end-to-end through manifest.Parse  Owner: task-T55-1  Est: 30m  verifies: [UC-052]  Completed: 2026-04-15 (folded into T55.1 commit 50f7d7f; parse_test.go covers the issue #10 manifest end-to-end)
   - Depends on: T55.1.
   - Add test in `internal/manifest/yaml_test.go` (or `parse_test.go`) that parses the Pod manifest from issue #10 and asserts the container's `Command` slice equals `["echo", "hello", "nats://10.88.0.1:4222", "-port=8080"]`.
   - Add a block-style variant.
@@ -110,7 +110,7 @@ Use case manifest: `.claude/scratch/usecases-manifest.json` (update after plan l
 
 ### E56: Issue #8 -- infinite retry on container start failure
 
-- [ ] T56.1 Surface container start error on pod record  Owner: TBD  Est: 45m  verifies: [UC-053]
+- [x] T56.1 Surface container start error on pod record  Owner: task-T56-1  Est: 45m  verifies: [UC-053]  Completed: 2026-04-15 (PR #14, 93871c4 + c3219cc)
   - Files: `internal/reconciler/reconciler.go`, `internal/state/sqlite.go` (if Reason column is missing, add it; otherwise reuse).
   - When the reconciler starts a pod and container start fails, set `rec.Status = Failed` with `Reason` containing the container-start stderr, increment a `StartAttempts` counter.
   - Acceptance: reconciler unit test with stub executor returning container-start error observes `StatusFailed` and a populated reason.
