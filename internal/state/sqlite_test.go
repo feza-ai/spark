@@ -362,3 +362,100 @@ func TestSourcePathSQLiteRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestSavePodRoundTripsReasonAndStartAttempts verifies the new columns added
+// to support surfacing container-start failures (issue #8 / T56.1) survive a
+// SavePod/LoadAll cycle.
+func TestSavePodRoundTripsReasonAndStartAttempts(t *testing.T) {
+	store, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer store.Close()
+
+	rec := &PodRecord{
+		Spec: manifest.PodSpec{
+			Name: "fail-pod",
+			Containers: []manifest.ContainerSpec{
+				{Name: "main", Image: "alpine:latest"},
+			},
+		},
+		Status:        StatusPending,
+		Reason:        "volume \"data\" not found",
+		StartAttempts: 3,
+	}
+	if err := store.SavePod(rec); err != nil {
+		t.Fatalf("SavePod: %v", err)
+	}
+
+	pods, err := store.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got := pods["fail-pod"]
+	if got == nil {
+		t.Fatal("expected fail-pod in loaded pods")
+	}
+	if got.Reason != rec.Reason {
+		t.Errorf("Reason = %q, want %q", got.Reason, rec.Reason)
+	}
+	if got.StartAttempts != rec.StartAttempts {
+		t.Errorf("StartAttempts = %d, want %d", got.StartAttempts, rec.StartAttempts)
+	}
+}
+
+// TestEnsureColumnMigratesExistingDatabase verifies that opening a database
+// created by an older Spark version (without reason/start_attempts columns)
+// triggers the PRAGMA-based migration and that subsequent reads/writes work.
+func TestEnsureColumnMigratesExistingDatabase(t *testing.T) {
+	path := t.TempDir() + "/legacy.db"
+
+	// Simulate an older schema by opening raw and creating the minimal pods
+	// table without the new columns.
+	store, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite initial: %v", err)
+	}
+	// Drop the new columns via a fresh table to mimic an older install.
+	if _, err := store.db.Exec(`DROP TABLE pods`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if _, err := store.db.Exec(`CREATE TABLE pods (
+		name TEXT PRIMARY KEY,
+		spec_json TEXT NOT NULL,
+		status TEXT NOT NULL,
+		started_at TEXT,
+		finished_at TEXT,
+		restarts INTEGER DEFAULT 0,
+		retry_count INTEGER DEFAULT 0,
+		source_path TEXT DEFAULT ''
+	)`); err != nil {
+		t.Fatalf("recreate legacy schema: %v", err)
+	}
+	store.Close()
+
+	// Re-open: OpenSQLite should add the missing columns.
+	store2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite reopen: %v", err)
+	}
+	defer store2.Close()
+
+	rec := &PodRecord{
+		Spec:          manifest.PodSpec{Name: "migrated"},
+		Status:        StatusPending,
+		Reason:        "migrated-reason",
+		StartAttempts: 5,
+	}
+	if err := store2.SavePod(rec); err != nil {
+		t.Fatalf("SavePod after migration: %v", err)
+	}
+	pods, err := store2.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll after migration: %v", err)
+	}
+	got := pods["migrated"]
+	if got == nil || got.Reason != "migrated-reason" || got.StartAttempts != 5 {
+		t.Fatalf("migrated pod round-trip failed: %#v", got)
+	}
+}

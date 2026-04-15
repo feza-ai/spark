@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1214,3 +1215,85 @@ func TestLivenessProbe(t *testing.T) {
 		})
 	}
 }
+
+// TestCreatePodFailureRecordsReasonAndAttempts verifies that when CreatePod
+// fails (e.g., missing volume), the reconciler surfaces the error as Reason
+// and increments StartAttempts on the pod record. The current code keeps
+// status at Pending for retry; T56.2 will add bounded retry + terminal
+// failure.
+func TestCreatePodFailureRecordsReasonAndAttempts(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	exec.createErr = errors.New("volume \"data\" not found")
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("needs-vol", "Never", 0)
+	store.Apply(spec)
+
+	// First tick: CreatePod fails.
+	r.reconcileOnce(context.Background())
+
+	rec, ok := store.Get("needs-vol")
+	if !ok {
+		t.Fatal("pod not found in store")
+	}
+	if rec.StartAttempts != 1 {
+		t.Fatalf("expected StartAttempts=1 after first failure, got %d", rec.StartAttempts)
+	}
+	if rec.Reason == "" {
+		t.Fatal("expected Reason to be set after CreatePod error, got empty")
+	}
+	if !strings.Contains(rec.Reason, "volume") {
+		t.Fatalf("expected Reason to include executor error text, got %q", rec.Reason)
+	}
+
+	// Second tick: same failure — attempts should climb.
+	r.reconcileOnce(context.Background())
+
+	rec, _ = store.Get("needs-vol")
+	if rec.StartAttempts != 2 {
+		t.Fatalf("expected StartAttempts=2 after second failure, got %d", rec.StartAttempts)
+	}
+	if rec.Reason == "" {
+		t.Fatal("expected Reason still set after second failure")
+	}
+}
+
+// TestCreatePodSuccessClearsFailureState verifies that a successful start
+// after a prior failure resets Reason and StartAttempts.
+func TestCreatePodSuccessClearsFailureState(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	exec.createErr = errors.New("transient failure")
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("flaky", "Never", 0)
+	store.Apply(spec)
+
+	// Tick 1: fail.
+	r.reconcileOnce(context.Background())
+	rec, _ := store.Get("flaky")
+	if rec.StartAttempts != 1 || rec.Reason == "" {
+		t.Fatalf("setup: expected failure recorded, got attempts=%d reason=%q", rec.StartAttempts, rec.Reason)
+	}
+
+	// Clear the executor error and tick again.
+	exec.mu.Lock()
+	exec.createErr = nil
+	exec.mu.Unlock()
+	r.reconcileOnce(context.Background())
+
+	rec, _ = store.Get("flaky")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected Running after recovery, got %s", rec.Status)
+	}
+	if rec.StartAttempts != 0 {
+		t.Fatalf("expected StartAttempts=0 after success, got %d", rec.StartAttempts)
+	}
+	if rec.Reason != "" {
+		t.Fatalf("expected Reason cleared after success, got %q", rec.Reason)
+	}
+}
+

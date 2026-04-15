@@ -29,15 +29,20 @@ type PodEvent struct {
 
 // PodRecord holds desired and actual state for a pod.
 type PodRecord struct {
-	Spec       manifest.PodSpec
-	Status     PodStatus
-	Events     []PodEvent
-	StartedAt  time.Time
-	FinishedAt time.Time
-	Restarts   int
-	RetryCount int // for jobs with backoffLimit
-	SourcePath string
+	Spec          manifest.PodSpec
+	Status        PodStatus
+	Events        []PodEvent
+	StartedAt     time.Time
+	FinishedAt    time.Time
+	Restarts      int
+	RetryCount    int // for jobs with backoffLimit
+	SourcePath    string
+	Reason        string // human-readable failure reason from the last start attempt
+	StartAttempts int    // number of failed pod-create/start attempts since last success
 }
+
+// maxReasonBytes caps the size of PodRecord.Reason to keep the store bounded.
+const maxReasonBytes = 512
 
 // PodStore is a thread-safe in-memory store for pod state.
 type PodStore struct {
@@ -205,6 +210,40 @@ func (s *PodStore) IncrementRetry(name string) bool {
 		return false
 	}
 	rec.RetryCount++
+	return true
+}
+
+// RecordStartFailure records a container-start failure on a pod: sets Reason
+// (truncated) and increments StartAttempts. Returns the new StartAttempts
+// value, or 0 if the pod is not found.
+func (s *PodStore) RecordStartFailure(name string, reason string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.pods[name]
+	if !ok {
+		return 0
+	}
+	if len(reason) > maxReasonBytes {
+		reason = reason[:maxReasonBytes]
+	}
+	rec.Reason = reason
+	rec.StartAttempts++
+	return rec.StartAttempts
+}
+
+// ClearStartFailure clears Reason and resets StartAttempts for a pod.
+// Returns false if not found.
+func (s *PodStore) ClearStartFailure(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.pods[name]
+	if !ok {
+		return false
+	}
+	rec.Reason = ""
+	rec.StartAttempts = 0
 	return true
 }
 
