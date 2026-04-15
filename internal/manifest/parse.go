@@ -124,5 +124,21 @@ func parsePod(root map[string]interface{}, priorityClasses map[string]int) (PodS
 	pod.SourceKind = "Pod"
 	pod.SourceName = name
 
+	// BackoffLimit defaults to 3 for Pods. An explicit "0" disables retries.
+	if specMap != nil {
+		bl := getInt(specMap, "backoffLimit")
+		if bl == 0 {
+			if getString(specMap, "backoffLimit") == "0" {
+				pod.BackoffLimit = 0
+			} else {
+				pod.BackoffLimit = 3
+			}
+		} else {
+			pod.BackoffLimit = bl
+		}
+	} else {
+		pod.BackoffLimit = 3
+	}
+
 	return pod, nil
 }
