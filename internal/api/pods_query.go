@@ -43,14 +43,16 @@ type containerResponse struct {
 }
 
 type getPodResponse struct {
-	Name       string              `json:"name"`
-	Status     string              `json:"status"`
-	Priority   int                 `json:"priority"`
-	StartedAt  time.Time           `json:"startedAt"`
-	FinishedAt time.Time           `json:"finishedAt"`
-	Restarts   int                 `json:"restarts"`
-	Containers []containerResponse `json:"containers,omitempty"`
-	Events     []podEvent          `json:"events"`
+	Name          string              `json:"name"`
+	Status        string              `json:"status"`
+	Priority      int                 `json:"priority"`
+	StartedAt     time.Time           `json:"startedAt"`
+	FinishedAt    time.Time           `json:"finishedAt"`
+	Restarts      int                 `json:"restarts"`
+	StartAttempts int                 `json:"startAttempts,omitempty"`
+	Reason        string              `json:"reason,omitempty"`
+	Containers    []containerResponse `json:"containers,omitempty"`
+	Events        []podEvent          `json:"events"`
 }
 
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
@@ -106,14 +108,16 @@ func (s *Server) handleGetPod(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := getPodResponse{
-		Name:       rec.Spec.Name,
-		Status:     string(rec.Status),
-		Priority:   rec.Spec.Priority,
-		StartedAt:  rec.StartedAt,
-		FinishedAt: rec.FinishedAt,
-		Restarts:   rec.Restarts,
-		Containers: containers,
-		Events:     events,
+		Name:          rec.Spec.Name,
+		Status:        string(rec.Status),
+		Priority:      rec.Spec.Priority,
+		StartedAt:     rec.StartedAt,
+		FinishedAt:    rec.FinishedAt,
+		Restarts:      rec.Restarts,
+		StartAttempts: rec.StartAttempts,
+		Reason:        rec.Reason,
+		Containers:    containers,
+		Events:        events,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
