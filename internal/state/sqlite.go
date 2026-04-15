@@ -40,7 +40,8 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		retry_count INTEGER DEFAULT 0,
 		source_path TEXT DEFAULT '',
 		reason TEXT DEFAULT '',
-		start_attempts INTEGER DEFAULT 0
+		start_attempts INTEGER DEFAULT 0,
+		last_attempt_at TEXT
 	)`
 	if _, err := db.Exec(createPods); err != nil {
 		db.Close()
@@ -70,6 +71,10 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 	if err := ensureColumn(db, "pods", "start_attempts", "INTEGER DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "pods", "last_attempt_at", "TEXT"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -110,7 +115,7 @@ func (s *SQLiteStore) SavePod(rec *PodRecord) error {
 		return err
 	}
 
-	var startedAt, finishedAt *string
+	var startedAt, finishedAt, lastAttemptAt *string
 	if !rec.StartedAt.IsZero() {
 		v := rec.StartedAt.Format(time.RFC3339)
 		startedAt = &v
@@ -119,13 +124,17 @@ func (s *SQLiteStore) SavePod(rec *PodRecord) error {
 		v := rec.FinishedAt.Format(time.RFC3339)
 		finishedAt = &v
 	}
+	if !rec.LastAttemptAt.IsZero() {
+		v := rec.LastAttemptAt.Format(time.RFC3339)
+		lastAttemptAt = &v
+	}
 
 	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR REPLACE INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Spec.Name, string(specJSON), string(rec.Status),
 		startedAt, finishedAt, rec.Restarts, rec.RetryCount, rec.SourcePath,
-		rec.Reason, rec.StartAttempts,
+		rec.Reason, rec.StartAttempts, lastAttemptAt,
 	)
 	return err
 }
@@ -142,7 +151,7 @@ func (s *SQLiteStore) SaveEvent(podName string, event PodEvent) error {
 // LoadAll reads all pods and their events from the database.
 func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts FROM pods`,
+		`SELECT name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at FROM pods`,
 	)
 	if err != nil {
 		return nil, err
@@ -152,12 +161,12 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 	pods := make(map[string]*PodRecord)
 	for rows.Next() {
 		var name, specJSON, status string
-		var startedAt, finishedAt sql.NullString
+		var startedAt, finishedAt, lastAttemptAt sql.NullString
 		var restarts, retryCount int
 		var sourcePath, reason string
 		var startAttempts int
 
-		if err := rows.Scan(&name, &specJSON, &status, &startedAt, &finishedAt, &restarts, &retryCount, &sourcePath, &reason, &startAttempts); err != nil {
+		if err := rows.Scan(&name, &specJSON, &status, &startedAt, &finishedAt, &restarts, &retryCount, &sourcePath, &reason, &startAttempts, &lastAttemptAt); err != nil {
 			return nil, err
 		}
 
@@ -183,6 +192,11 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 		if finishedAt.Valid {
 			if t, err := time.Parse(time.RFC3339, finishedAt.String); err == nil {
 				rec.FinishedAt = t
+			}
+		}
+		if lastAttemptAt.Valid {
+			if t, err := time.Parse(time.RFC3339, lastAttemptAt.String); err == nil {
+				rec.LastAttemptAt = t
 			}
 		}
 		pods[name] = rec
