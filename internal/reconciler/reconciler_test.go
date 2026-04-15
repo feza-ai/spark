@@ -1047,6 +1047,140 @@ func backdateLastEvent(store *state.PodStore, name string, d time.Duration) {
 	store.BackdateLastEvent(name, d)
 }
 
+// TestReconcileScheduledWithNoSuchPodRetries reproduces feza-ai/spark#13: when
+// a pod sits in StatusScheduled but podman returns "no such pod" on inspect
+// (i.e. the prior CreatePod was killed before finishing, or the service
+// restarted after persisting Scheduled but before CreatePod completed), the
+// reconciler must not just log the inspect error forever — once the
+// Scheduled event is older than scheduledStaleness, it must reset the pod to
+// Pending so reconcilePending fires CreatePod on the next tick.
+func TestReconcileScheduledWithNoSuchPodRetries(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("orphaned", "Never", 0)
+	spec.BackoffLimit = 3
+	store.Apply(spec)
+	store.UpdateStatus("orphaned", state.StatusScheduled, "scheduled by reconciler")
+
+	// Simulate real podman: `pod inspect` returns exit status 125 with a
+	// "no such pod" message for a pod that does not exist.
+	exec.mu.Lock()
+	exec.statusErr = errors.New("podman pod inspect: exit status 125: Error: no such pod orphaned\n")
+	exec.mu.Unlock()
+
+	// Tick 1: pod was just marked Scheduled (freshly). Since the
+	// Scheduled event is fresh, the reconciler must NOT reset yet — it
+	// has to wait out scheduledStaleness first.
+	r.reconcileOnce(context.Background())
+	rec, _ := store.Get("orphaned")
+	if rec.Status != state.StatusScheduled {
+		t.Fatalf("tick 1: expected Scheduled (not yet stale), got %s", rec.Status)
+	}
+	if got := len(exec.getCreates()); got != 0 {
+		t.Fatalf("tick 1: expected no CreatePod calls yet, got %d", got)
+	}
+
+	// Backdate the Scheduled event past scheduledStaleness.
+	backdateLastEvent(store, "orphaned", 60*time.Second)
+
+	// Tick 2: now stale and missing in podman → must reset to Pending so
+	// reconcilePending can retry CreatePod.
+	r.reconcileOnce(context.Background())
+	rec, _ = store.Get("orphaned")
+	if rec.Status != state.StatusPending {
+		t.Fatalf("tick 2: expected Pending after stale no-such-pod, got %s", rec.Status)
+	}
+
+	// Clear the inspect error — next CreatePod should succeed.
+	exec.mu.Lock()
+	exec.statusErr = nil
+	exec.mu.Unlock()
+
+	// Tick 3: reconcilePending fires and calls CreatePod. No prior
+	// StartAttempts were recorded on the Scheduled path, so retryEligible
+	// allows it immediately.
+	r.reconcileOnce(context.Background())
+	rec, _ = store.Get("orphaned")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("tick 3: expected Running after retry, got %s", rec.Status)
+	}
+	if got := len(exec.getCreates()); got != 1 {
+		t.Fatalf("tick 3: expected 1 CreatePod call, got %d", got)
+	}
+}
+
+// TestReconcileScheduledStalePodMissingTerminatesAfterBackoffLimit verifies
+// that if the pod keeps going missing after create (e.g. podman keeps
+// killing it), the scheduled-path retry honors BackoffLimit and transitions
+// to Failed rather than spinning forever.
+func TestReconcileScheduledStalePodMissingTerminatesAfterBackoffLimit(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("doomed-scheduled", "Never", 0)
+	spec.BackoffLimit = 1
+	store.Apply(spec)
+	store.UpdateStatus("doomed-scheduled", state.StatusScheduled, "scheduled by reconciler")
+
+	// Simulate the pod already having exceeded BackoffLimit via prior
+	// CreatePod failures recorded on the Pending → Scheduled → CreatePod
+	// path. StartAttempts=2, BackoffLimit=1, so attempts > limit.
+	now := time.Now()
+	store.RecordStartFailure("doomed-scheduled", "prior failure", now)
+	store.RecordStartFailure("doomed-scheduled", "prior failure", now)
+
+	exec.mu.Lock()
+	exec.statusErr = errors.New("podman pod inspect: exit status 125: Error: no such pod doomed-scheduled")
+	exec.mu.Unlock()
+
+	// Backdate so the Scheduled event is stale.
+	backdateLastEvent(store, "doomed-scheduled", 60*time.Second)
+
+	r.reconcileOnce(context.Background())
+
+	rec, _ := store.Get("doomed-scheduled")
+	if rec.Status != state.StatusFailed {
+		t.Fatalf("expected Failed after BackoffLimit exceeded on scheduled path, got %s", rec.Status)
+	}
+	if rec.Reason == "" {
+		t.Fatal("expected Reason populated on terminal failure")
+	}
+}
+
+// TestReconcileScheduledTransientInspectErrorKeepsState verifies that a
+// transient inspect error (anything other than "no such pod") leaves the
+// pod in Scheduled and does NOT reset to Pending. Only the missing-pod
+// signal should trigger recovery.
+func TestReconcileScheduledTransientInspectErrorKeepsState(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("transient", "Never", 0)
+	store.Apply(spec)
+	store.UpdateStatus("transient", state.StatusScheduled, "scheduled by reconciler")
+
+	exec.mu.Lock()
+	exec.statusErr = errors.New("podman pod inspect: connection refused")
+	exec.mu.Unlock()
+
+	// Even past staleness, transient errors must not flip the state.
+	backdateLastEvent(store, "transient", 60*time.Second)
+
+	r.reconcileOnce(context.Background())
+
+	rec, _ := store.Get("transient")
+	if rec.Status != state.StatusScheduled {
+		t.Fatalf("expected Scheduled to stick on transient inspect error, got %s", rec.Status)
+	}
+}
+
 // testPodSpecWithProbe creates a PodSpec with a liveness probe on the first container.
 func testPodSpecWithExecProbe(name string, initialDelay, period, failure, timeout int) manifest.PodSpec {
 	return manifest.PodSpec{

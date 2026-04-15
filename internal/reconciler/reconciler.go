@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/feza-ai/spark/internal/executor"
@@ -436,17 +437,42 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 	}
 }
 
-// scheduledStaleness is how long a pod can stay in StatusScheduled before
-// being reset to StatusPending for retry.
-const scheduledStaleness = 30 * time.Second
+// scheduledStaleness is how long a pod can stay in StatusScheduled with the
+// podman pod missing before being reset to StatusPending for retry. Chosen
+// shorter than the reconciler tick (5s) so that one subsequent tick is enough
+// to retry, while still longer than the brief window between updateStatus
+// (Scheduled) and CreatePod returning in reconcilePending.
+const scheduledStaleness = 10 * time.Second
+
+// isNoSuchPod reports whether err is the podman "no such pod" error, which
+// indicates the pod does not exist in podman state — distinct from transient
+// executor failures (network glitches, podman daemon hiccups).
+func isNoSuchPod(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no such pod")
+}
 
 // reconcileScheduled handles pods stuck in the Scheduled state. If the pod is
-// actually running in podman, it transitions to Running. If the pod is not
-// found and has been Scheduled for longer than scheduledStaleness, it resets
-// to Pending so the scheduler can retry.
+// actually running in podman, it transitions to Running. If the podman pod is
+// missing ("no such pod") and has been Scheduled longer than
+// scheduledStaleness — meaning a prior CreatePod either failed partway or was
+// killed — it resets to Pending so reconcilePending can retry (gated by
+// retryEligible/BackoffLimit, which already wire exponential backoff and
+// terminal failure after too many attempts).
 func (r *Reconciler) reconcileScheduled(ctx context.Context, pod state.PodRecord) {
 	st, err := r.executor.PodStatus(ctx, pod.Spec.Name)
-	if err != nil {
+	switch {
+	case err == nil:
+		// status fetch succeeded; fall through to normal handling below.
+	case isNoSuchPod(err):
+		// Pod is missing in podman. Treat as "not running" and proceed to
+		// staleness check so we retry via reconcilePending.
+		slog.Warn("scheduled pod missing in podman", "pod", pod.Spec.Name, "err", err)
+		st = executor.Status{Running: false}
+	default:
+		// Transient error (daemon unavailable, etc.) — don't flip state.
 		slog.Error("failed to get pod status for scheduled pod", "pod", pod.Spec.Name, "err", err)
 		return
 	}
@@ -456,7 +482,7 @@ func (r *Reconciler) reconcileScheduled(ctx context.Context, pod state.PodRecord
 			Name:      pod.Spec.Name,
 			Priority:  pod.Spec.Priority,
 			Resources: pod.Spec.TotalRequests(),
-			StartTime: time.Now(),
+			StartTime: r.now(),
 		})
 		r.updateStatus(pod.Spec.Name, state.StatusRunning, "pod found running in podman")
 		slog.Info("scheduled pod now running", "pod", pod.Spec.Name)
@@ -474,14 +500,28 @@ func (r *Reconciler) reconcileScheduled(ctx context.Context, pod state.PodRecord
 			break
 		}
 	}
-	if scheduledAt.IsZero() || time.Since(scheduledAt) <= scheduledStaleness {
+	if scheduledAt.IsZero() || r.now().Sub(scheduledAt) <= scheduledStaleness {
 		return
 	}
 
-	// Stale: reset to Pending.
+	// Stale: check BackoffLimit before re-queueing. If we've exceeded
+	// backoffLimit attempts to start, transition to Failed terminally
+	// rather than spinning in Pending → Scheduled → missing forever.
+	if pod.Spec.BackoffLimit > 0 && pod.StartAttempts > pod.Spec.BackoffLimit {
+		reason := pod.Reason
+		if reason == "" {
+			reason = "pod missing in podman after " + scheduledStaleness.String()
+		}
+		r.terminateAfterStartFailure(ctx, pod.Spec.Name, reason)
+		return
+	}
+
+	// Re-queue for retry. reconcilePending gates retries on retryEligible,
+	// which enforces exponential backoff off LastAttemptAt.
 	r.scheduler.RemovePod(pod.Spec.Name)
 	r.updateStatus(pod.Spec.Name, state.StatusPending, "reset from scheduled: pod not found after timeout")
-	slog.Warn("scheduled pod reset to pending", "pod", pod.Spec.Name)
+	r.store.AddEvent(pod.Spec.Name, "ScheduledRetry", "podman pod missing; re-queued for create retry")
+	slog.Warn("scheduled pod reset to pending", "pod", pod.Spec.Name, "attempts", pod.StartAttempts)
 }
 
 // checkLivenessProbe checks the liveness probe of the first container in a running pod.
