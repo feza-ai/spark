@@ -66,6 +66,44 @@ func (r *Reconciler) updateStatus(podName string, status state.PodStatus, messag
 	}
 }
 
+// recordStartFailure records a container-start failure on the pod record and
+// fires the status-change callback so persistence layers pick up the new
+// Reason/StartAttempts. Status itself is not transitioned here — the caller is
+// responsible for setting Pending/Failed as appropriate (T56.2 will introduce
+// bounded retry and a terminal transition).
+func (r *Reconciler) recordStartFailure(podName string, err error) {
+	reason := err.Error()
+	attempts := r.store.RecordStartFailure(podName, reason)
+	slog.Warn("pod container start failed",
+		"pod", podName,
+		"reason", reason,
+		"attempts", attempts,
+	)
+	if r.onStatusChange != nil {
+		// Notify persistence without changing Status: pass the current status
+		// so downstream Publish/Save see the updated Reason/StartAttempts.
+		rec, ok := r.store.Get(podName)
+		if ok {
+			r.onStatusChange(podName, string(rec.Status), "start failed: "+reason)
+		}
+	}
+}
+
+// clearStartFailure resets Reason/StartAttempts after a successful start.
+func (r *Reconciler) clearStartFailure(podName string) {
+	prior, ok := r.store.Get(podName)
+	if !ok || (prior.Reason == "" && prior.StartAttempts == 0) {
+		return
+	}
+	r.store.ClearStartFailure(podName)
+	if r.onStatusChange != nil {
+		rec, ok := r.store.Get(podName)
+		if ok {
+			r.onStatusChange(podName, string(rec.Status), "start failure cleared")
+		}
+	}
+}
+
 // RecoverPods reconciles the store with the actual podman state after a restart.
 func (r *Reconciler) RecoverPods(ctx context.Context) error {
 	// 1. Call executor.ListPods(ctx) to get all podman pods.
@@ -169,6 +207,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 
 		if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 			slog.Error("failed to create pod", "pod", pod.Spec.Name, "err", err)
+			r.recordStartFailure(pod.Spec.Name, err)
 			r.updateStatus(pod.Spec.Name, state.StatusPending, "create failed: "+err.Error())
 			r.scheduler.RemovePod(pod.Spec.Name)
 			return
@@ -180,6 +219,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 			Resources: pod.Spec.TotalRequests(),
 			StartTime: time.Now(),
 		})
+		r.clearStartFailure(pod.Spec.Name)
 		r.updateStatus(pod.Spec.Name, state.StatusRunning, "pod created and running")
 		slog.Info("pod running", "pod", pod.Spec.Name)
 		if r.onPodRunning != nil {
@@ -205,6 +245,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 		if retry.Action == scheduler.Scheduled {
 			if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 				slog.Error("failed to create pod after preemption", "pod", pod.Spec.Name, "err", err)
+				r.recordStartFailure(pod.Spec.Name, err)
 				r.updateStatus(pod.Spec.Name, state.StatusPending, "create failed after preemption: "+err.Error())
 				r.scheduler.RemovePod(pod.Spec.Name)
 				return
@@ -215,6 +256,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 				Resources: pod.Spec.TotalRequests(),
 				StartTime: time.Now(),
 			})
+			r.clearStartFailure(pod.Spec.Name)
 			r.updateStatus(pod.Spec.Name, state.StatusRunning, "pod created after preemption")
 			slog.Info("pod running after preemption", "pod", pod.Spec.Name)
 			if r.onPodRunning != nil {
