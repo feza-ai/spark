@@ -37,8 +37,9 @@ type PodRecord struct {
 	Restarts      int
 	RetryCount    int // for jobs with backoffLimit
 	SourcePath    string
-	Reason        string // human-readable failure reason from the last start attempt
-	StartAttempts int    // number of failed pod-create/start attempts since last success
+	Reason        string    // human-readable failure reason from the last start attempt
+	StartAttempts int       // number of failed pod-create/start attempts since last success
+	LastAttemptAt time.Time // time of the most recent failed start attempt; zero when none pending
 }
 
 // maxReasonBytes caps the size of PodRecord.Reason to keep the store bounded.
@@ -214,9 +215,10 @@ func (s *PodStore) IncrementRetry(name string) bool {
 }
 
 // RecordStartFailure records a container-start failure on a pod: sets Reason
-// (truncated) and increments StartAttempts. Returns the new StartAttempts
-// value, or 0 if the pod is not found.
-func (s *PodStore) RecordStartFailure(name string, reason string) int {
+// (truncated), increments StartAttempts, and stamps LastAttemptAt with the
+// provided time. Returns the new StartAttempts value, or 0 if the pod is not
+// found.
+func (s *PodStore) RecordStartFailure(name string, reason string, at time.Time) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -229,6 +231,7 @@ func (s *PodStore) RecordStartFailure(name string, reason string) int {
 	}
 	rec.Reason = reason
 	rec.StartAttempts++
+	rec.LastAttemptAt = at
 	return rec.StartAttempts
 }
 
@@ -244,6 +247,7 @@ func (s *PodStore) ClearStartFailure(name string) bool {
 	}
 	rec.Reason = ""
 	rec.StartAttempts = 0
+	rec.LastAttemptAt = time.Time{}
 	return true
 }
 

@@ -404,6 +404,44 @@ func TestSavePodRoundTripsReasonAndStartAttempts(t *testing.T) {
 	}
 }
 
+// TestSavePodRoundTripsLastAttemptAt verifies the last_attempt_at column
+// added for retry backoff (T56.2) survives a SavePod/LoadAll cycle.
+func TestSavePodRoundTripsLastAttemptAt(t *testing.T) {
+	store, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer store.Close()
+
+	ts := time.Now().UTC().Truncate(time.Second)
+	rec := &PodRecord{
+		Spec: manifest.PodSpec{
+			Name: "retry-pod",
+			Containers: []manifest.ContainerSpec{
+				{Name: "main", Image: "alpine:latest"},
+			},
+		},
+		Status:        StatusPending,
+		Reason:        "transient",
+		StartAttempts: 2,
+		LastAttemptAt: ts,
+	}
+	if err := store.SavePod(rec); err != nil {
+		t.Fatalf("SavePod: %v", err)
+	}
+	pods, err := store.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got := pods["retry-pod"]
+	if got == nil {
+		t.Fatal("expected retry-pod in loaded pods")
+	}
+	if !got.LastAttemptAt.Equal(ts) {
+		t.Errorf("LastAttemptAt = %v, want %v", got.LastAttemptAt, ts)
+	}
+}
+
 // TestEnsureColumnMigratesExistingDatabase verifies that opening a database
 // created by an older Spark version (without reason/start_attempts columns)
 // triggers the PRAGMA-based migration and that subsequent reads/writes work.
