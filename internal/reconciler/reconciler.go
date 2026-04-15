@@ -27,19 +27,35 @@ type Reconciler struct {
 
 	probeStates map[string]*probeState
 
+	// orphanFirstSeen tracks the first time an orphaned podman pod was
+	// observed. Orphans only become eligible for removal once they have
+	// been seen for at least orphanGrace, avoiding a race with
+	// handleApplyPod which writes the store record after podman pod
+	// creation returns.
+	orphanFirstSeen map[string]time.Time
+	orphanGrace     time.Duration
+
 	onStatusChange func(podName, status, message string)
 	onPodRunning   func(podName string)
 	onPodStopped   func(podName string)
 }
 
+// defaultOrphanGrace is the minimum time an orphaned podman pod must be
+// observed before the reconciler removes it. The window must cover the
+// gap between podman pod creation and the subsequent store write in
+// handleApplyPod.
+const defaultOrphanGrace = 30 * time.Second
+
 // NewReconciler creates a reconciler that ticks at the given interval.
 func NewReconciler(store *state.PodStore, sched *scheduler.Scheduler, exec executor.Executor, interval time.Duration) *Reconciler {
 	return &Reconciler{
-		store:       store,
-		scheduler:   sched,
-		executor:    exec,
-		interval:    interval,
-		probeStates: make(map[string]*probeState),
+		store:           store,
+		scheduler:       sched,
+		executor:        exec,
+		interval:        interval,
+		probeStates:     make(map[string]*probeState),
+		orphanFirstSeen: make(map[string]time.Time),
+		orphanGrace:     defaultOrphanGrace,
 	}
 }
 
@@ -119,11 +135,33 @@ func (r *Reconciler) RecoverPods(ctx context.Context) error {
 	}
 
 	// 2. For each podman pod, check if it exists in store.
+	now := time.Now()
+	currentOrphans := make(map[string]struct{})
 	for _, p := range podmanPods {
 		rec, ok := r.store.Get(p.Name)
 		if !ok {
-			// Not in store: orphaned pod. Log warning, don't adopt.
-			slog.Warn("orphaned pod discovered in podman", "pod", p.Name)
+			// Not in store: orphaned pod. Remove only after the pod has
+			// been observed as an orphan for at least orphanGrace, so
+			// we don't race handleApplyPod (which writes the store
+			// record after podman pod creation completes).
+			currentOrphans[p.Name] = struct{}{}
+			firstSeen, seen := r.orphanFirstSeen[p.Name]
+			if !seen {
+				r.orphanFirstSeen[p.Name] = now
+				slog.Warn("orphaned pod discovered in podman", "pod", p.Name)
+				continue
+			}
+			if now.Sub(firstSeen) < r.orphanGrace {
+				slog.Warn("orphaned pod discovered in podman", "pod", p.Name)
+				continue
+			}
+			if err := r.executor.RemovePod(ctx, p.Name); err != nil {
+				slog.Warn("failed to remove orphaned podman pod", "pod", p.Name, "error", err)
+				slog.Warn("orphaned pod discovered in podman", "pod", p.Name)
+				continue
+			}
+			slog.Info("removed orphaned podman pod", "pod", p.Name)
+			delete(r.orphanFirstSeen, p.Name)
 			continue
 		}
 		if rec.Status == state.StatusRunning {
@@ -141,6 +179,14 @@ func (r *Reconciler) RecoverPods(ctx context.Context) error {
 				StartTime: rec.StartedAt,
 			})
 			slog.Info("recovered pod", "pod", p.Name, "previousStatus", rec.Status)
+		}
+	}
+
+	// Forget first-seen times for pods that are no longer orphans
+	// (removed from podman, or since adopted into the store).
+	for name := range r.orphanFirstSeen {
+		if _, stillOrphan := currentOrphans[name]; !stillOrphan {
+			delete(r.orphanFirstSeen, name)
 		}
 	}
 
