@@ -1,6 +1,6 @@
 # Spark: Resolve Open GitHub Issue #13 (scheduler create retry)
 
-## Status: Ready to ship (fix implemented locally, tests green)
+## Status: Complete (merged to main, issue #13 closed; DGX smoke test deferred)
 
 ## Context
 
@@ -86,17 +86,17 @@ The existing worktree is outside the repo at `/private/tmp/spark-scheduler-fix`.
   - Already implemented on the local branch. See commit 98c10bd for details.
   - Acceptance: `go test -race ./internal/reconciler/` passes, including four new `TestReconcileScheduled_*` cases.
 
-- [ ] T58.2 Push branch to origin and open PR  Owner: coordinator  Est: 15m  verifies: [UC-054]
+- [x] T58.2 Push branch to origin and open PR  Completed: 2026-04-15 (PR #18)
   - From the existing worktree: `git push -u origin fix/scheduler-create-retry`.
   - `gh pr create --base main --head fix/scheduler-create-retry --title "fix(reconciler): retry create when scheduled pod is missing in podman"` with a body that references issue #13 and summarizes the change.
   - Acceptance: PR URL returned, CI starts running.
 
-- [ ] T58.3 Wait for CI to pass  Owner: coordinator  Est: 10m  verifies: [UC-054]
+- [x] T58.3 Wait for CI to pass  Completed: 2026-04-15 (build pass 2m9s)
   - Depends on: T58.2.
   - `gh pr checks <pr> --watch`. Zero failures required.
   - If CI fails, read logs, fix locally, push, repeat. Cap at 3 attempts before escalating.
 
-- [ ] T58.4 Rebase-merge PR and sync main  Owner: coordinator  Est: 10m  verifies: [UC-054]
+- [x] T58.4 Rebase-merge PR and sync main  Completed: 2026-04-15 (commit a35ac4e; issue #13 auto-closed)
   - Depends on: T58.3.
   - `gh pr merge <pr> --rebase --delete-branch`.
   - `git checkout main && git pull origin main`. Verify `git log --oneline -3` shows the merged commit.
@@ -109,7 +109,7 @@ The existing worktree is outside the repo at `/private/tmp/spark-scheduler-fix`.
   - Kill the podman pod manually (`podman pod rm -f <name>`) while Spark holds a `StatusScheduled` record; verify that within 15s the pod resets to Pending, retries create, and reaches Running.
   - Acceptance: reproducer is gone, manual kill recovers automatically.
 
-- [ ] T58.6 Clean up the non-standard worktree path  Owner: coordinator  Est: 5m  verifies: [infrastructure]
+- [x] T58.6 Clean up the non-standard worktree path  Completed: 2026-04-15 (removed /private/tmp/spark-scheduler-fix)
   - Depends on: T58.4.
   - After merge and branch deletion: `git worktree remove /private/tmp/spark-scheduler-fix`.
   - Future fixes use `.claude/worktrees/<name>`.
@@ -122,10 +122,10 @@ Only one independent unit of work remains. No parallelism benefit.
 ### Waves
 
 ### Wave 1: Ship (1 agent)
-- [ ] T58.2 Push branch and open PR
-- [ ] T58.3 Wait for CI
-- [ ] T58.4 Rebase-merge and sync
-- [ ] T58.6 Worktree cleanup
+- [x] T58.2 Push branch to origin and open PR  Completed: 2026-04-15 (PR #18)
+- [x] T58.3 Wait for CI to pass  Completed: 2026-04-15 (build pass 2m9s)
+- [x] T58.4 Rebase-merge PR and sync main  Completed: 2026-04-15 (commit a35ac4e; issue #13 auto-closed)
+- [x] T58.6 Clean up the non-standard worktree path  Completed: 2026-04-15 (removed /private/tmp/spark-scheduler-fix)
 
 Wave 1 is strictly sequential because each step depends on the prior.
 
