@@ -26,6 +26,7 @@ type stubExecutor struct {
 	statusErr   error
 	listPods    []executor.PodListEntry
 	listErr     error
+	removeErr   error
 	podStats    map[string]executor.PodResourceUsage
 	podStatsErr error
 
@@ -78,6 +79,9 @@ func (s *stubExecutor) RemovePod(_ context.Context, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.removes = append(s.removes, name)
+	if s.removeErr != nil {
+		return s.removeErr
+	}
 	delete(s.statuses, name)
 	return nil
 }
@@ -163,6 +167,14 @@ func (s *stubExecutor) getStops() []string {
 	defer s.mu.Unlock()
 	cp := make([]string, len(s.stops))
 	copy(cp, s.stops)
+	return cp
+}
+
+func (s *stubExecutor) getRemoves() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]string, len(s.removes))
+	copy(cp, s.removes)
 	return cp
 }
 
@@ -1297,3 +1309,90 @@ func TestCreatePodSuccessClearsFailureState(t *testing.T) {
 	}
 }
 
+func TestRecoverPodsRemovesOrphans(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+	r.orphanGrace = 50 * time.Millisecond
+
+	exec.listPods = []executor.PodListEntry{{Name: "orphan", Running: true}}
+
+	// First call: grace window not yet elapsed, orphan is only recorded.
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := exec.getRemoves(); len(got) != 0 {
+		t.Fatalf("expected no RemovePod on first sighting, got %v", got)
+	}
+
+	// Wait past the grace window and reconcile again.
+	time.Sleep(75 * time.Millisecond)
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	removes := exec.getRemoves()
+	if len(removes) != 1 || removes[0] != "orphan" {
+		t.Fatalf("expected RemovePod(\"orphan\") after grace window, got %v", removes)
+	}
+}
+
+func TestRecoverPodsSkipsRecentOrphans(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+	r.orphanGrace = 10 * time.Second
+
+	exec.listPods = []executor.PodListEntry{{Name: "fresh", Running: true}}
+
+	// Multiple reconcile passes within the grace window: must not remove.
+	for i := 0; i < 3; i++ {
+		if err := r.RecoverPods(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := exec.getRemoves(); len(got) != 0 {
+		t.Fatalf("expected RemovePod NOT to be called for fresh orphan, got %v", got)
+	}
+}
+
+func TestRecoverPodsLogsOnRemoveFailure(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	exec.removeErr = errors.New("boom")
+	r := NewReconciler(store, sched, exec, time.Second)
+	r.orphanGrace = 20 * time.Millisecond
+
+	exec.listPods = []executor.PodListEntry{{Name: "orphan", Running: true}}
+
+	// First tick records first-seen.
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	// Second tick attempts remove (which fails) — must not panic or error.
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatalf("RecoverPods returned error on remove failure: %v", err)
+	}
+	removes := exec.getRemoves()
+	if len(removes) != 1 || removes[0] != "orphan" {
+		t.Fatalf("expected RemovePod attempt, got %v", removes)
+	}
+	// Orphan still present — must not be forgotten, so a retry remains possible.
+	if _, ok := r.orphanFirstSeen["orphan"]; !ok {
+		t.Fatal("expected orphan first-seen to persist after remove failure")
+	}
+
+	// Third tick retries (remove still fails) — confirm no state corruption / infinite loop.
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(exec.getRemoves()); got != 2 {
+		t.Fatalf("expected 2 RemovePod attempts total, got %d", got)
+	}
+}
