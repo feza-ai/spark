@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.8.0](https://github.com/feza-ai/spark/compare/v1.7.0...v1.8.0) (2026-04-15)
+
+
+### Features
+
+* **api:** expose startAttempts and reason on GET /api/v1/pods/{name} ([2cf4522](https://github.com/feza-ai/spark/commit/2cf45227ae4021b114796dac485ceb223c19302c))
+* **manifest:** parse backoffLimit on Pod spec ([5acfce9](https://github.com/feza-ai/spark/commit/5acfce9b992b0a90fb6df17b246fabcc0daa9836))
+* **state:** add Reason and StartAttempts to pod record ([93871c4](https://github.com/feza-ai/spark/commit/93871c4fd1ad7081df6995efc542e140c82cdb91))
+* **state:** persist LastAttemptAt for retry backoff ([a595c88](https://github.com/feza-ai/spark/commit/a595c880c0dee769f8b0b2108c767447e323c5cd))
+
+
+### Bug Fixes
+
+* **api:** make DELETE /api/v1/pods truthful about podman state ([8578c09](https://github.com/feza-ai/spark/commit/8578c095ad4919e6265ce65395b991d2e66ec033))
+* **manifest:** preserve scalar list items containing colons ([50f7d7f](https://github.com/feza-ai/spark/commit/50f7d7f53fe11d25dac4435f0280c9f04da87a0a))
+* **reconciler:** record container-start error and attempt count on pod record ([c3219cc](https://github.com/feza-ai/spark/commit/c3219cc4e9a6b4bc2fe913a650a716f7cc60b767))
+* **reconciler:** remove orphaned podman pods instead of only logging ([4d7b669](https://github.com/feza-ai/spark/commit/4d7b6696bfca0044bfc45c36162fc06e3379d71b))
+* **reconciler:** terminate pod after backoffLimit start failures ([c8bc93e](https://github.com/feza-ai/spark/commit/c8bc93e86c76ecd782eb40bf33db91160f70bac7))
+
 ## [1.7.0](https://github.com/feza-ai/spark/compare/v1.6.1...v1.7.0) (2026-04-14)
 
 
