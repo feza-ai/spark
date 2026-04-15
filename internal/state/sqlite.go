@@ -38,7 +38,9 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		finished_at TEXT,
 		restarts INTEGER DEFAULT 0,
 		retry_count INTEGER DEFAULT 0,
-		source_path TEXT DEFAULT ''
+		source_path TEXT DEFAULT '',
+		reason TEXT DEFAULT '',
+		start_attempts INTEGER DEFAULT 0
 	)`
 	if _, err := db.Exec(createPods); err != nil {
 		db.Close()
@@ -57,10 +59,48 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 
-	// Migration: add source_path column for existing databases.
-	db.Exec("ALTER TABLE pods ADD COLUMN source_path TEXT DEFAULT ''")
+	// Migrations: add columns to existing databases when absent. PRAGMA
+	// table_info is cheap and avoids relying on ALTER TABLE error text.
+	if err := ensureColumn(db, "pods", "source_path", "TEXT DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "pods", "reason", "TEXT DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "pods", "start_attempts", "INTEGER DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &SQLiteStore{db: db}, nil
+}
+
+// ensureColumn adds `column <ddl>` to `table` if the column is not already present.
+func ensureColumn(db *sql.DB, table, column, ddl string) error {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + ddl)
+	return err
 }
 
 // SavePod upserts a pod record.
@@ -81,10 +121,11 @@ func (s *SQLiteStore) SavePod(rec *PodRecord) error {
 	}
 
 	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR REPLACE INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Spec.Name, string(specJSON), string(rec.Status),
 		startedAt, finishedAt, rec.Restarts, rec.RetryCount, rec.SourcePath,
+		rec.Reason, rec.StartAttempts,
 	)
 	return err
 }
@@ -101,7 +142,7 @@ func (s *SQLiteStore) SaveEvent(podName string, event PodEvent) error {
 // LoadAll reads all pods and their events from the database.
 func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path FROM pods`,
+		`SELECT name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts FROM pods`,
 	)
 	if err != nil {
 		return nil, err
@@ -113,9 +154,10 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 		var name, specJSON, status string
 		var startedAt, finishedAt sql.NullString
 		var restarts, retryCount int
-		var sourcePath string
+		var sourcePath, reason string
+		var startAttempts int
 
-		if err := rows.Scan(&name, &specJSON, &status, &startedAt, &finishedAt, &restarts, &retryCount, &sourcePath); err != nil {
+		if err := rows.Scan(&name, &specJSON, &status, &startedAt, &finishedAt, &restarts, &retryCount, &sourcePath, &reason, &startAttempts); err != nil {
 			return nil, err
 		}
 
@@ -125,11 +167,13 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 		}
 
 		rec := &PodRecord{
-			Spec:       spec,
-			Status:     PodStatus(status),
-			Restarts:   restarts,
-			RetryCount: retryCount,
-			SourcePath: sourcePath,
+			Spec:          spec,
+			Status:        PodStatus(status),
+			Restarts:      restarts,
+			RetryCount:    retryCount,
+			SourcePath:    sourcePath,
+			Reason:        reason,
+			StartAttempts: startAttempts,
 		}
 		if startedAt.Valid {
 			if t, err := time.Parse(time.RFC3339, startedAt.String); err == nil {
