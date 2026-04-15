@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
 	"github.com/feza-ai/spark/internal/scheduler"
@@ -116,6 +117,38 @@ func TestGetPod(t *testing.T) {
 	}
 	if body.Events[0].Type != "running" {
 		t.Errorf("expected event type running, got %s", body.Events[0].Type)
+	}
+	if body.StartAttempts != 0 {
+		t.Errorf("expected startAttempts 0 on healthy pod, got %d", body.StartAttempts)
+	}
+	if body.Reason != "" {
+		t.Errorf("expected empty reason on healthy pod, got %q", body.Reason)
+	}
+}
+
+func TestGetPod_ExposesStartAttemptsAndReason(t *testing.T) {
+	srv, store := newPodQueryTestServer(t)
+
+	store.Apply(manifest.PodSpec{Name: "failing-pod", Priority: 100})
+	store.RecordStartFailure("failing-pod", "mount volume: not found", time.Now())
+	store.RecordStartFailure("failing-pod", "mount volume: not found", time.Now())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods/failing-pod", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body getPodResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body.StartAttempts != 2 {
+		t.Errorf("expected startAttempts=2, got %d", body.StartAttempts)
+	}
+	if body.Reason != "mount volume: not found" {
+		t.Errorf("expected reason to round-trip, got %q", body.Reason)
 	}
 }
 
