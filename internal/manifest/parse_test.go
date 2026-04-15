@@ -630,6 +630,44 @@ spec:
 	}
 }
 
+func TestParse_PodBackoffLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{
+			name: "explicit value",
+			yaml: "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  backoffLimit: 7\n  containers:\n    - {name: c, image: i}\n",
+			want: 7,
+		},
+		{
+			name: "default when unset",
+			yaml: "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  containers:\n    - {name: c, image: i}\n",
+			want: 3,
+		},
+		{
+			name: "explicit zero disables retry",
+			yaml: "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  backoffLimit: 0\n  containers:\n    - {name: c, image: i}\n",
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Parse([]byte(tt.yaml), nil)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if len(result.Pods) != 1 {
+				t.Fatalf("expected 1 pod, got %d", len(result.Pods))
+			}
+			if result.Pods[0].BackoffLimit != tt.want {
+				t.Errorf("BackoffLimit = %d, want %d", result.Pods[0].BackoffLimit, tt.want)
+			}
+		})
+	}
+}
+
 func TestParse_MissingKind(t *testing.T) {
 	yaml := `apiVersion: v1
 metadata:
