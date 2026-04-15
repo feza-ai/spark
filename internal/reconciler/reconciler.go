@@ -500,6 +500,22 @@ func (r *Reconciler) reconcileScheduled(ctx context.Context, pod state.PodRecord
 			break
 		}
 	}
+
+	// Corner case: pod is persisted as StatusScheduled but has no Scheduled
+	// event (e.g. SQL persistence was interrupted mid-transition). Without
+	// the event we cannot apply staleness, but the pod is demonstrably
+	// wedged — it's in Scheduled with no podman pod backing it. Reset
+	// immediately so reconcilePending can retry on the next tick. This
+	// only fires on the missing-pod path; transient inspect errors
+	// returned earlier.
+	if scheduledAt.IsZero() && isNoSuchPod(err) {
+		r.scheduler.RemovePod(pod.Spec.Name)
+		r.updateStatus(pod.Spec.Name, state.StatusPending, "reset from scheduled: pod missing with no scheduled-event timestamp")
+		r.store.AddEvent(pod.Spec.Name, "ScheduledRetry", "podman pod missing and no scheduled-event timestamp; re-queued")
+		slog.Warn("scheduled pod with missing event reset to pending", "pod", pod.Spec.Name)
+		return
+	}
+
 	if scheduledAt.IsZero() || r.now().Sub(scheduledAt) <= scheduledStaleness {
 		return
 	}
