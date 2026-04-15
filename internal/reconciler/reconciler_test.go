@@ -1230,9 +1230,8 @@ func TestLivenessProbe(t *testing.T) {
 
 // TestCreatePodFailureRecordsReasonAndAttempts verifies that when CreatePod
 // fails (e.g., missing volume), the reconciler surfaces the error as Reason
-// and increments StartAttempts on the pod record. The current code keeps
-// status at Pending for retry; T56.2 will add bounded retry + terminal
-// failure.
+// and increments StartAttempts on the pod record. Backoff is advanced with a
+// fake clock so successive ticks actually retry.
 func TestCreatePodFailureRecordsReasonAndAttempts(t *testing.T) {
 	store := state.NewPodStore()
 	sched := newTestScheduler()
@@ -1240,7 +1239,13 @@ func TestCreatePodFailureRecordsReasonAndAttempts(t *testing.T) {
 	exec.createErr = errors.New("volume \"data\" not found")
 	r := NewReconciler(store, sched, exec, time.Second)
 
+	base := time.Unix(0, 0)
+	current := base
+	r.SetClock(func() time.Time { return current })
+
+	// BackoffLimit high enough that we stay in retry-pending across attempts.
 	spec := testPodSpec("needs-vol", "Never", 0)
+	spec.BackoffLimit = 10
 	store.Apply(spec)
 
 	// First tick: CreatePod fails.
@@ -1260,6 +1265,9 @@ func TestCreatePodFailureRecordsReasonAndAttempts(t *testing.T) {
 		t.Fatalf("expected Reason to include executor error text, got %q", rec.Reason)
 	}
 
+	// Advance past the 5s backoff window.
+	current = current.Add(6 * time.Second)
+
 	// Second tick: same failure — attempts should climb.
 	r.reconcileOnce(context.Background())
 
@@ -1273,7 +1281,7 @@ func TestCreatePodFailureRecordsReasonAndAttempts(t *testing.T) {
 }
 
 // TestCreatePodSuccessClearsFailureState verifies that a successful start
-// after a prior failure resets Reason and StartAttempts.
+// after a prior failure resets Reason, StartAttempts, and LastAttemptAt.
 func TestCreatePodSuccessClearsFailureState(t *testing.T) {
 	store := state.NewPodStore()
 	sched := newTestScheduler()
@@ -1281,7 +1289,12 @@ func TestCreatePodSuccessClearsFailureState(t *testing.T) {
 	exec.createErr = errors.New("transient failure")
 	r := NewReconciler(store, sched, exec, time.Second)
 
+	base := time.Unix(0, 0)
+	current := base
+	r.SetClock(func() time.Time { return current })
+
 	spec := testPodSpec("flaky", "Never", 0)
+	spec.BackoffLimit = 5
 	store.Apply(spec)
 
 	// Tick 1: fail.
@@ -1290,8 +1303,12 @@ func TestCreatePodSuccessClearsFailureState(t *testing.T) {
 	if rec.StartAttempts != 1 || rec.Reason == "" {
 		t.Fatalf("setup: expected failure recorded, got attempts=%d reason=%q", rec.StartAttempts, rec.Reason)
 	}
+	if rec.LastAttemptAt.IsZero() {
+		t.Fatal("expected LastAttemptAt set after failure")
+	}
 
-	// Clear the executor error and tick again.
+	// Advance past backoff, clear executor error, tick again.
+	current = current.Add(6 * time.Second)
 	exec.mu.Lock()
 	exec.createErr = nil
 	exec.mu.Unlock()
@@ -1306,6 +1323,127 @@ func TestCreatePodSuccessClearsFailureState(t *testing.T) {
 	}
 	if rec.Reason != "" {
 		t.Fatalf("expected Reason cleared after success, got %q", rec.Reason)
+	}
+	if !rec.LastAttemptAt.IsZero() {
+		t.Fatalf("expected LastAttemptAt cleared after success, got %v", rec.LastAttemptAt)
+	}
+}
+
+// TestCreatePodFailureTerminalAfterBackoffLimit verifies that once
+// StartAttempts exceeds the pod's BackoffLimit, the reconciler transitions
+// the pod to Failed, removes the podman pod best-effort, and stops retrying.
+func TestCreatePodFailureTerminalAfterBackoffLimit(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	exec.createErr = errors.New("boom")
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	current := time.Unix(0, 0)
+	r.SetClock(func() time.Time { return current })
+
+	spec := testPodSpec("doomed", "Never", 0)
+	spec.BackoffLimit = 2
+	store.Apply(spec)
+
+	// Attempt 1: fails, retry pending.
+	r.reconcileOnce(context.Background())
+	rec, _ := store.Get("doomed")
+	if rec.Status != state.StatusPending {
+		t.Fatalf("after attempt 1: expected Pending, got %s", rec.Status)
+	}
+	if rec.StartAttempts != 1 {
+		t.Fatalf("after attempt 1: expected StartAttempts=1, got %d", rec.StartAttempts)
+	}
+
+	// Attempt 2: advance past 5s backoff. Fails again, still retry pending
+	// because attempts (2) is not strictly greater than BackoffLimit (2).
+	current = current.Add(6 * time.Second)
+	r.reconcileOnce(context.Background())
+	rec, _ = store.Get("doomed")
+	if rec.Status != state.StatusPending {
+		t.Fatalf("after attempt 2: expected Pending, got %s", rec.Status)
+	}
+	if rec.StartAttempts != 2 {
+		t.Fatalf("after attempt 2: expected StartAttempts=2, got %d", rec.StartAttempts)
+	}
+
+	// Attempt 3: advance past 10s backoff. attempts becomes 3 > limit 2 →
+	// pod should transition to Failed and RemovePod should be called.
+	current = current.Add(20 * time.Second)
+	r.reconcileOnce(context.Background())
+	rec, _ = store.Get("doomed")
+	if rec.Status != state.StatusFailed {
+		t.Fatalf("after attempt 3: expected Failed, got %s", rec.Status)
+	}
+	if rec.Reason == "" {
+		t.Fatal("expected Reason set on terminal failure")
+	}
+	exec.mu.Lock()
+	gotRemoves := append([]string(nil), exec.removes...)
+	exec.mu.Unlock()
+	found := false
+	for _, n := range gotRemoves {
+		if n == "doomed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected RemovePod(\"doomed\") to be called; removes=%v", gotRemoves)
+	}
+
+	// Subsequent ticks must not attempt CreatePod again — pod is terminal.
+	createsBefore := len(exec.getCreates())
+	current = current.Add(5 * time.Minute)
+	r.reconcileOnce(context.Background())
+	r.reconcileOnce(context.Background())
+	if got := len(exec.getCreates()); got != createsBefore {
+		t.Fatalf("expected no further CreatePod calls after terminal Failed, got %d new", got-createsBefore)
+	}
+}
+
+// TestCreatePodBackoffDelaysRetry verifies that immediately after a failure,
+// the next reconcile tick does not attempt CreatePod again until the backoff
+// delay has elapsed.
+func TestCreatePodBackoffDelaysRetry(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	exec.createErr = errors.New("nope")
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	current := time.Unix(1000, 0)
+	r.SetClock(func() time.Time { return current })
+
+	spec := testPodSpec("slowbo", "Never", 0)
+	spec.BackoffLimit = 10
+	store.Apply(spec)
+
+	// First failure.
+	r.reconcileOnce(context.Background())
+	if got := len(exec.getCreates()); got != 1 {
+		t.Fatalf("expected 1 CreatePod call after first tick, got %d", got)
+	}
+
+	// Second tick without advancing the clock: should be suppressed.
+	r.reconcileOnce(context.Background())
+	if got := len(exec.getCreates()); got != 1 {
+		t.Fatalf("expected CreatePod NOT retried within backoff window, got %d calls", got)
+	}
+
+	// Advance < 5s: still suppressed.
+	current = current.Add(4 * time.Second)
+	r.reconcileOnce(context.Background())
+	if got := len(exec.getCreates()); got != 1 {
+		t.Fatalf("expected CreatePod suppressed at 4s, got %d calls", got)
+	}
+
+	// Advance past 5s: retry allowed.
+	current = current.Add(2 * time.Second)
+	r.reconcileOnce(context.Background())
+	if got := len(exec.getCreates()); got != 2 {
+		t.Fatalf("expected CreatePod retried after backoff elapsed, got %d calls", got)
 	}
 }
 

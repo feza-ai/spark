@@ -38,6 +38,9 @@ type Reconciler struct {
 	onStatusChange func(podName, status, message string)
 	onPodRunning   func(podName string)
 	onPodStopped   func(podName string)
+
+	// now returns the current time. Tests inject a fake clock via SetClock.
+	now func() time.Time
 }
 
 // defaultOrphanGrace is the minimum time an orphaned podman pod must be
@@ -56,7 +59,14 @@ func NewReconciler(store *state.PodStore, sched *scheduler.Scheduler, exec execu
 		probeStates:     make(map[string]*probeState),
 		orphanFirstSeen: make(map[string]time.Time),
 		orphanGrace:     defaultOrphanGrace,
+		now:             time.Now,
 	}
+}
+
+// SetClock overrides the time source. Intended for tests that need
+// deterministic backoff behavior.
+func (r *Reconciler) SetClock(now func() time.Time) {
+	r.now = now
 }
 
 // SetOnStatusChange registers a callback invoked after every pod status update.
@@ -84,25 +94,66 @@ func (r *Reconciler) updateStatus(podName string, status state.PodStatus, messag
 
 // recordStartFailure records a container-start failure on the pod record and
 // fires the status-change callback so persistence layers pick up the new
-// Reason/StartAttempts. Status itself is not transitioned here — the caller is
-// responsible for setting Pending/Failed as appropriate (T56.2 will introduce
-// bounded retry and a terminal transition).
-func (r *Reconciler) recordStartFailure(podName string, err error) {
+// Reason/StartAttempts/LastAttemptAt. Returns the new attempt count. Status
+// itself is not transitioned here — the caller decides whether to retry or
+// terminate based on backoffLimit.
+func (r *Reconciler) recordStartFailure(podName string, err error) int {
 	reason := err.Error()
-	attempts := r.store.RecordStartFailure(podName, reason)
+	attempts := r.store.RecordStartFailure(podName, reason, r.now())
 	slog.Warn("pod container start failed",
 		"pod", podName,
 		"reason", reason,
 		"attempts", attempts,
 	)
 	if r.onStatusChange != nil {
-		// Notify persistence without changing Status: pass the current status
-		// so downstream Publish/Save see the updated Reason/StartAttempts.
 		rec, ok := r.store.Get(podName)
 		if ok {
 			r.onStatusChange(podName, string(rec.Status), "start failed: "+reason)
 		}
 	}
+	return attempts
+}
+
+// maxBackoff caps the exponential backoff delay between retry attempts.
+const maxBackoff = 60 * time.Second
+
+// backoffDelay returns the delay required before the next retry after
+// `attempts` failed attempts. Delay doubles from 5s with each attempt, capped
+// at maxBackoff.
+func backoffDelay(attempts int) time.Duration {
+	if attempts <= 0 {
+		return 0
+	}
+	d := 5 * time.Second
+	for i := 1; i < attempts; i++ {
+		d *= 2
+		if d >= maxBackoff {
+			return maxBackoff
+		}
+	}
+	return d
+}
+
+// retryEligible reports whether enough time has elapsed since the last failed
+// attempt to justify another CreatePod call.
+func (r *Reconciler) retryEligible(rec state.PodRecord) bool {
+	if rec.StartAttempts <= 0 || rec.LastAttemptAt.IsZero() {
+		return true
+	}
+	return !r.now().Before(rec.LastAttemptAt.Add(backoffDelay(rec.StartAttempts)))
+}
+
+// terminateAfterStartFailure transitions a pod to Failed after exhausting its
+// backoffLimit. It cleans up any podman pod best-effort and releases scheduler
+// resources.
+func (r *Reconciler) terminateAfterStartFailure(ctx context.Context, podName, reason string) {
+	if err := r.executor.RemovePod(ctx, podName); err != nil {
+		slog.Warn("best-effort RemovePod after backoff exhaustion failed", "pod", podName, "err", err)
+	}
+	r.scheduler.RemovePod(podName)
+	r.updateStatus(podName, state.StatusFailed, "start failed after backoffLimit: "+reason)
+	r.store.AddEvent(podName, "PodFailed", "start failed after backoffLimit: "+reason)
+	slog.Error("pod failed terminally after backoffLimit", "pod", podName, "reason", reason)
 }
 
 // clearStartFailure resets Reason/StartAttempts after a successful start.
@@ -244,6 +295,12 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 
 // reconcilePending attempts to schedule and create a pending pod.
 func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) {
+	// Respect exponential backoff between failed attempts.
+	if !r.retryEligible(pod) {
+		slog.Debug("pod retry suppressed by backoff", "pod", pod.Spec.Name, "attempts", pod.StartAttempts)
+		return
+	}
+
 	result := r.scheduler.Schedule(pod.Spec)
 
 	switch result.Action {
@@ -253,9 +310,13 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 
 		if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 			slog.Error("failed to create pod", "pod", pod.Spec.Name, "err", err)
-			r.recordStartFailure(pod.Spec.Name, err)
-			r.updateStatus(pod.Spec.Name, state.StatusPending, "create failed: "+err.Error())
+			attempts := r.recordStartFailure(pod.Spec.Name, err)
 			r.scheduler.RemovePod(pod.Spec.Name)
+			if pod.Spec.BackoffLimit > 0 && attempts > pod.Spec.BackoffLimit {
+				r.terminateAfterStartFailure(ctx, pod.Spec.Name, err.Error())
+				return
+			}
+			r.updateStatus(pod.Spec.Name, state.StatusPending, "create failed: "+err.Error())
 			return
 		}
 
@@ -291,9 +352,13 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 		if retry.Action == scheduler.Scheduled {
 			if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 				slog.Error("failed to create pod after preemption", "pod", pod.Spec.Name, "err", err)
-				r.recordStartFailure(pod.Spec.Name, err)
-				r.updateStatus(pod.Spec.Name, state.StatusPending, "create failed after preemption: "+err.Error())
+				attempts := r.recordStartFailure(pod.Spec.Name, err)
 				r.scheduler.RemovePod(pod.Spec.Name)
+				if pod.Spec.BackoffLimit > 0 && attempts > pod.Spec.BackoffLimit {
+					r.terminateAfterStartFailure(ctx, pod.Spec.Name, err.Error())
+					return
+				}
+				r.updateStatus(pod.Spec.Name, state.StatusPending, "create failed after preemption: "+err.Error())
 				return
 			}
 			r.scheduler.AddPod(scheduler.PodInfo{
