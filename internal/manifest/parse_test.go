@@ -551,6 +551,85 @@ spec:
 	}
 }
 
+// TestParse_CommandWithURLScalar asserts that list items containing "://"
+// (e.g., nats://host:port, http://x) are preserved as scalar strings instead
+// of being split on the ':' and parsed as a map. Regression for issue #10.
+func TestParse_CommandWithURLScalar(t *testing.T) {
+	yaml := `apiVersion: v1
+kind: Pod
+metadata:
+  name: test-url-arg
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: docker.io/library/alpine:3.20
+      command:
+        - "echo"
+        - "hello"
+        - "nats://10.88.0.1:4222"
+        - "-port=8080"
+`
+	result, err := Parse([]byte(yaml), nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if len(result.Pods) != 1 {
+		t.Fatalf("len(Pods) = %d, want 1", len(result.Pods))
+	}
+	pod := result.Pods[0]
+	if len(pod.Containers) != 1 {
+		t.Fatalf("len(Containers) = %d, want 1", len(pod.Containers))
+	}
+	c := pod.Containers[0]
+	want := []string{"echo", "hello", "nats://10.88.0.1:4222", "-port=8080"}
+	if len(c.Command) != len(want) {
+		t.Fatalf("Command = %v, want %v", c.Command, want)
+	}
+	for i, w := range want {
+		if c.Command[i] != w {
+			t.Errorf("Command[%d] = %q, want %q", i, c.Command[i], w)
+		}
+	}
+}
+
+// TestParse_ArgsWithURLScalarUnquoted asserts that unquoted URL scalars are
+// also preserved. Per the YAML spec, a ':' only acts as a map separator when
+// followed by whitespace or EOL.
+func TestParse_ArgsWithURLScalarUnquoted(t *testing.T) {
+	yaml := `apiVersion: v1
+kind: Pod
+metadata:
+  name: test-url-unquoted
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: docker.io/library/alpine:3.20
+      args:
+        - http://example.com/path
+        - nats://10.88.0.1:4222
+        - key:novalue
+`
+	result, err := Parse([]byte(yaml), nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if len(result.Pods) != 1 {
+		t.Fatalf("len(Pods) = %d, want 1", len(result.Pods))
+	}
+	c := result.Pods[0].Containers[0]
+	want := []string{"http://example.com/path", "nats://10.88.0.1:4222", "key:novalue"}
+	if len(c.Args) != len(want) {
+		t.Fatalf("Args = %v, want %v", c.Args, want)
+	}
+	for i, w := range want {
+		if c.Args[i] != w {
+			t.Errorf("Args[%d] = %q, want %q", i, c.Args[i], w)
+		}
+	}
+}
+
 func TestParse_MissingKind(t *testing.T) {
 	yaml := `apiVersion: v1
 metadata:

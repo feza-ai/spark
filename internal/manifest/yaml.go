@@ -39,7 +39,7 @@ func parseYAMLLines(lines []string, start, baseIndent int, m map[string]interfac
 			return i, nil
 		}
 
-		colonIdx := strings.Index(trimmed, ":")
+		colonIdx := findMapSeparator(trimmed)
 		if colonIdx < 0 {
 			i++
 			continue
@@ -118,7 +118,7 @@ func parseYAMLList(lines []string, start, baseIndent int) ([]interface{}, int, e
 
 		itemContent := trimmed[2:]
 
-		if colonIdx := strings.Index(itemContent, ":"); colonIdx >= 0 {
+		if colonIdx := findMapSeparator(itemContent); colonIdx >= 0 {
 			itemMap := make(map[string]interface{})
 			key := strings.TrimSpace(itemContent[:colonIdx])
 			val := ""
@@ -174,6 +174,39 @@ func nextNonEmpty(lines []string, start int) int {
 		}
 	}
 	return len(lines)
+}
+
+// findMapSeparator returns the index of the first ':' that acts as a YAML
+// map separator in s (i.e., followed by a space or end-of-string), skipping
+// colons inside single- or double-quoted segments. Returns -1 if none.
+func findMapSeparator(s string) int {
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case ':':
+			if inSingle || inDouble {
+				continue
+			}
+			if i == len(s)-1 {
+				return i
+			}
+			next := s[i+1]
+			if next == ' ' || next == '\t' {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func unquote(s string) string {
