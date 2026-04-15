@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,10 +19,12 @@ import (
 )
 
 type stubExecutor struct {
-	mu      sync.Mutex
-	creates []string
-	stops   []string
-	removes []string
+	mu        sync.Mutex
+	creates   []string
+	stops     []string
+	removes   []string
+	stopErr   error
+	removeErr error
 }
 
 func (e *stubExecutor) CreatePod(_ context.Context, spec manifest.PodSpec) error {
@@ -35,7 +38,7 @@ func (e *stubExecutor) StopPod(_ context.Context, name string, _ int) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.stops = append(e.stops, name)
-	return nil
+	return e.stopErr
 }
 
 func (e *stubExecutor) PodStatus(_ context.Context, _ string) (executor.Status, error) {
@@ -46,7 +49,7 @@ func (e *stubExecutor) RemovePod(_ context.Context, name string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.removes = append(e.removes, name)
-	return nil
+	return e.removeErr
 }
 
 func (e *stubExecutor) ListPods(_ context.Context) ([]executor.PodListEntry, error) {
@@ -295,6 +298,152 @@ func TestDeletePodSchedulerRemove(t *testing.T) {
 			if tt.wantCalls > 0 && ss.removed[0] != "sched-pod" {
 				t.Errorf("expected RemovePod called with sched-pod, got %q", ss.removed[0])
 			}
+		})
+	}
+}
+
+func TestDeletePodStopFails(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
+		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+		nil, 0,
+	)
+	exec := &stubExecutor{stopErr: errors.New("podman stop: boom")}
+	sched := &stubScheduler{}
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil)
+
+	store.Apply(manifest.PodSpec{Name: "stuck-pod"})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/pods/stuck-pod", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Name    string `json:"name"`
+		Deleted bool   `json:"deleted"`
+		Error   string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body.Deleted {
+		t.Error("expected deleted=false")
+	}
+	if !strings.Contains(body.Error, "stop pod") {
+		t.Errorf("expected error to mention 'stop pod', got %q", body.Error)
+	}
+
+	if _, ok := store.Get("stuck-pod"); !ok {
+		t.Error("store record must remain intact when stop fails")
+	}
+
+	exec.mu.Lock()
+	if len(exec.removes) != 0 {
+		t.Errorf("RemovePod should not be called after StopPod fails, got %v", exec.removes)
+	}
+	exec.mu.Unlock()
+
+	sched.mu.Lock()
+	if len(sched.removed) != 0 {
+		t.Errorf("scheduler resources must not be released when stop fails, got %v", sched.removed)
+	}
+	sched.mu.Unlock()
+}
+
+func TestDeletePodRemoveFails(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
+		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+		nil, 0,
+	)
+	exec := &stubExecutor{removeErr: errors.New("podman rm: locked")}
+	sched := &stubScheduler{}
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil)
+
+	store.Apply(manifest.PodSpec{Name: "stuck-pod"})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/pods/stuck-pod", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Name    string `json:"name"`
+		Deleted bool   `json:"deleted"`
+		Error   string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body.Deleted {
+		t.Error("expected deleted=false")
+	}
+	if !strings.Contains(body.Error, "remove pod") {
+		t.Errorf("expected error to mention 'remove pod', got %q", body.Error)
+	}
+
+	if _, ok := store.Get("stuck-pod"); !ok {
+		t.Error("store record must remain intact when remove fails")
+	}
+
+	sched.mu.Lock()
+	if len(sched.removed) != 0 {
+		t.Errorf("scheduler resources must not be released when remove fails, got %v", sched.removed)
+	}
+	sched.mu.Unlock()
+}
+
+func TestDeletePodNoSuchPodTreatedAsSuccess(t *testing.T) {
+	tests := []struct {
+		name string
+		exec *stubExecutor
+	}{
+		{
+			name: "stop returns no such pod",
+			exec: &stubExecutor{stopErr: errors.New("Error: no such pod foo")},
+		},
+		{
+			name: "remove returns no such pod",
+			exec: &stubExecutor{removeErr: errors.New("Error: no such pod foo")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := state.NewPodStore()
+			tracker := scheduler.NewResourceTracker(
+				scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
+				scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+				nil, 0,
+			)
+			sched := &stubScheduler{}
+			srv := NewServer(store, tracker, tt.exec, nil, nil, nil, nil, "", sched, nil, nil)
+
+			store.Apply(manifest.PodSpec{Name: "ghost-pod"})
+
+			req := httptest.NewRequest(http.MethodDelete, "/api/v1/pods/ghost-pod", nil)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if _, ok := store.Get("ghost-pod"); ok {
+				t.Error("store record should be removed when pod was already gone")
+			}
+			sched.mu.Lock()
+			if len(sched.removed) != 1 {
+				t.Errorf("expected scheduler.RemovePod to be called once, got %d", len(sched.removed))
+			}
+			sched.mu.Unlock()
 		})
 	}
 }

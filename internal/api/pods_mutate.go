@@ -4,9 +4,18 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/feza-ai/spark/internal/manifest"
 )
+
+func isNoSuchPod(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such pod")
+}
 
 func (s *Server) registerPodMutateRoutes() {
 	s.mux.HandleFunc("POST /api/v1/pods", s.handleApplyPod)
@@ -77,11 +86,28 @@ func (s *Server) handleDeletePod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Best-effort stop and remove via executor.
-	s.executor.StopPod(r.Context(), name, 10)
-	s.executor.RemovePod(r.Context(), name)
+	if err := s.executor.StopPod(r.Context(), name, 10); err != nil && !isNoSuchPod(err) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":    name,
+			"deleted": false,
+			"error":   "stop pod: " + err.Error(),
+		})
+		return
+	}
 
-	// Release scheduler resources for this pod.
+	if err := s.executor.RemovePod(r.Context(), name); err != nil && !isNoSuchPod(err) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":    name,
+			"deleted": false,
+			"error":   "remove pod: " + err.Error(),
+		})
+		return
+	}
+
 	if s.scheduler != nil {
 		s.scheduler.RemovePod(name)
 	}
