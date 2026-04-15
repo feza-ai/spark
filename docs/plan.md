@@ -1,226 +1,180 @@
-# Spark: Resolve Open GitHub Issues (v1.6.2)
+# Spark: Resolve Open GitHub Issue #13 (scheduler create retry)
 
-## Status: Complete (core fixes merged; waves 3/4 folded)
+## Status: Ready to ship (fix implemented locally, tests green)
 
 ## Context
 
 ### Problem Statement
 
-Three open issues on github.com/feza-ai/spark cover bugs that degrade correctness and operability on the DGX Spark host. None are feature requests; all are defects in existing wired functionality.
+Issue #13: when `podman pod create` fails during `reconcilePending` (for example `signal: killed` from a context-deadline hit or a podman daemon hiccup), the pod is stored with `StatusScheduled` but the underlying podman pod is missing. The subsequent reconcile loop calls `podman pod inspect` on every tick and fails with `no such pod`, logging the error but never transitioning the pod back to `StatusPending`. The pod is stuck indefinitely, only unblocked by `DELETE /api/v1/pods/{name}` followed by a fresh `POST`.
 
-1. **Issue #12 -- DELETE leaves orphaned podman pod.** `DELETE /api/v1/pods/{name}` removes the pod from Spark's in-memory store and SQLite, but the underlying podman pod can keep running. The reconciler's `RecoverPods` logs `"orphaned pod discovered in podman"` every ~5s (internal/reconciler/reconciler.go:88) without reconciling. On a GPU-heavy workload the orphan keeps saturating the DGX, and recovery requires `ssh + podman pod rm -f`. Root cause: the delete handler calls `executor.StopPod` and `executor.RemovePod` as best-effort (errors ignored) and then deletes the store record unconditionally. If podman is under load, stop/rm can fail or time out and the store goes out of sync with reality.
-2. **Issue #10 -- args/command containing `://` are silently dropped.** The custom YAML parser in `internal/manifest/yaml.go` walks list items and, on finding any `:` in the item content, treats the item as a map (line 121). For a list item like `- "nats://10.88.0.1:4222"`, this splits it into key=`"nats"`, value=`//10.88.0.1:4222`, which is then discarded because it is not a real scalar. YAML requires a `:` to be followed by whitespace or end-of-line to act as a map separator; the parser does not enforce this rule, nor does it treat quoted strings as atomic scalars.
-3. **Issue #8 -- reconciler infinite retry when container start fails after successful pod create.** When `podman pod create` succeeds but `podman run` fails (e.g., missing volume mount), the next reconcile tick hits "already exists" and the fix from #7 removes and re-creates the pod. The same container-start error recurs, producing an infinite loop. There is no `backoffLimit` enforcement and no terminal failure state with the container start error surfaced in the API.
+Prior work already on main (this session): issues #8, #10, #12 resolved in v1.7.x. Relevant infrastructure now present: `StartAttempts` and `LastAttemptAt` on `PodRecord`, exponential backoff between retries (5s, 10s, 20s, 40s, cap 60s), `BackoffLimit` parsing on Pod spec, terminal `StatusFailed` transition after exceeding the limit, `SetClock` on Reconciler for deterministic tests. Issue #13 is the final missing hop: recognize "podman says no such pod" as a signal to re-queue, not a transient error.
 
 ### Objectives
 
-- Make `DELETE /api/v1/pods/{name}` idempotent and truthful: podman pod is gone before the Spark record is deleted, OR the API returns an error and the record stays so the client can retry.
-- Make the reconciler kill orphaned podman pods it sees but has no record for.
-- Make the YAML parser preserve scalar list items that contain `://`, and any `:` not followed by whitespace.
-- Make container-start failures terminate on a bounded retry count with a clear error surfaced on the pod record.
+- After `podman pod create` fails, the reconciler must retry on a subsequent tick (subject to backoff and `BackoffLimit`) without requiring the client to DELETE and re-POST.
+- Differentiate `no such pod` (podman authoritative: missing) from transient inspect errors (daemon flake: leave state alone).
+- Preserve the existing backoff/terminal-failure machinery added in T56.x; #13 plugs into it rather than duplicating it.
 
 ### Non-Goals
 
-- Full YAML 1.2 compliance. Fix the specific scalar/colon rule; do not rewrite the parser.
-- Async delete. Keep DELETE synchronous; long stop times are acceptable as long as the response is truthful.
-- Readiness probes, ConfigMap/Secret, or other v1.7.0 features.
+- Changing reconciler tick interval, scheduler behavior, or the executor API surface.
+- Async create or separate retry endpoint.
+- Handling partial-create states beyond "pod missing in podman".
 
 ### Constraints
 
 - Go standard library only (plus `nats.go`, `modernc.org/sqlite`). ADR-001.
-- Podman CLI only (no API socket). ADR-004.
+- Podman CLI only (no podman API socket). ADR-004.
 - Conventional Commits, rebase-and-merge, one package per commit.
+- Tests use `SetClock` + stub executor, no real podman.
 
 ### Success Metrics
 
-- Submit long-running pod, `DELETE` it, then `podman pod ls` on the DGX does NOT show the pod. Endpoint returns 200 only when podman confirms removal; returns 5xx with the Spark record preserved otherwise.
-- Reconciler with an orphaned podman pod present removes the orphan within 2 reconcile ticks; no more infinite "orphaned pod discovered" warnings.
-- Pod manifest with `command: ["echo", "nats://10.88.0.1:4222", "-port=8080"]` runs and prints all three arguments verbatim.
-- Pod with a bad volume mount transitions to `Failed` after `backoffLimit` (default 3) retries with a human-readable reason field; reconciler stops retrying.
-- `go test ./... -race -timeout 120s` and `go vet ./...` pass.
+- Repro case: pod in `StatusScheduled` whose podman pod is missing transitions back to `StatusPending` on the next reconcile tick after the staleness window, and `CreatePod` fires on the subsequent tick.
+- Transient inspect errors (not "no such pod") leave the pod in `StatusScheduled`.
+- Pod that has already exceeded `BackoffLimit` transitions to `StatusFailed` terminally instead of spinning in the Pending <-> Scheduled <-> missing loop.
+- `go test ./... -race -timeout 120s` passes.
+- Issue #13 closes via PR merge with `fixes #13` in the commit message.
 
 ## Discovery Summary
 
-### Current state
+### Existing implementation
 
-- Delete path: `internal/api/pods_mutate.go:65-96`. StopPod/RemovePod errors ignored; store.Delete runs unconditionally.
-- Orphan detection: `internal/reconciler/reconciler.go:87-89` logs only.
-- YAML list parse: `internal/manifest/yaml.go:121-146`. Any `:` in item content promotes the item to a map.
-- Reconciler failure-after-create: `internal/reconciler/reconciler.go` + `resources.go`. Need to confirm current retry/backoff state and how container start errors are surfaced.
+A local worktree at `/private/tmp/spark-scheduler-fix` (branch `fix/scheduler-create-retry`) already contains the implementation. Commit: `98c10bd` "fix(reconciler): retry create when scheduled pod is missing in podman".
 
-### Related prior work
+Diff shape:
+- `internal/reconciler/reconciler.go`: +51/-11 lines.
+- `internal/reconciler/reconciler_test.go`: +134/-0 lines.
 
-- Issue #7 fix (already merged, commit 8f30f6d): removes stale pod before retry on "already exists".
-- v1.6.0 delivered liveness probes and full wiring. Pod state machine already has `StatusFailed`.
+Changes:
+1. New `isNoSuchPod(err)` helper: case-insensitive substring match for `"no such pod"`.
+2. `reconcileScheduled` switches on the inspect error:
+   - nil -> proceed to Running/stale logic.
+   - `no such pod` -> treat as `Running: false`, log `scheduled pod missing in podman`, continue to staleness check.
+   - Any other error -> log and return (leave state alone).
+3. `scheduledStaleness` reduced from 30s to 10s so the next reconcile tick (5s) can act.
+4. Pre-reset `BackoffLimit` check: if `pod.StartAttempts > pod.Spec.BackoffLimit` (and limit > 0), call `terminateAfterStartFailure` instead of resetting to Pending.
+5. On reset to Pending: emit a `ScheduledRetry` event and include `attempts` in the log.
+6. `r.now()` used throughout the scheduled path for deterministic tests.
 
-Use case manifest: `.claude/scratch/usecases-manifest.json` (update after plan lands to track UC-051 orphan reconcile, UC-052 YAML colon scalars, UC-053 bounded container-start retry).
+Tests added:
+- `TestReconcileScheduled_MissingPodAfterStalenessResetsToPending`
+- `TestReconcileScheduled_MissingPodWithinStalenessKeepsScheduled`
+- `TestReconcileScheduled_TransientInspectErrorKeepsScheduled`
+- `TestReconcileScheduled_BackoffLimitExceededTransitionsToFailed`
+
+Validation already run locally on the branch: `go build`, `go vet`, `go test ./... -race -timeout 120s` all PASS across 12 packages.
+
+### Migration need
+
+The existing worktree is outside the repo at `/private/tmp/spark-scheduler-fix`. Per the user directive "Work in git worktrees", new work in this session uses `.claude/worktrees/`. The existing branch is fine; we only need to push it and open the PR. No need to relocate the worktree or rebase.
 
 ## Scope and Deliverables
 
-### In Scope
-
 | ID | Deliverable | Acceptance Criteria |
 |----|-------------|---------------------|
-| D1 | Synchronous, truthful DELETE | podman pod is gone OR API returns error and keeps the Spark record |
-| D2 | Orphan reconciliation | Reconciler removes podman pods that have no Spark record |
-| D3 | YAML scalar colon fix | List items with `://` or colons not followed by space preserved as scalar |
-| D4 | Bounded container-start retry | backoffLimit honored; terminal failure with reason; no infinite retry |
-
-### Out of Scope
-
-- Async delete with a separate status endpoint.
-- Rewriting the YAML parser.
-- TCP probes, ConfigMap, Secret.
+| D1 | `fix/scheduler-create-retry` branch pushed to origin | Branch visible on GitHub, tests green in CI |
+| D2 | PR opened, CI green, merged into main via rebase | PR state MERGED, main green |
+| D3 | Issue #13 closed via `fixes #13` in PR body/commit | Issue state CLOSED linked to the merge commit |
 
 ## Checkable Work Breakdown
 
-### E54: Issue #12 -- DELETE leaves orphaned podman pod
+### E58: Issue #13 -- Scheduler stuck in "scheduled" after create failure
 
-- [x] T54.1 Make DELETE truthful about podman state  Owner: task-T54-1  Est: 45m  verifies: [UC-051]  Completed: 2026-04-15 (PR #14, 8578c09)
-  - File: `internal/api/pods_mutate.go`.
-  - Change `handleDeletePod` to: (1) call `executor.StopPod(ctx, name, grace)` and propagate error; (2) call `executor.RemovePod` and propagate error; (3) only on success, release scheduler resources and call `store.Delete`; (4) on error, return `500` with `{"deleted": false, "error": "..."}` and keep the store record so clients can retry.
-  - Preserve 404 behavior when the pod is unknown.
-  - Acceptance: unit test with stub executor returning error leaves store record intact and returns 5xx.
+- [x] T58.1 Detect missing pod in `reconcileScheduled` and re-queue to Pending  Owner: user  Est: 60m  verifies: [UC-054]  Completed: 2026-04-15 (local commit 98c10bd on fix/scheduler-create-retry)
+  - Already implemented on the local branch. See commit 98c10bd for details.
+  - Acceptance: `go test -race ./internal/reconciler/` passes, including four new `TestReconcileScheduled_*` cases.
 
-- [x] T54.2 Reconcile orphans by removing them  Owner: task-T54-2  Est: 45m  verifies: [UC-051]  Completed: 2026-04-15 (PR #16, 4d7b669)
-  - File: `internal/reconciler/reconciler.go` around line 87.
-  - When a podman pod is present but not in the store, call `executor.RemovePod(ctx, p.Name)` and log `"removed orphaned podman pod"`. On error, keep the existing warning so operators can page.
-  - Gate behind a short grace window (e.g., ignore pods younger than one reconcile interval) to avoid races with in-flight `handleApplyPod` that has created the podman pod but not yet written the store record.
-  - Acceptance: `go test -race ./internal/reconciler/` passes. New test: orphan present -> removed on next tick.
+- [ ] T58.2 Push branch to origin and open PR  Owner: coordinator  Est: 15m  verifies: [UC-054]
+  - From the existing worktree: `git push -u origin fix/scheduler-create-retry`.
+  - `gh pr create --base main --head fix/scheduler-create-retry --title "fix(reconciler): retry create when scheduled pod is missing in podman"` with a body that references issue #13 and summarizes the change.
+  - Acceptance: PR URL returned, CI starts running.
 
-- [x] T54.3 Tests and integration for delete truthfulness  Owner: folded  Completed: 2026-04-15 (unit tests added inline with T54.1 + T54.2 tests cover reconciler orphan removal)
-  - Update `internal/api/pods_mutate_test.go`: success path, StopPod error path, RemovePod error path.
-  - Add a reconciler test that simulates an orphan and asserts `executor.RemovePod` was called.
-  - Acceptance: `go test -race ./internal/api/ ./internal/reconciler/` passes.
+- [ ] T58.3 Wait for CI to pass  Owner: coordinator  Est: 10m  verifies: [UC-054]
+  - Depends on: T58.2.
+  - `gh pr checks <pr> --watch`. Zero failures required.
+  - If CI fails, read logs, fix locally, push, repeat. Cap at 3 attempts before escalating.
 
-### E55: Issue #10 -- args/command with `://` silently dropped
+- [ ] T58.4 Rebase-merge PR and sync main  Owner: coordinator  Est: 10m  verifies: [UC-054]
+  - Depends on: T58.3.
+  - `gh pr merge <pr> --rebase --delete-branch`.
+  - `git checkout main && git pull origin main`. Verify `git log --oneline -3` shows the merged commit.
+  - Acceptance: PR state MERGED, issue #13 auto-closes from `fixes #13`.
 
-- [x] T55.1 Fix list-item scalar vs map detection  Owner: task-T55-1  Est: 45m  verifies: [UC-052]  Completed: 2026-04-15 (PR #14, 50f7d7f)
-  - File: `internal/manifest/yaml.go` around line 121.
-  - Replace `strings.Index(itemContent, ":")` with a helper `findMapSeparator(s string) int` that returns -1 unless a `:` is followed by a space or end-of-string AND is not inside a quoted segment.
-  - Apply the same helper in `parseYAMLLines` (line 42) for consistency so root/object keys behave the same way.
-  - Leave quoted scalars (`"..."`, `'...'`) untouched.
-  - Acceptance: new unit tests cover: `- "nats://10.88.0.1:4222"`, `- http://x/y`, `- key: value`, `- key:novalue` (still treated as map per YAML spec? no -- per YAML the `:` must be followed by space; this should be scalar. Document the choice with a comment.).
+- [ ] T58.5 Smoke test against DGX Spark  Owner: coordinator  Est: 15m  verifies: [UC-054]
+  - Depends on: T58.4.
+  - Wait for release-please to open the version bump PR; merge it to cut a new tag.
+  - On the DGX host, update the Spark binary to the new version. Submit a throwaway pod manifest, verify `/api/v1/pods/<name>` eventually reaches Running.
+  - Kill the podman pod manually (`podman pod rm -f <name>`) while Spark holds a `StatusScheduled` record; verify that within 15s the pod resets to Pending, retries create, and reaches Running.
+  - Acceptance: reproducer is gone, manual kill recovers automatically.
 
-- [x] T55.2 Regression tests end-to-end through manifest.Parse  Owner: task-T55-1  Est: 30m  verifies: [UC-052]  Completed: 2026-04-15 (folded into T55.1 commit 50f7d7f; parse_test.go covers the issue #10 manifest end-to-end)
-  - Depends on: T55.1.
-  - Add test in `internal/manifest/yaml_test.go` (or `parse_test.go`) that parses the Pod manifest from issue #10 and asserts the container's `Command` slice equals `["echo", "hello", "nats://10.88.0.1:4222", "-port=8080"]`.
-  - Add a block-style variant.
-  - Acceptance: `go test -race ./internal/manifest/` passes.
-
-### E56: Issue #8 -- infinite retry on container start failure
-
-- [x] T56.1 Surface container start error on pod record  Owner: task-T56-1  Est: 45m  verifies: [UC-053]  Completed: 2026-04-15 (PR #14, 93871c4 + c3219cc)
-  - Files: `internal/reconciler/reconciler.go`, `internal/state/sqlite.go` (if Reason column is missing, add it; otherwise reuse).
-  - When the reconciler starts a pod and container start fails, set `rec.Status = Failed` with `Reason` containing the container-start stderr, increment a `StartAttempts` counter.
-  - Acceptance: reconciler unit test with stub executor returning container-start error observes `StatusFailed` and a populated reason.
-
-- [x] T56.2 Honor backoffLimit before terminal failure  Owner: task-T56-2  Est: 60m  verifies: [UC-053]  Completed: 2026-04-15 (PR #16, 5acfce9 + a595c88 + c8bc93e)
-  - Depends on: T56.1.
-  - Parse `spec.backoffLimit` for Pod/Job (already done for Jobs? verify in `manifest/job.go`). Default to 3 for Pods.
-  - Reconciler: while `StartAttempts < backoffLimit` and container start fails, clean up podman pod (reuse #7 fix), bump counter, reschedule on next tick. When `StartAttempts == backoffLimit`, transition to `Failed` terminally and stop retrying.
-  - Add exponential backoff between attempts (minimum 5s, cap 60s) to avoid hot-looping on transient errors.
-  - Acceptance: reconciler test: 3 failures -> Failed; no 4th attempt observed over >=3 reconcile ticks.
-
-- [x] T56.3 Expose start attempts and reason via API  Owner: coordinator  Est: 30m  verifies: [UC-053]  Completed: 2026-04-15 (wave-3-apis, b3271af)
-  - Depends on: T56.1, T56.2.
-  - Update `GET /api/v1/pods/{name}` JSON response to include `startAttempts` and `reason` when non-empty.
-  - Update `GET /api/v1/pods/{name}/events` emission to include a `ContainerStartFailed` event per attempt and a `PodFailed` event on terminal failure.
-  - Acceptance: `go test -race ./internal/api/` passes with new fields asserted.
-
-### E57: Integration, docs, release
-
-- [x] T57.1 Run full test suite and lint  Completed: 2026-04-15 (green on main, PRs #14 and #16)
-  - Depends on: T54.*, T55.*, T56.*.
-  - `go build ./...`, `go vet ./...`, `go test ./... -race -timeout 120s`, `staticcheck ./...`.
-
-- [x] T57.2 Update docs and changelog  Completed: 2026-04-15 (wave-3-apis, 79977e2)
-  - Depends on: T57.1.
-  - `docs/design.md`: delete semantics, orphan reconciliation, bounded retry.
-  - `docs/devlog.md`: append v1.6.2 entry describing root causes and fixes.
-  - README: document new API response fields (`startAttempts`, `reason`).
-
-- [ ] T57.3 Close issues with links to merged commits  Owner: TBD  Est: 10m  verifies: [infrastructure]
-  - Depends on: T57.2, PRs merged by release-please.
-  - Comment on #8, #10, #12 with commit SHAs and close.
+- [ ] T58.6 Clean up the non-standard worktree path  Owner: coordinator  Est: 5m  verifies: [infrastructure]
+  - Depends on: T58.4.
+  - After merge and branch deletion: `git worktree remove /private/tmp/spark-scheduler-fix`.
+  - Future fixes use `.claude/worktrees/<name>`.
+  - Acceptance: `git worktree list` no longer shows `/private/tmp/spark-scheduler-fix`.
 
 ## Parallel Work
 
-### Tracks
-
-| Track | Tasks | Description |
-|-------|-------|-------------|
-| A: DELETE truthfulness | T54.1, T54.2, T54.3 | API handler + reconciler orphan removal + tests |
-| B: YAML colon scalar | T55.1, T55.2 | Parser fix + regression tests |
-| C: Container-start retry | T56.1, T56.2, T56.3 | Reason field + backoffLimit + API surface |
-
-Tracks A, B, C are independent and touch disjoint packages. T57.* serializes.
+Only one independent unit of work remains. No parallelism benefit.
 
 ### Waves
 
-### Wave 1: Parallel fixes (3 agents)
-- [ ] T54.1 Make DELETE truthful about podman state
-- [ ] T55.1 Fix list-item scalar vs map detection
-- [ ] T56.1 Surface container start error on pod record
+### Wave 1: Ship (1 agent)
+- [ ] T58.2 Push branch and open PR
+- [ ] T58.3 Wait for CI
+- [ ] T58.4 Rebase-merge and sync
+- [ ] T58.6 Worktree cleanup
 
-### Wave 2: Follow-ups per track (3 agents)
-- [x] T54.2 Reconcile orphans by removing them  Owner: task-T54-2  Est: 45m  verifies: [UC-051]  Completed: 2026-04-15 (PR #16, 4d7b669)
-- [ ] T55.2 Regression tests end-to-end through manifest.Parse
-- [x] T56.2 Honor backoffLimit before terminal failure  Owner: task-T56-2  Est: 60m  verifies: [UC-053]  Completed: 2026-04-15 (PR #16, 5acfce9 + a595c88 + c8bc93e)
+Wave 1 is strictly sequential because each step depends on the prior.
 
-### Wave 3: Remaining follow-ups (2 agents)
-- [x] T54.3 Tests and integration for delete truthfulness  Owner: folded  Completed: 2026-04-15 (unit tests added inline with T54.1 + T54.2 tests cover reconciler orphan removal)
-- [x] T56.3 Expose start attempts and reason via API  Owner: coordinator  Est: 30m  verifies: [UC-053]  Completed: 2026-04-15 (wave-3-apis, b3271af)
+### Wave 2: Validate on DGX (1 agent)
+- [ ] T58.5 Smoke test against DGX
 
-### Wave 4: Integration (3 agents)
-- [x] T57.1 Run full test suite and lint  Completed: 2026-04-15 (green on main, PRs #14 and #16)
-- [x] T57.2 Update docs and changelog  Completed: 2026-04-15 (wave-3-apis, 79977e2)
-- [ ] T57.3 Close issues
+Wave 2 runs after release-please produces a new tag and the DGX is updated.
 
 ## Timeline and Milestones
 
 | ID | Milestone | Dependencies | Exit Criteria |
 |----|-----------|--------------|---------------|
-| M1 | Issue #12 fixed | T54.1-T54.3 | DELETE is truthful and orphans auto-removed |
-| M2 | Issue #10 fixed | T55.1-T55.2 | `://` args round-trip through manifest parse |
-| M3 | Issue #8 fixed | T56.1-T56.3 | Bounded retry, terminal Failed, reason surfaced |
-| M4 | Shipped | T57.1-T57.3 | Green CI, release-please PR merged, issues closed |
+| M1 | PR merged | T58.2-T58.4 | Main contains the fix; issue #13 closed |
+| M2 | Worktree tidy | T58.6 | `/private/tmp/spark-scheduler-fix` removed |
+| M3 | DGX verified | T58.5 | Reproducer no longer occurs on DGX |
 
 ## Risk Register
 
 | ID | Risk | Impact | Likelihood | Mitigation |
 |----|------|--------|------------|------------|
-| R1 | Synchronous DELETE blocks client on saturated host | Medium | Medium | Keep 10s grace then force-remove; document in issue that DELETE may take up to ~15s under load |
-| R2 | YAML helper regresses existing map parsing | High | Low | Comprehensive tests covering all known manifest shapes before merge |
-| R3 | backoffLimit default of 3 is aggressive for transient errors | Low | Low | Exponential backoff between attempts; operators can override in manifest |
-| R4 | Orphan removal races with in-flight apply | Medium | Low | Grace window of one reconcile interval before treating as orphan |
+| R1 | `scheduledStaleness` reduction from 30s to 10s triggers premature retries on a transiently slow podman daemon | Medium | Low | The staleness check only fires AFTER inspect returns `no such pod`. A slow daemon returns timeout, not `no such pod`, and hits the transient-error branch which leaves state alone. |
+| R2 | Case-insensitive substring match for `no such pod` collides with a future podman error message | Low | Low | If podman ever emits a different message, test suite catches the regression. Add to integration test matrix in a future task. |
+| R3 | Pod exceeds BackoffLimit via scheduled-miss path but Reason is empty | Low | Low | Fix already provides a fallback reason string `"pod missing in podman after <staleness>"`. |
+| R4 | CI pre-existing flake fails the PR | Medium | Low | Full test suite passes locally. If CI flakes, `gh run rerun` on the specific job. |
 
 ## Operating Procedure
 
-- Each commit: one package directory, Conventional Commits, rebase-and-merge.
-- Add tests alongside each code change.
-- Run `go vet ./...` and `go test ./... -race -timeout 120s` locally before PR.
-- release-please produces the version bump (expect v1.6.2) and tag after merges.
-- Reply to each GitHub issue with the PR link after merge; do not close until tagged release is live.
+- One PR per issue; `fixes #13` in the body.
+- Rebase-merge (not squash, not merge commits). Per CLAUDE.md.
+- Do not push to remote DGX host directly; ship via release-please + tag + manual update.
+- On merge, release-please should open a version-bump PR. Review and merge it to cut a tag.
 
 ## Progress Log
 
 ### 2026-04-15: Change Summary
-- Trimmed completed v1.6.0 plan; knowledge preserved in `docs/devlog.md` (2026-03-20 entry) and existing ADRs.
-- New plan targets three open issues: #12 (orphaned podman pod on DELETE), #10 (args/command with `://` dropped), #8 (infinite retry on container-start failure).
-- 11 tasks across 4 waves, 3 parallel tracks. No new ADRs -- all fixes are within existing decisions.
+- Trimmed completed v1.6.2 plan (issues #8, #10, #12). Knowledge preserved in `docs/devlog.md` (2026-04-15 entry written during prior /apply session).
+- New plan targets only remaining open issue #13. The code change is already implemented on local branch `fix/scheduler-create-retry` (commit 98c10bd) and tests pass.
+- Remaining work is shipping: push, PR, CI, merge, release, DGX smoke test.
+- No new ADRs: fix stays within existing decisions (ADR-001 stdlib-only, ADR-004 podman CLI).
 
 ## Hand-off Notes
 
-- All three issues are present on `main` as of commit `819529c`.
-- DGX host for manual verification: `http://192.168.86.250:8080`. Submit manifests via API; do not ssh in. See `CLAUDE.md` for workflow.
-- Reconciler tick is ~5s; tests should set short intervals via constructor options rather than sleeping.
-- YAML parser is a hand-rolled recursive descent in `internal/manifest/yaml.go`. Do not swap in a third-party library -- ADR-001 forbids it.
-- Pod state machine: `Pending -> Running -> {Succeeded, Failed}`. `Failed` is terminal; do not reset to `Pending` once reached by backoff exhaustion.
+- Branch `fix/scheduler-create-retry` exists locally at `/private/tmp/spark-scheduler-fix` with commit `98c10bd`. If the worktree is missing, checkout the branch in a fresh worktree under `.claude/worktrees/fix-scheduler-create-retry` and re-apply the commit.
+- The commit message already contains a clear summary of the change and includes `Fixes #13`. When creating the PR, use this as the body.
+- DGX smoke test is the only step requiring real hardware. All other steps are CI + local.
+- Prior context: plan trimmed earlier in this session produced the devlog entry at the top of `docs/devlog.md`. Consult it for the context around #8, #10, #12 fixes that this plan builds on.
 
 ## Appendix
 
-- Issue #8: https://github.com/feza-ai/spark/issues/8
-- Issue #10: https://github.com/feza-ai/spark/issues/10
-- Issue #12: https://github.com/feza-ai/spark/issues/12
-- Related merged fix (#7): commit 8f30f6d (remove stale pod before retry).
+- Issue #13: https://github.com/feza-ai/spark/issues/13
+- Related merged fixes: PRs #14, #16, #17 (issues #8, #10, #12).
+- Fix commit: local `98c10bd` on branch `fix/scheduler-create-retry`.
