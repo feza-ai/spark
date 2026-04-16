@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -37,6 +38,7 @@ func main() {
 	heartbeatInterval := flag.Duration("heartbeat-interval", 10*time.Second, "heartbeat publish interval")
 	reconcileInterval := flag.Duration("reconcile-interval", 5*time.Second, "reconciliation loop interval")
 	systemReserveCPU := flag.Int("system-reserve-cpu", 2000, "CPU millicores reserved for system")
+	systemReserveCoresStr := flag.String("system-reserve-cores", "", "comma-separated core IDs or ranges reserved for system (e.g. \"0-1\" or \"0,1\"). Overrides --system-reserve-cpu when set.")
 	systemReserveMem := flag.Int("system-reserve-memory", 4096, "MB of RAM reserved for system")
 	stateDB := flag.String("state-db", "/var/lib/spark/state.db", "path to SQLite database file")
 	podRetention := flag.Duration("pod-retention", 168*time.Hour, "retention for completed/failed pods")
@@ -46,6 +48,15 @@ func main() {
 	logFormat := flag.String("log-format", "text", "log output format (text or json)")
 	apiTokenFile := flag.String("api-token-file", "", "path to file containing API bearer token")
 	flag.Parse()
+
+	reserveCores, err := scheduler.ParseCoreRange(*systemReserveCoresStr, runtime.NumCPU())
+	if err != nil {
+		slog.Error("invalid --system-reserve-cores", "value", *systemReserveCoresStr, "error", err)
+		os.Exit(1)
+	}
+	if len(reserveCores) > 0 {
+		slog.Info("system reserve cores configured", "cores", reserveCores)
+	}
 
 	switch *logFormat {
 	case "json":
