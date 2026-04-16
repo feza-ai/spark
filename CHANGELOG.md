@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/feza-ai/spark/compare/v1.10.0...v1.10.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* **deploy:** use --force-confold in auto-upgrade to avoid conffile prompt ([c922357](https://github.com/feza-ai/spark/commit/c92235781535f5aadd6269cc707fe3954518f426))
+
 ## [1.10.0](https://github.com/feza-ai/spark/compare/v1.9.0...v1.10.0) (2026-04-16)
 
 
