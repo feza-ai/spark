@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.9.0](https://github.com/feza-ai/spark/compare/v1.8.1...v1.9.0) (2026-04-16)
+
+
+### Features
+
+* **api:** expose cpu_reserved_cores and cpu_allocatable_cores in /api/v1/node (T3.1, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([1f8c27e](https://github.com/feza-ai/spark/commit/1f8c27e9411359e679437fd5ebb2d73e054efab7))
+* **api:** reject pods whose limits.cpu exceeds allocatable cores (T3.2, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([ae1b3d2](https://github.com/feza-ai/spark/commit/ae1b3d2f3bb5292f2e28b67af261a160b602bab5))
+* **cmd/spark:** add --system-reserve-cores flag (T1.2, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([a644ce9](https://github.com/feza-ai/spark/commit/a644ce93b2f42b3c96221c84cc5651ce0a4a952b))
+* **deploy:** add auto-upgrade script and systemd timer ([8f44338](https://github.com/feza-ai/spark/commit/8f443385260e73e9034bb1e18a46d241ab6ed8b4))
+* **deploy:** wire auto-upgrade into .deb packaging ([00a9d7a](https://github.com/feza-ai/spark/commit/00a9d7a0d9910514e1e694fde39a395c7aa7e3ec))
+* **gpu:** detect host core IDs in SystemInfo (T1.4, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([04ea7f3](https://github.com/feza-ai/spark/commit/04ea7f30ff9395faffc62507f1635ecc6564ca71))
+* **metrics:** add pod CPU throttled and host loadavg/softirq metrics (T4.1, T4.2, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([df910c3](https://github.com/feza-ai/spark/commit/df910c390d53df8a11708704d1b73f2b0207e459))
+* **scheduler,executor,reconciler,state:** wire cpuset pinning end-to-end (T2.1, T2.2, T2.3, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([393e79b](https://github.com/feza-ai/spark/commit/393e79b92d7d97b93b5e7a026d9bc6af3afd1a99))
+* **scheduler:** add ParseCoreRange helper (T1.2, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([6cce378](https://github.com/feza-ai/spark/commit/6cce378ffed6cab6ac36a27d20cd1ef986ae551e))
+* **scheduler:** expose ReservedCores accessor (T3.1, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([64f94c3](https://github.com/feza-ai/spark/commit/64f94c39c460b2c94d892baa5af17d252fdccfd7))
+* **scheduler:** track per-pod core assignments (T1.1, refs [#22](https://github.com/feza-ai/spark/issues/22)) ([60cd637](https://github.com/feza-ai/spark/commit/60cd6377e834bc0b81c9743713e0145e999b8c95))
+
+
+### Bug Fixes
+
+* **scheduler:** drop unused assignedCoreCountLocked (CI staticcheck) ([5ddd030](https://github.com/feza-ai/spark/commit/5ddd030b8941c9e6212d6e9ac69b4d57f2588b14))
+
 ## [1.8.1](https://github.com/feza-ai/spark/compare/v1.8.0...v1.8.1) (2026-04-16)
 
 
