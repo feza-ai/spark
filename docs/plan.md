@@ -171,8 +171,8 @@ separate manifest file generated for a single-issue plan.
 
 Depends on: T1.1, T1.2, T1.4.
 
-- [ ] T2.1 `ResourceTracker.Allocate` reserves cores for integer CPU
-  limits  Owner: TBD  Est: 90m  verifies: [UC-024]
+- [x] T2.1 `ResourceTracker.Allocate` reserves cores for integer CPU
+  limits  Owner: task-T2.1  Est: 90m  verifies: [UC-024]  Completed: 2026-04-15 (PR #24)
   - When `req.CPUMillis >= 1000` and `req.CPUMillis % 1000 == 0`,
     allocate `req.CPUMillis / 1000` cores from the unassigned set.
   - Record in `coreAssignments[name]`. `Release` clears it.
@@ -183,8 +183,8 @@ Depends on: T1.1, T1.2, T1.4.
   - Acceptance: tests cover allocate-release-allocate, exhaustion,
     interleaved release-and-realloc, fractional CPU bypass.
 
-- [ ] T2.2 Executor emits `--cpuset-cpus` from assigned cores
-  Owner: TBD  Est: 75m  verifies: [UC-024]
+- [x] T2.2 Executor emits `--cpuset-cpus` from assigned cores
+  Owner: task-T2.2  Est: 75m  verifies: [UC-024]  Completed: 2026-04-15 (PR #24)
   - Plumb the assignment from scheduler -> executor: extend
     `executor.RunContainer` (or its options struct) with
     `CPUSetCores []int`. Caller in `internal/reconciler` passes
@@ -197,8 +197,8 @@ Depends on: T1.1, T1.2, T1.4.
   - Acceptance: stub-executor test asserts the flag appears with the
     correct range; legacy fractional path still emits only `--cpus`.
 
-- [ ] T2.3 Reconciler reuses cpuset on pod recovery  Owner: TBD
-  Est: 45m  verifies: [UC-024]
+- [x] T2.3 Reconciler reuses cpuset on pod recovery  Owner: task-T2.3
+  Est: 45m  verifies: [UC-024]  Completed: 2026-04-15 (PR #24)
   - On Spark restart, after `LoadAll` rehydrates pods, the reconciler
     must re-issue the same core assignment so a recreated container
     keeps its pinning.
@@ -313,10 +313,10 @@ Depends on: Waves 1-4 merged.
 - [x] T1.3 design.md cpuset invariant note (commit 50f66ce, inline before agent dispatch)
 - [x] T1.4 `SystemInfo.CoreIDs`
 
-### Wave 2: Scheduler + executor wiring (3 agents)
-- [ ] T2.1 `Allocate` reserves cores
-- [ ] T2.2 Executor emits `--cpuset-cpus`
-- [ ] T2.3 Reconciler reuses cpuset on recovery
+### Wave 2: Scheduler + executor wiring (3 agents) — COMPLETE 2026-04-15 (PR #24)
+- [x] T2.1 `Allocate` reserves cores
+- [x] T2.2 Executor emits `--cpuset-cpus`
+- [x] T2.3 Reconciler reuses cpuset on recovery
 
 ### Wave 3: Admission + API surface (2 agents)
 - [ ] T3.1 `/api/v1/node` exposes core fields
@@ -366,6 +366,13 @@ Depends on: Waves 1-4 merged.
   unit tests).
 
 ## Progress Log
+
+### 2026-04-15: Wave 2 shipped (PR #24 merged)
+- T2.1 (scheduler Allocate + main.go wiring), T2.2 (executor --cpuset-cpus + reconciler caller), T2.3 (SQLite persistence + RestoreAssignment) implemented in parallel by three sub-agents.
+- Two merge conflicts resolved manually: reconciler.go preempt-retry path (combined T2.2 CpusetCores + T2.3 SetAssignedCores) and resources_test.go (kept all 7 T2.1 + 3 T2.3 tests).
+- Cumulative test exposed an Allocate idempotency bug: T2.1 Allocate was overwriting T2.3 RestoreAssignment data. Fix: Allocate reuses pre-existing core assignment of the right size. Matches recovery design intent.
+- GitHub rejected rebase-merge on integration branch with merge commits; squashed locally to a single commit and force-pushed.
+- Final main commit: 393e79b. End-to-end cpuset path now active. Behaviour change: pods with integer CPU limits run pinned via --cpuset-cpus.
 
 ### 2026-04-15: Wave 1 shipped (PR #23 merged)
 - T1.1, T1.2, T1.4 implemented in parallel by three sub-agents in worktrees, merged via wave-1-integration. T1.3 done inline pre-dispatch.
