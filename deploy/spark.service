@@ -16,6 +16,7 @@ ExecStart=/usr/local/bin/spark \
     -reconcile-interval ${SPARK_RECONCILE_INTERVAL} \
     -system-reserve-cpu ${SPARK_SYSTEM_RESERVE_CPU} \
     -system-reserve-memory ${SPARK_SYSTEM_RESERVE_MEMORY} \
+    -system-reserve-cores ${SPARK_SYSTEM_RESERVE_CORES} \
     -state-db ${SPARK_STATE_DB} \
     -pod-retention ${SPARK_POD_RETENTION} \
     -http-addr ${SPARK_HTTP_ADDR} \
