@@ -188,7 +188,8 @@ func TestAllocatable(t *testing.T) {
 	// Allocatable should not change after allocating resources.
 	rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 1000, MemoryMB: 1024, GPUMemoryMB: 0})
 	alloc2 := rt.Allocatable()
-	if alloc2 != alloc {
+	if alloc2.CPUMillis != alloc.CPUMillis || alloc2.MemoryMB != alloc.MemoryMB ||
+		alloc2.GPUCount != alloc.GPUCount || alloc2.GPUMemoryMB != alloc.GPUMemoryMB {
 		t.Errorf("allocatable changed after allocation: %+v vs %+v", alloc2, alloc)
 	}
 }
@@ -527,6 +528,79 @@ func TestGPUCountCanFit(t *testing.T) {
 	// 2 GPUs should not fit.
 	if rt.CanFit(manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 2}) {
 		t.Error("expected CanFit=false for 2 GPUs when only 1 slot remains")
+	}
+}
+
+func TestUnassignedCoresLocked_PrefersContiguous(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3, 4, 5}},
+		Resources{},
+		nil, 0,
+	)
+	rt.coreAssignments["a"] = []int{0, 1}
+
+	got := rt.unassignedCoresLocked(3)
+	want := []int{2, 3, 4}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected %v, got %v", want, got)
+		}
+	}
+}
+
+func TestUnassignedCoresLocked_FallsBackToNonContiguous(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3, 4, 5}},
+		Resources{},
+		nil, 0,
+	)
+	rt.coreAssignments["a"] = []int{2}
+	rt.coreAssignments["b"] = []int{4}
+
+	got := rt.unassignedCoresLocked(3)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 cores, got %v", got)
+	}
+	assigned := map[int]bool{2: true, 4: true}
+	seen := make(map[int]bool)
+	for _, c := range got {
+		if assigned[c] {
+			t.Errorf("returned core %d is already assigned", c)
+		}
+		if seen[c] {
+			t.Errorf("duplicate core %d in result %v", c, got)
+		}
+		seen[c] = true
+	}
+}
+
+func TestUnassignedCoresLocked_InsufficientReturnsNil(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1}},
+		Resources{},
+		nil, 0,
+	)
+	rt.coreAssignments["a"] = []int{0, 1}
+
+	got := rt.unassignedCoresLocked(1)
+	if got != nil {
+		t.Errorf("expected nil when insufficient cores, got %v", got)
+	}
+}
+
+func TestAssignedCores_ReturnsEmptyForUnknown(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3}},
+		Resources{},
+		nil, 0,
+	)
+
+	got := rt.AssignedCores("nonexistent")
+	if got != nil {
+		t.Errorf("expected nil for unknown pod, got %v", got)
 	}
 }
 
