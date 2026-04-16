@@ -122,6 +122,109 @@ spec:
     image: alpine:latest
 `
 
+// newMutateTestServerWithCores builds a server whose tracker has the given
+// allocatable cores, used by admission tests for issue #22.
+func newMutateTestServerWithCores(t *testing.T, cores []int) *Server {
+	t.Helper()
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: cores},
+		scheduler.Resources{},
+		nil, 0,
+	)
+	return NewServer(store, tracker, &stubExecutor{}, nil, nil, nil, nil, "", nil, nil, nil)
+}
+
+const oversizeCPUPodYAML = `apiVersion: v1
+kind: Pod
+metadata:
+  name: oversize-pod
+spec:
+  containers:
+    - name: main
+      image: alpine:latest
+      resources:
+        requests:
+          cpu: "999"
+          memory: 100Mi
+        limits:
+          cpu: "999"
+          memory: 100Mi
+`
+
+const fitsCPUPodYAML = `apiVersion: v1
+kind: Pod
+metadata:
+  name: fits-pod
+spec:
+  containers:
+    - name: main
+      image: alpine:latest
+      resources:
+        requests:
+          cpu: "2"
+          memory: 100Mi
+        limits:
+          cpu: "2"
+          memory: 100Mi
+`
+
+const fractionalCPUPodYAML = `apiVersion: v1
+kind: Pod
+metadata:
+  name: fractional-pod
+spec:
+  containers:
+    - name: main
+      image: alpine:latest
+      resources:
+        requests:
+          cpu: 500m
+          memory: 100Mi
+        limits:
+          cpu: 500m
+          memory: 100Mi
+`
+
+func TestApplyPod_RejectsOversizedCPU(t *testing.T) {
+	srv := newMutateTestServerWithCores(t, []int{0, 1, 2, 3})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pods", strings.NewReader(oversizeCPUPodYAML))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "exceeds allocatable cores") {
+		t.Errorf("body should mention 'exceeds allocatable cores', got %s", rec.Body.String())
+	}
+}
+
+func TestApplyPod_AcceptsFitsCPU(t *testing.T) {
+	srv := newMutateTestServerWithCores(t, []int{0, 1, 2, 3})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pods", strings.NewReader(fitsCPUPodYAML))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestApplyPod_AcceptsFractionalCPU(t *testing.T) {
+	srv := newMutateTestServerWithCores(t, []int{0, 1, 2, 3})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pods", strings.NewReader(fractionalCPUPodYAML))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for fractional-CPU pod, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestApplyPod(t *testing.T) {
 	srv, store, _ := newMutateTestServer(t)
 
