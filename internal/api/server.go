@@ -32,6 +32,7 @@ type Server struct {
 	cronSched       CronRegisterer
 	gpuInfo         *gpu.GPUInfo
 	sysInfo         *gpu.SystemInfo
+	version         string
 	mux             *http.ServeMux
 	handler         http.Handler
 	scheduler       PodRemover
@@ -40,7 +41,7 @@ type Server struct {
 // NewServer creates a Server and registers all HTTP routes.
 // If token is non-empty, all routes (except /healthz and /metrics) require
 // Bearer token authentication.
-func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, cronSched CronRegisterer, token string, sched PodRemover, gpuInfo *gpu.GPUInfo, sysInfo *gpu.SystemInfo) *Server {
+func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, cronSched CronRegisterer, token string, sched PodRemover, gpuInfo *gpu.GPUInfo, sysInfo *gpu.SystemInfo, version string) *Server {
 	s := &Server{
 		store:           store,
 		tracker:         tracker,
@@ -51,6 +52,7 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 		cronSched:       cronSched,
 		gpuInfo:         gpuInfo,
 		sysInfo:         sysInfo,
+		version:         version,
 		mux:             http.NewServeMux(),
 		scheduler:       sched,
 	}
