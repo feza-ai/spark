@@ -139,6 +139,49 @@ func TestHandleNode(t *testing.T) {
 	}
 }
 
+func TestHandleNode_IncludesCoreFields(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: []int{0, 1, 2, 3, 4, 5, 6, 7}},
+		scheduler.Resources{Cores: []int{0, 1}, CPUMillis: 2000},
+		nil, 0,
+	)
+	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/node", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	var resp NodeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	wantReserved := []int{0, 1}
+	if len(resp.CPUReservedCores) != len(wantReserved) {
+		t.Fatalf("cpu_reserved_cores: got %v, want %v", resp.CPUReservedCores, wantReserved)
+	}
+	for i, c := range wantReserved {
+		if resp.CPUReservedCores[i] != c {
+			t.Errorf("cpu_reserved_cores[%d]: got %d, want %d", i, resp.CPUReservedCores[i], c)
+		}
+	}
+
+	wantAlloc := []int{2, 3, 4, 5, 6, 7}
+	if len(resp.CPUAllocatableCores) != len(wantAlloc) {
+		t.Fatalf("cpu_allocatable_cores: got %v, want %v", resp.CPUAllocatableCores, wantAlloc)
+	}
+	for i, c := range wantAlloc {
+		if resp.CPUAllocatableCores[i] != c {
+			t.Errorf("cpu_allocatable_cores[%d]: got %d, want %d", i, resp.CPUAllocatableCores[i], c)
+		}
+	}
+}
+
 func TestHandleNodeMethodNotAllowed(t *testing.T) {
 	srv := newTestServer(t)
 
