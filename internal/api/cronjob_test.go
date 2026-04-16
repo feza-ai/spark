@@ -92,7 +92,7 @@ func TestApplyCronJob(t *testing.T) {
 			if tt.cronSched != nil {
 				cron = tt.cronSched
 			}
-			srv := NewServer(store, tracker, exec, nil, nil, nil, cron, "", nil, nil, nil)
+			srv := NewServer(store, tracker, exec, nil, nil, nil, cron, "", nil, nil, nil, "test")
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/pods", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
@@ -185,7 +185,7 @@ func newCronTestServer(t *testing.T, mgr CronManager) *Server {
 	if mgr != nil {
 		cronSched = mgr
 	}
-	return NewServer(store, tracker, nil, nil, nil, nil, cronSched, "", nil, nil, nil)
+	return NewServer(store, tracker, nil, nil, nil, nil, cronSched, "", nil, nil, nil, "test")
 }
 
 func TestListCronJobs(t *testing.T) {

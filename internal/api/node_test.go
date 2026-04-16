@@ -114,7 +114,7 @@ func TestHandleNode(t *testing.T) {
 				scheduler.Resources{},
 				nil, 0,
 			)
-			srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, tt.gpuInfo, tt.sysInfo)
+			srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, tt.gpuInfo, tt.sysInfo, "test")
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/node", nil)
 			rec := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestHandleNode_IncludesCoreFields(t *testing.T) {
 		scheduler.Resources{Cores: []int{0, 1}, CPUMillis: 2000},
 		nil, 0,
 	)
-	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil)
+	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil, "test")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/node", nil)
 	rec := httptest.NewRecorder()

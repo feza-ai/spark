@@ -108,7 +108,7 @@ func newMutateTestServer(t *testing.T) (*Server, *state.PodStore, *stubExecutor)
 		nil, 0,
 	)
 	exec := &stubExecutor{}
-	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", nil, nil, nil)
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", nil, nil, nil, "test")
 	return srv, store, exec
 }
 
@@ -132,7 +132,7 @@ func newMutateTestServerWithCores(t *testing.T, cores []int) *Server {
 		scheduler.Resources{},
 		nil, 0,
 	)
-	return NewServer(store, tracker, &stubExecutor{}, nil, nil, nil, nil, "", nil, nil, nil)
+	return NewServer(store, tracker, &stubExecutor{}, nil, nil, nil, nil, "", nil, nil, nil, "test")
 }
 
 const oversizeCPUPodYAML = `apiVersion: v1
@@ -377,7 +377,7 @@ func TestDeletePodSchedulerRemove(t *testing.T) {
 				nil, 0,
 			)
 			exec := &stubExecutor{}
-			srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", tt.sched, nil, nil)
+			srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", tt.sched, nil, nil, "test")
 
 			store.Apply(manifest.PodSpec{Name: "sched-pod"})
 
@@ -414,7 +414,7 @@ func TestDeletePodStopFails(t *testing.T) {
 	)
 	exec := &stubExecutor{stopErr: errors.New("podman stop: boom")}
 	sched := &stubScheduler{}
-	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil)
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil, "test")
 
 	store.Apply(manifest.PodSpec{Name: "stuck-pod"})
 
@@ -467,7 +467,7 @@ func TestDeletePodRemoveFails(t *testing.T) {
 	)
 	exec := &stubExecutor{removeErr: errors.New("podman rm: locked")}
 	sched := &stubScheduler{}
-	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil)
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil, "test")
 
 	store.Apply(manifest.PodSpec{Name: "stuck-pod"})
 
@@ -528,7 +528,7 @@ func TestDeletePodNoSuchPodTreatedAsSuccess(t *testing.T) {
 				nil, 0,
 			)
 			sched := &stubScheduler{}
-			srv := NewServer(store, tracker, tt.exec, nil, nil, nil, nil, "", sched, nil, nil)
+			srv := NewServer(store, tracker, tt.exec, nil, nil, nil, nil, "", sched, nil, nil, "test")
 
 			store.Apply(manifest.PodSpec{Name: "ghost-pod"})
 

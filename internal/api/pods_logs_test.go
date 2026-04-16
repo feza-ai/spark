@@ -40,7 +40,7 @@ func newPodLogsTestServer(t *testing.T, exec executor.Executor) (*Server, *state
 		scheduler.Resources{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 0},
 	nil, 0,
 	)
-	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", nil, nil, nil)
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", nil, nil, nil, "test")
 	return srv, store
 }
 

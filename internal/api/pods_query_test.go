@@ -20,7 +20,7 @@ func newPodQueryTestServer(t *testing.T) (*Server, *state.PodStore) {
 		scheduler.Resources{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 0},
 	nil, 0,
 	)
-	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil)
+	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil, "test")
 	return srv, store
 }
 
