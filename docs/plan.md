@@ -292,13 +292,13 @@ Depends on: Waves 1-4 merged.
 
 #### Cross-cutting (one per code-touching wave above)
 
-- [ ] T6.1 `go vet ./...` and `staticcheck ./...` clean
-  Owner: TBD  Est: 10m  verifies: [infrastructure]
-  - Run after each wave merges; gate on PR CI.
+- [x] T6.1 `go vet ./...` and `staticcheck ./...` clean
+  Owner: coordinator  Est: 10m  verifies: [infrastructure]  Completed: 2026-04-16
+  - Run after each wave merges; gate on PR CI. All waves passed CI (staticcheck + vet).
 
-- [ ] T6.2 `go test ./... -race -timeout 120s` clean
-  Owner: TBD  Est: 10m  verifies: [infrastructure]
-  - Run before pushing each wave's commits.
+- [x] T6.2 `go test ./... -race -timeout 120s` clean
+  Owner: coordinator  Est: 10m  verifies: [infrastructure]  Completed: 2026-04-16
+  - Run before pushing each wave's commits. Final post-merge run: 12 packages, all pass with -race.
 
 ## Parallel Work
 
