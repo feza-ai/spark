@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/feza-ai/spark/compare/v1.9.0...v1.10.0) (2026-04-16)
+
+
+### Features
+
+* **deploy:** wire --system-reserve-cores into systemd unit (refs [#22](https://github.com/feza-ai/spark/issues/22)) ([e1376b9](https://github.com/feza-ai/spark/commit/e1376b9fda106399ffbef83e0ec059cb407b0021))
+
 ## [1.9.0](https://github.com/feza-ai/spark/compare/v1.8.1...v1.9.0) (2026-04-16)
 
 
