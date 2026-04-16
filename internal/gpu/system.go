@@ -13,20 +13,28 @@ import (
 type SystemInfo struct {
 	CPUMillis     int
 	MemoryTotalMB int
+	CoreIDs       []int
 }
 
 // DetectSystem detects the system's CPU and RAM resources.
 func DetectSystem() (SystemInfo, error) {
-	cpuMillis := runtime.NumCPU() * 1000
+	numCPU := runtime.NumCPU()
+	cpuMillis := numCPU * 1000
 
 	memMB, err := detectMemory()
 	if err != nil {
 		return SystemInfo{}, fmt.Errorf("detect memory: %w", err)
 	}
 
+	coreIDs := make([]int, numCPU)
+	for i := 0; i < numCPU; i++ {
+		coreIDs[i] = i
+	}
+
 	return SystemInfo{
 		CPUMillis:     cpuMillis,
 		MemoryTotalMB: memMB,
+		CoreIDs:       coreIDs,
 	}, nil
 }
 
