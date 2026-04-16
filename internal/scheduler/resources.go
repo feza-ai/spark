@@ -13,16 +13,19 @@ type Resources struct {
 	MemoryMB    int
 	GPUCount    int
 	GPUMemoryMB int
+	Cores       []int
 }
 
 // ResourceTracker tracks total, allocatable, and allocated resources on a node.
 type ResourceTracker struct {
-	mu             sync.Mutex
-	allocatable    Resources
-	allocations    map[string]manifest.ResourceList
-	gpuDevices     []int
-	gpuMax         int
-	gpuAssignments map[string][]int
+	mu              sync.Mutex
+	allocatable     Resources
+	allocations     map[string]manifest.ResourceList
+	gpuDevices      []int
+	gpuMax          int
+	gpuAssignments  map[string][]int
+	cores           []int
+	coreAssignments map[string][]int
 }
 
 // NewResourceTracker creates a tracker with total resources and system reserve.
@@ -44,6 +47,11 @@ func NewResourceTracker(total Resources, systemReserve Resources, gpuDevices []i
 		copy(rt.gpuDevices, gpuDevices)
 		rt.gpuMax = gpuMax
 		rt.gpuAssignments = make(map[string][]int)
+	}
+	if len(total.Cores) > 0 {
+		rt.cores = make([]int, len(total.Cores))
+		copy(rt.cores, total.Cores)
+		rt.coreAssignments = make(map[string][]int)
 	}
 	return rt
 }
@@ -115,6 +123,17 @@ func (rt *ResourceTracker) AssignedGPUs(name string) []int {
 	return rt.gpuAssignments[name]
 }
 
+// AssignedCores returns the CPU core IDs assigned to a pod, or nil if none.
+func (rt *ResourceTracker) AssignedCores(name string) []int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if rt.coreAssignments == nil {
+		return nil
+	}
+	return rt.coreAssignments[name]
+}
+
 // unassignedDevicesLocked returns up to n unassigned GPU device IDs.
 func (rt *ResourceTracker) unassignedDevicesLocked(n int) []int {
 	assigned := make(map[int]bool)
@@ -140,6 +159,59 @@ func (rt *ResourceTracker) assignedDeviceCountLocked() int {
 	count := 0
 	for _, devs := range rt.gpuAssignments {
 		count += len(devs)
+	}
+	return count
+}
+
+// unassignedCoresLocked returns n unassigned CPU core IDs. It prefers the
+// lowest-index contiguous block of n cores when one exists; otherwise it
+// returns any n unassigned cores in ascending order. Returns nil if fewer
+// than n unassigned cores are available.
+func (rt *ResourceTracker) unassignedCoresLocked(n int) []int {
+	if n <= 0 {
+		return nil
+	}
+	assigned := make(map[int]bool)
+	for _, cs := range rt.coreAssignments {
+		for _, c := range cs {
+			assigned[c] = true
+		}
+	}
+	var free []int
+	for _, c := range rt.cores {
+		if !assigned[c] {
+			free = append(free, c)
+		}
+	}
+	if len(free) < n {
+		return nil
+	}
+	// Prefer the lowest-index contiguous block of size n.
+	for i := 0; i+n <= len(free); i++ {
+		contiguous := true
+		for j := 1; j < n; j++ {
+			if free[i+j] != free[i+j-1]+1 {
+				contiguous = false
+				break
+			}
+		}
+		if contiguous {
+			result := make([]int, n)
+			copy(result, free[i:i+n])
+			return result
+		}
+	}
+	// Fall back to the first n unassigned cores.
+	result := make([]int, n)
+	copy(result, free[:n])
+	return result
+}
+
+// assignedCoreCountLocked returns the total number of assigned cores.
+func (rt *ResourceTracker) assignedCoreCountLocked() int {
+	count := 0
+	for _, cs := range rt.coreAssignments {
+		count += len(cs)
 	}
 	return count
 }
