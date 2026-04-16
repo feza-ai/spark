@@ -29,6 +29,9 @@ import (
 	"github.com/feza-ai/spark/internal/watcher"
 )
 
+// version is set at build time by GoReleaser via -ldflags.
+var version = "dev"
+
 func main() {
 	// Flags.
 	natsURL := flag.String("nats", "nats://localhost:4222", "NATS server URL")
@@ -267,7 +270,7 @@ func main() {
 	if !errors.Is(gpuErr, gpu.ErrNoGPU) {
 		gpuInfoPtr = &gpuInfo
 	}
-	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, cronSched, apiToken, sched, gpuInfoPtr, &sysInfo)
+	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, cronSched, apiToken, sched, gpuInfoPtr, &sysInfo, version)
 	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
 	go func() {
 		slog.Info("HTTP server starting", "addr", *httpAddr)
