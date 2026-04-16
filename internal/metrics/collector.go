@@ -17,6 +17,13 @@ type Collector struct {
 	store     *state.PodStore
 	tracker   *scheduler.ResourceTracker
 	scheduler SchedulerMetrics
+
+	// Wave 4 (#22) telemetry: caller pushes fresh samples; emission
+	// happens in Collect() so empty samples produce no metric line.
+	podThrottle    []PodThrottleSample
+	hostLoadavg    [3]float64
+	hostLoadavgSet bool
+	hostSoftirq    map[string]float64
 }
 
 // NewCollector creates a Collector. scheduler may be nil.
@@ -109,6 +116,17 @@ func (c *Collector) Collect() []MetricFamily {
 		Type:    "counter",
 		Metrics: restartMetrics,
 	})
+
+	// Wave 4 (#22) telemetry: pod CPU throttling and host metrics.
+	if len(c.podThrottle) > 0 {
+		families = append(families, renderPodThrottled(c.podThrottle))
+	}
+	if c.hostLoadavgSet {
+		families = append(families, renderLoadavg(c.hostLoadavg))
+	}
+	if len(c.hostSoftirq) > 0 {
+		families = append(families, renderSoftirq(c.hostSoftirq))
+	}
 
 	// Scheduler metrics (optional).
 	if c.scheduler != nil {
