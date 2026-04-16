@@ -151,13 +151,28 @@ func main() {
 		CPUMillis:   sysInfo.CPUMillis,
 		MemoryMB:    sysInfo.MemoryTotalMB,
 		GPUMemoryMB: gpuMemMB,
+		Cores:       sysInfo.CoreIDs,
 	}
 	reserve := scheduler.Resources{
 		CPUMillis: *systemReserveCPU,
 		MemoryMB:  *systemReserveMem,
+		Cores:     reserveCores,
+	}
+	// When explicit reserve cores are set, force CPU millicores to match for consistency.
+	if len(reserveCores) > 0 {
+		reserve.CPUMillis = len(reserveCores) * 1000
 	}
 	tracker := scheduler.NewResourceTracker(total, reserve, gpuInfo.DeviceIDs, *gpuMax)
 	sched := scheduler.NewScheduler(tracker)
+
+	// Rehydrate per-pod core assignments so recovered pods keep the same
+	// cpuset across Spark restarts. Must run before any Allocate to avoid
+	// handing out a core that is already pinned to a running container.
+	for _, rec := range persisted {
+		if len(rec.AssignedCores) > 0 {
+			tracker.RestoreAssignment(rec.Spec.Name, rec.AssignedCores)
+		}
+	}
 
 	// 6. Create executor.
 	exec := executor.NewPodmanExecutor(executor.DefaultNetwork)

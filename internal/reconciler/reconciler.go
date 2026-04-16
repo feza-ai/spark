@@ -307,7 +307,16 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 	switch result.Action {
 	case scheduler.Scheduled:
 		slog.Info("pod scheduled", "pod", pod.Spec.Name)
+		// Capture the core assignment so it survives a Spark restart; the
+		// subsequent updateStatus triggers SavePod, which flushes it to
+		// SQLite. Must happen after Allocate (inside Schedule) and before
+		// updateStatus so the write lands in the same persistence pass.
+		if cores := r.scheduler.AssignedCores(pod.Spec.Name); len(cores) > 0 {
+			r.store.SetAssignedCores(pod.Spec.Name, cores)
+		}
 		r.updateStatus(pod.Spec.Name, state.StatusScheduled, "scheduled by reconciler")
+
+		pod.Spec.CpusetCores = r.scheduler.Tracker().AssignedCores(pod.Spec.Name)
 
 		if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 			slog.Error("failed to create pod", "pod", pod.Spec.Name, "err", err)
@@ -351,6 +360,10 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 		// Re-schedule the pending pod now that resources are freed.
 		retry := r.scheduler.Schedule(pod.Spec)
 		if retry.Action == scheduler.Scheduled {
+			if cores := r.scheduler.AssignedCores(pod.Spec.Name); len(cores) > 0 {
+				pod.Spec.CpusetCores = cores
+				r.store.SetAssignedCores(pod.Spec.Name, cores)
+			}
 			if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 				slog.Error("failed to create pod after preemption", "pod", pod.Spec.Name, "err", err)
 				attempts := r.recordStartFailure(pod.Spec.Name, err)

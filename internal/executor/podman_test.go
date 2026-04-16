@@ -20,7 +20,7 @@ func TestBuildRunArgs_EnvMapping(t *testing.T) {
 			{Name: "BAZ", Value: "qux"},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 
 	wantPairs := []string{"--env", "FOO=bar", "--env", "BAZ=qux"}
 	for i := 0; i < len(wantPairs); i += 2 {
@@ -44,7 +44,7 @@ func TestBuildRunArgs_VolumeMapping(t *testing.T) {
 		{Name: "data", HostPath: "/host/data"},
 		{Name: "config", HostPath: "/host/config"},
 	}
-	args := buildRunArgs("mypod", container, volumes, "spark-net", true)
+	args := buildRunArgs("mypod", container, volumes, "spark-net", true, nil)
 
 	tests := []struct {
 		name string
@@ -89,7 +89,7 @@ func TestBuildRunArgs_GPUFlag(t *testing.T) {
 					Limits: tt.limits,
 				},
 			}
-			args := buildRunArgs("mypod", container, nil, "spark-net", true)
+			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 			hasGPU := slices.Contains(args, "nvidia.com/gpu=all")
 			if hasGPU != tt.wantGPU {
 				t.Errorf("GPU flag present=%v, want %v; args=%v", hasGPU, tt.wantGPU, args)
@@ -126,7 +126,7 @@ func TestInjectGPUDevices(t *testing.T) {
 			Limits: manifest.ResourceList{GPUMemoryMB: 4096},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 	injected := injectGPUDevices(args, []int{0, 2})
 
 	// Should have NVIDIA_VISIBLE_DEVICES env var
@@ -157,7 +157,7 @@ func TestInjectGPUDevices_NoGPUDevices(t *testing.T) {
 			Limits: manifest.ResourceList{GPUMemoryMB: 4096},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 
 	// Should have --device nvidia.com/gpu=all
 	if !slices.Contains(args, "nvidia.com/gpu=all") {
@@ -180,7 +180,7 @@ func TestBuildRunArgs_ResourceLimits(t *testing.T) {
 			Limits: manifest.ResourceList{CPUMillis: 2500, MemoryMB: 512},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 
 	memIdx := slices.Index(args, "512m")
 	if memIdx < 1 || args[memIdx-1] != "--memory" {
@@ -200,7 +200,7 @@ func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
 		Command: []string{"/bin/sh", "-c"},
 		Args:    []string{"echo hello"},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 
 	// Image should appear, followed by command and args.
 	imgIdx := slices.Index(args, "myimage:latest")
@@ -330,7 +330,7 @@ func TestBuildRunArgs_PodAndContainerName(t *testing.T) {
 		Name:  "worker",
 		Image: "myimage:latest",
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 
 	podIdx := slices.Index(args, "--pod")
 	if podIdx < 0 || args[podIdx+1] != "mypod" {
@@ -380,7 +380,7 @@ func TestBuildRunArgs_EmptyDirVolumes(t *testing.T) {
 				Image:        "myimage:latest",
 				VolumeMounts: tt.mounts,
 			}
-			args := buildRunArgs("mypod", container, tt.volumes, "spark-net", true)
+			args := buildRunArgs("mypod", container, tt.volumes, "spark-net", true, nil)
 			idx := slices.Index(args, tt.wantVal)
 			if idx < 1 || args[idx-1] != tt.wantFlag {
 				t.Errorf("expected %s %s in args, got %v", tt.wantFlag, tt.wantVal, args)
@@ -467,7 +467,7 @@ func TestBuildRunArgs_MixedVolumes(t *testing.T) {
 		{Name: "scratch", EmptyDir: true},
 		{Name: "config", HostPath: "/host/config"},
 	}
-	args := buildRunArgs("mypod", container, volumes, "spark-net", true)
+	args := buildRunArgs("mypod", container, volumes, "spark-net", true, nil)
 
 	// hostPath volume for data
 	idx := slices.Index(args, "/host/data:/data")
@@ -714,7 +714,7 @@ func TestBuildRunArgs_NoDetach(t *testing.T) {
 		Name:  "setup",
 		Image: "busybox:latest",
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", false)
+	args := buildRunArgs("mypod", container, nil, "spark-net", false, nil)
 
 	if slices.Contains(args, "-d") {
 		t.Errorf("expected no -d flag when detach=false, got %v", args)
@@ -734,7 +734,7 @@ func TestBuildRunArgs_InitContainerNaming(t *testing.T) {
 		Name:  "init-0-setup",
 		Image: "busybox:latest",
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", false)
+	args := buildRunArgs("mypod", container, nil, "spark-net", false, nil)
 
 	nameIdx := slices.Index(args, "--name")
 	if nameIdx < 0 || args[nameIdx+1] != "mypod-init-0-setup" {
@@ -801,7 +801,7 @@ func TestBuildRunArgs_SecurityContext(t *testing.T) {
 				Image:           "myimage:latest",
 				SecurityContext: tt.sc,
 			}
-			args := buildRunArgs("mypod", container, nil, "spark-net", true)
+			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 
 			// Check expected flag-value pairs.
 			for i := 0; i < len(tt.wantArgs); i++ {
@@ -841,4 +841,60 @@ func TestBuildRunArgs_SecurityContext(t *testing.T) {
 
 func isFlag(s string) bool {
 	return len(s) > 1 && s[0] == '-'
+}
+
+func TestFormatCPURange(t *testing.T) {
+	tests := []struct {
+		name  string
+		cores []int
+		want  string
+	}{
+		{"empty", nil, ""},
+		{"single", []int{3}, "3-3"},
+		{"contiguous ascending", []int{2, 3, 4, 5}, "2-5"},
+		{"non-contiguous", []int{0, 2, 4}, "0,2,4"},
+		{"unsorted contiguous", []int{5, 3, 4}, "3-5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatCPURange(tt.cores)
+			if got != tt.want {
+				t.Errorf("formatCPURange(%v) = %q, want %q", tt.cores, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildRunArgs_EmitsCpusetCpus(t *testing.T) {
+	container := manifest.ContainerSpec{
+		Name:  "app",
+		Image: "myimage:latest",
+		Resources: manifest.ResourceRequirements{
+			Limits: manifest.ResourceList{CPUMillis: 3000},
+		},
+	}
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, []int{2, 3, 4})
+
+	idx := slices.Index(args, "--cpuset-cpus")
+	if idx < 0 || idx+1 >= len(args) {
+		t.Fatalf("expected --cpuset-cpus in args, got %v", args)
+	}
+	if args[idx+1] != "2-4" {
+		t.Errorf("expected --cpuset-cpus 2-4, got --cpuset-cpus %q", args[idx+1])
+	}
+}
+
+func TestBuildRunArgs_OmitsCpusetCpusWhenEmpty(t *testing.T) {
+	container := manifest.ContainerSpec{
+		Name:  "app",
+		Image: "myimage:latest",
+		Resources: manifest.ResourceRequirements{
+			Limits: manifest.ResourceList{CPUMillis: 500},
+		},
+	}
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+
+	if slices.Contains(args, "--cpuset-cpus") {
+		t.Errorf("expected no --cpuset-cpus flag when cpusetCores is nil, got %v", args)
+	}
 }

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -603,6 +604,192 @@ func TestAssignedCores_ReturnsEmptyForUnknown(t *testing.T) {
 		t.Errorf("expected nil for unknown pod, got %v", got)
 	}
 }
+
+func TestAllocate_ReservesCoresForIntegerCPU(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: []int{0, 1, 2, 3, 4, 5, 6, 7}},
+		Resources{},
+		nil, 0,
+	)
+
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 2000, MemoryMB: 1024}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	a := rt.AssignedCores("pod-a")
+	wantA := []int{0, 1}
+	if len(a) != len(wantA) || a[0] != wantA[0] || a[1] != wantA[1] {
+		t.Errorf("pod-a cores: want %v, got %v", wantA, a)
+	}
+
+	if err := rt.Allocate("pod-b", manifest.ResourceList{CPUMillis: 2000, MemoryMB: 1024}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := rt.AssignedCores("pod-b")
+	wantB := []int{2, 3}
+	if len(b) != len(wantB) || b[0] != wantB[0] || b[1] != wantB[1] {
+		t.Errorf("pod-b cores: want %v, got %v", wantB, b)
+	}
+}
+
+func TestAllocate_FractionalCPUSkipsCores(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: []int{0, 1, 2, 3, 4, 5, 6, 7}},
+		Resources{},
+		nil, 0,
+	)
+
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 500, MemoryMB: 1024}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := rt.AssignedCores("pod-a"); got != nil {
+		t.Errorf("expected no cores for fractional CPU, got %v", got)
+	}
+}
+
+func TestAllocate_NonIntegerCPUSkipsCores(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: []int{0, 1, 2, 3, 4, 5, 6, 7}},
+		Resources{},
+		nil, 0,
+	)
+
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 1500, MemoryMB: 1024}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := rt.AssignedCores("pod-a"); got != nil {
+		t.Errorf("expected no cores for non-integer CPU, got %v", got)
+	}
+}
+
+func TestAllocate_InsufficientCoresFails(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: []int{0, 1}},
+		Resources{},
+		nil, 0,
+	)
+
+	err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 4000, MemoryMB: 1024})
+	if err == nil {
+		t.Fatal("expected error when requesting more cores than available")
+	}
+	if !strings.Contains(err.Error(), "insufficient CPU cores") {
+		t.Errorf("expected error containing 'insufficient CPU cores', got %v", err)
+	}
+	if _, ok := rt.AllocatedBy("pod-a"); ok {
+		t.Error("expected no allocation recorded after core-insufficiency failure")
+	}
+}
+
+func TestRelease_FreesCores(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: []int{0, 1, 2, 3}},
+		Resources{},
+		nil, 0,
+	)
+
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 2000, MemoryMB: 1024}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rt.Release("pod-a")
+	if got := rt.AssignedCores("pod-a"); got != nil {
+		t.Errorf("expected no cores after release, got %v", got)
+	}
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 2000, MemoryMB: 1024}); err != nil {
+		t.Fatalf("re-allocation after release failed: %v", err)
+	}
+}
+
+func TestNewResourceTracker_ExcludesReservedCores(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: []int{0, 1, 2, 3, 4, 5, 6, 7}},
+		Resources{Cores: []int{0, 1}},
+		nil, 0,
+	)
+
+	alloc := rt.Allocatable()
+	want := []int{2, 3, 4, 5, 6, 7}
+	if len(alloc.Cores) != len(want) {
+		t.Fatalf("allocatable cores: want %v, got %v", want, alloc.Cores)
+	}
+	for i, c := range want {
+		if alloc.Cores[i] != c {
+			t.Errorf("allocatable cores[%d]: want %d, got %d", i, c, alloc.Cores[i])
+		}
+	}
+}
+
+func TestCanFit_RespectsCoreAvailability(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 8000, MemoryMB: 16384, Cores: []int{0, 1}},
+		Resources{},
+		nil, 0,
+	)
+
+	if rt.CanFit(manifest.ResourceList{CPUMillis: 4000, MemoryMB: 1024}) {
+		t.Error("expected CanFit=false when requested cores exceed available")
+	}
+	if !rt.CanFit(manifest.ResourceList{CPUMillis: 2000, MemoryMB: 1024}) {
+		t.Error("expected CanFit=true when requested cores match available")
+	}
+}
+func TestRestoreAssignment_PopulatesTracker(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3}},
+		Resources{},
+		nil, 0,
+	)
+
+	rt.RestoreAssignment("pod-a", []int{2, 3})
+
+	got := rt.AssignedCores("pod-a")
+	if len(got) != 2 || got[0] != 2 || got[1] != 3 {
+		t.Fatalf("RestoreAssignment: got %v, want [2 3]", got)
+	}
+
+	// Caller-owned slice: mutating the source after Restore must not leak in.
+	src := []int{4, 5}
+	rt.RestoreAssignment("pod-b", src)
+	src[0] = 99
+	got = rt.AssignedCores("pod-b")
+	if len(got) != 2 || got[0] != 4 || got[1] != 5 {
+		t.Fatalf("RestoreAssignment did not copy: got %v, want [4 5]", got)
+	}
+}
+
+func TestRestoreAssignment_EmptyIsNoOp(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3}},
+		Resources{},
+		nil, 0,
+	)
+
+	rt.RestoreAssignment("pod-empty", nil)
+	rt.RestoreAssignment("pod-empty2", []int{})
+
+	if got := rt.AssignedCores("pod-empty"); got != nil {
+		t.Fatalf("expected nil for nil cores, got %v", got)
+	}
+	if got := rt.AssignedCores("pod-empty2"); got != nil {
+		t.Fatalf("expected nil for empty cores, got %v", got)
+	}
+}
+
+func TestRestoreAssignment_InitializesNilMap(t *testing.T) {
+	// Host with no declared cores -> tracker starts with coreAssignments == nil.
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192},
+		Resources{},
+		nil, 0,
+	)
+
+	rt.RestoreAssignment("pod-x", []int{0, 1})
+
+	got := rt.AssignedCores("pod-x")
+	if len(got) != 2 || got[0] != 0 || got[1] != 1 {
+		t.Fatalf("RestoreAssignment on nil-map tracker: got %v, want [0 1]", got)
+	}
+}
+
 
 func TestGPUCountBackwardsCompatWithGPUMemory(t *testing.T) {
 	// GPUMemoryMB without GPUCount should still get 1 device slot (backwards compat).
