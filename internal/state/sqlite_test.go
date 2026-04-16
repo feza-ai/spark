@@ -497,3 +497,230 @@ func TestEnsureColumnMigratesExistingDatabase(t *testing.T) {
 		t.Fatalf("migrated pod round-trip failed: %#v", got)
 	}
 }
+
+// TestSavePod_RoundtripsAssignedCores verifies AssignedCores survives a
+// SavePod/LoadAll cycle and preserves ordering.
+func TestSavePod_RoundtripsAssignedCores(t *testing.T) {
+	store, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer store.Close()
+
+	rec := &PodRecord{
+		Spec: manifest.PodSpec{
+			Name:       "pinned",
+			SourceKind: "Pod",
+			Containers: []manifest.ContainerSpec{
+				{Name: "main", Image: "alpine:latest"},
+			},
+		},
+		Status:        StatusRunning,
+		AssignedCores: []int{2, 3, 4},
+	}
+
+	if err := store.SavePod(rec); err != nil {
+		t.Fatalf("SavePod: %v", err)
+	}
+
+	pods, err := store.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got := pods["pinned"]
+	if got == nil {
+		t.Fatal("pod not loaded")
+	}
+	if len(got.AssignedCores) != 3 ||
+		got.AssignedCores[0] != 2 ||
+		got.AssignedCores[1] != 3 ||
+		got.AssignedCores[2] != 4 {
+		t.Fatalf("AssignedCores round-trip: got %v, want [2 3 4]", got.AssignedCores)
+	}
+}
+
+// TestSavePod_EmptyAssignedCores verifies nil/empty cores load back as nil.
+func TestSavePod_EmptyAssignedCores(t *testing.T) {
+	cases := []struct {
+		name  string
+		input []int
+	}{
+		{"nil", nil},
+		{"empty", []int{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := OpenSQLite(":memory:")
+			if err != nil {
+				t.Fatalf("OpenSQLite: %v", err)
+			}
+			defer store.Close()
+
+			rec := &PodRecord{
+				Spec: manifest.PodSpec{
+					Name:       "no-pin-" + tc.name,
+					SourceKind: "Pod",
+					Containers: []manifest.ContainerSpec{
+						{Name: "main", Image: "alpine:latest"},
+					},
+				},
+				Status:        StatusRunning,
+				AssignedCores: tc.input,
+			}
+			if err := store.SavePod(rec); err != nil {
+				t.Fatalf("SavePod: %v", err)
+			}
+
+			pods, err := store.LoadAll()
+			if err != nil {
+				t.Fatalf("LoadAll: %v", err)
+			}
+			got := pods["no-pin-"+tc.name]
+			if got == nil {
+				t.Fatal("pod not loaded")
+			}
+			if got.AssignedCores != nil {
+				t.Fatalf("AssignedCores: got %v, want nil", got.AssignedCores)
+			}
+		})
+	}
+}
+
+// TestMigration_AddsAssignedCoresIdempotent verifies that re-opening a
+// database is a safe no-op -- the assigned_cores column is created once
+// and subsequent OpenSQLite calls do not error or double-add the column.
+func TestMigration_AddsAssignedCoresIdempotent(t *testing.T) {
+	path := t.TempDir() + "/cores.db"
+
+	// First open: column is created as part of the CREATE TABLE and
+	// ensureColumn is a no-op.
+	store1, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite first: %v", err)
+	}
+	store1.Close()
+
+	// Second open: ensureColumn observes the column and returns cleanly.
+	store2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite reopen: %v", err)
+	}
+	defer store2.Close()
+
+	// The column must exist exactly once.
+	rows, err := store2.db.Query("PRAGMA table_info(pods)")
+	if err != nil {
+		t.Fatalf("PRAGMA: %v", err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name == "assigned_cores" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("assigned_cores column count = %d, want 1", count)
+	}
+}
+
+// TestMigration_AddsAssignedCoresFromLegacySchema verifies a database created
+// by an older Spark version (missing assigned_cores entirely) picks up the
+// column via ensureColumn without data loss.
+func TestMigration_AddsAssignedCoresFromLegacySchema(t *testing.T) {
+	path := t.TempDir() + "/legacy-cores.db"
+
+	store, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite initial: %v", err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE pods`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	// Recreate without assigned_cores to simulate a pre-T2.3 install.
+	if _, err := store.db.Exec(`CREATE TABLE pods (
+		name TEXT PRIMARY KEY,
+		spec_json TEXT NOT NULL,
+		status TEXT NOT NULL,
+		started_at TEXT,
+		finished_at TEXT,
+		restarts INTEGER DEFAULT 0,
+		retry_count INTEGER DEFAULT 0,
+		source_path TEXT DEFAULT '',
+		reason TEXT DEFAULT '',
+		start_attempts INTEGER DEFAULT 0,
+		last_attempt_at TEXT
+	)`); err != nil {
+		t.Fatalf("recreate legacy schema: %v", err)
+	}
+	store.Close()
+
+	store2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite reopen: %v", err)
+	}
+	defer store2.Close()
+
+	rec := &PodRecord{
+		Spec:          manifest.PodSpec{Name: "upgraded"},
+		Status:        StatusRunning,
+		AssignedCores: []int{0, 1, 2},
+	}
+	if err := store2.SavePod(rec); err != nil {
+		t.Fatalf("SavePod after migration: %v", err)
+	}
+	pods, err := store2.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll after migration: %v", err)
+	}
+	got := pods["upgraded"]
+	if got == nil {
+		t.Fatal("pod not loaded after migration")
+	}
+	if len(got.AssignedCores) != 3 {
+		t.Fatalf("AssignedCores after legacy migration: got %v, want [0 1 2]", got.AssignedCores)
+	}
+}
+
+func TestEncodeDecodeCores(t *testing.T) {
+	cases := []struct {
+		name    string
+		cores   []int
+		encoded string
+	}{
+		{"nil", nil, ""},
+		{"empty", []int{}, ""},
+		{"single", []int{5}, "5"},
+		{"contiguous", []int{2, 3, 4}, "2,3,4"},
+		{"sparse", []int{0, 4, 7}, "0,4,7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := encodeCores(tc.cores); got != tc.encoded {
+				t.Errorf("encodeCores(%v) = %q, want %q", tc.cores, got, tc.encoded)
+			}
+			got := decodeCores(tc.encoded)
+			if len(tc.cores) == 0 {
+				if got != nil {
+					t.Errorf("decodeCores(%q) = %v, want nil", tc.encoded, got)
+				}
+				return
+			}
+			if len(got) != len(tc.cores) {
+				t.Fatalf("decodeCores(%q) = %v, want %v", tc.encoded, got, tc.cores)
+			}
+			for i := range got {
+				if got[i] != tc.cores[i] {
+					t.Errorf("decodeCores(%q)[%d] = %d, want %d", tc.encoded, i, got[i], tc.cores[i])
+				}
+			}
+		})
+	}
+}

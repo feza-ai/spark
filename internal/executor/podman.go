@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,7 +116,7 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 	for i, ic := range spec.InitContainers {
 		icCopy := ic
 		icCopy.Name = fmt.Sprintf("init-%d-%s", i, ic.Name)
-		runArgs := buildRunArgs(spec.Name, icCopy, spec.Volumes, p.network, false)
+		runArgs := buildRunArgs(spec.Name, icCopy, spec.Volumes, p.network, false, spec.CpusetCores)
 		slog.Info("running init container", "cmd", "podman", "args", runArgs)
 		out, err := exec.CommandContext(ctx, "podman", runArgs...).CombinedOutput()
 		if err != nil {
@@ -125,7 +126,7 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 
 	// Start each main container in the pod (detached).
 	for _, c := range spec.Containers {
-		runArgs := buildRunArgs(spec.Name, c, spec.Volumes, p.network, true)
+		runArgs := buildRunArgs(spec.Name, c, spec.Volumes, p.network, true, spec.CpusetCores)
 		// Inject NVIDIA_VISIBLE_DEVICES if specific GPU devices are assigned.
 		if len(spec.GPUDevices) > 0 {
 			runArgs = injectGPUDevices(runArgs, spec.GPUDevices)
@@ -153,7 +154,9 @@ func formatPublish(p manifest.ContainerPort) string {
 
 // buildRunArgs constructs the arguments for a podman run command.
 // If detach is true, the container runs in the background (-d flag).
-func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []manifest.VolumeSpec, network string, detach bool) []string {
+// If cpusetCores is non-empty, emits --cpuset-cpus to pin the container
+// to those host CPU cores (see ADR-012).
+func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []manifest.VolumeSpec, network string, detach bool, cpusetCores []int) []string {
 	args := []string{"run"}
 	if detach {
 		args = append(args, "-d")
@@ -213,6 +216,9 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 	if limits.CPUMillis > 0 {
 		args = append(args, "--cpus", fmt.Sprintf("%.1f", float64(limits.CPUMillis)/1000.0))
 	}
+	if len(cpusetCores) > 0 {
+		args = append(args, "--cpuset-cpus", formatCPURange(cpusetCores))
+	}
 	if limits.GPUMemoryMB > 0 || limits.GPUCount > 0 {
 		args = append(args, "--device", "nvidia.com/gpu=all")
 	}
@@ -234,6 +240,33 @@ func formatDeviceIDs(ids []int) string {
 	parts := make([]string, len(ids))
 	for i, id := range ids {
 		parts[i] = strconv.Itoa(id)
+	}
+	return strings.Join(parts, ",")
+}
+
+// formatCPURange formats a slice of CPU core IDs as a podman --cpuset-cpus
+// argument. A contiguous ascending block is rendered as "lo-hi"; otherwise
+// the IDs are joined with commas. Empty input returns "".
+func formatCPURange(cores []int) string {
+	if len(cores) == 0 {
+		return ""
+	}
+	sorted := make([]int, len(cores))
+	copy(sorted, cores)
+	sort.Ints(sorted)
+	contiguous := true
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i] != sorted[i-1]+1 {
+			contiguous = false
+			break
+		}
+	}
+	if contiguous {
+		return fmt.Sprintf("%d-%d", sorted[0], sorted[len(sorted)-1])
+	}
+	parts := make([]string, len(sorted))
+	for i, c := range sorted {
+		parts[i] = strconv.Itoa(c)
 	}
 	return strings.Join(parts, ",")
 }

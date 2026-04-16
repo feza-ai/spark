@@ -40,6 +40,7 @@ type PodRecord struct {
 	Reason        string    // human-readable failure reason from the last start attempt
 	StartAttempts int       // number of failed pod-create/start attempts since last success
 	LastAttemptAt time.Time // time of the most recent failed start attempt; zero when none pending
+	AssignedCores []int     // host CPU core IDs pinned to this pod; persisted to survive Spark restarts
 }
 
 // maxReasonBytes caps the size of PodRecord.Reason to keep the store bounded.
@@ -291,6 +292,27 @@ func (s *PodStore) Names() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// SetAssignedCores sets the AssignedCores slice for a pod. A nil/empty input
+// clears any prior assignment. Returns false if the pod is not found.
+// The provided slice is copied; the caller may continue to mutate it.
+func (s *PodStore) SetAssignedCores(name string, cores []int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.pods[name]
+	if !ok {
+		return false
+	}
+	if len(cores) == 0 {
+		rec.AssignedCores = nil
+		return true
+	}
+	cp := make([]int, len(cores))
+	copy(cp, cores)
+	rec.AssignedCores = cp
+	return true
 }
 
 // SetSourcePath sets the SourcePath for a pod. Returns false if not found.

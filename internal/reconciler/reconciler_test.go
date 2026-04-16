@@ -1706,3 +1706,99 @@ func TestRecoverPodsLogsOnRemoveFailure(t *testing.T) {
 		t.Fatalf("expected 2 RemovePod attempts total, got %d", got)
 	}
 }
+
+// TestRecovery_RestoresAssignedCores verifies that after LoadFrom hydrates
+// the store, the main.go rehydration loop (mirrored here) reinstalls each
+// pod's prior cpuset on the tracker so a subsequent RecoverPods does not
+// double-assign cores. This is the end-to-end invariant backing UC-024
+// across Spark restarts.
+func TestRecovery_RestoresAssignedCores(t *testing.T) {
+	// Tracker with 4 host cores and no reserves.
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3}},
+		scheduler.Resources{},
+		nil, 0,
+	)
+	sched := scheduler.NewScheduler(tracker)
+	store := state.NewPodStore()
+
+	// Simulate a post-LoadAll state: a single running pod that held cores
+	// [2,3] before the restart.
+	persisted := map[string]*state.PodRecord{
+		"pinned": {
+			Spec:          manifest.PodSpec{Name: "pinned"},
+			Status:        state.StatusRunning,
+			AssignedCores: []int{2, 3},
+		},
+	}
+	store.LoadFrom(persisted)
+
+	// Mirror cmd/spark/main.go: rehydrate the tracker from every pod that
+	// carried a prior assignment.
+	for _, rec := range persisted {
+		if len(rec.AssignedCores) > 0 {
+			tracker.RestoreAssignment(rec.Spec.Name, rec.AssignedCores)
+		}
+	}
+
+	got := tracker.AssignedCores("pinned")
+	if len(got) != 2 || got[0] != 2 || got[1] != 3 {
+		t.Fatalf("tracker.AssignedCores after rehydrate: got %v, want [2 3]", got)
+	}
+
+	// The scheduler proxy must surface the same set -- this is what the
+	// reconciler reads to persist the assignment on the next allocate.
+	gotProxy := sched.AssignedCores("pinned")
+	if len(gotProxy) != 2 || gotProxy[0] != 2 || gotProxy[1] != 3 {
+		t.Fatalf("sched.AssignedCores after rehydrate: got %v, want [2 3]", gotProxy)
+	}
+}
+
+// TestReconcilePending_PersistsAssignedCores verifies that when the tracker
+// holds a core assignment for a pod, reconcilePending captures it into the
+// store so SavePod picks it up. T2.1 is the component that installs the
+// assignment via Allocate; this test simulates that by pre-seeding the
+// tracker with RestoreAssignment so the write half of the loop is
+// independently verifiable.
+func TestReconcilePending_PersistsAssignedCores(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3}},
+		scheduler.Resources{},
+		nil, 0,
+	)
+	sched := scheduler.NewScheduler(tracker)
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := manifest.PodSpec{
+		Name:          "pinned-pod",
+		RestartPolicy: "Never",
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:  "main",
+				Image: "test:latest",
+				Resources: manifest.ResourceRequirements{
+					Limits:   manifest.ResourceList{CPUMillis: 2000, MemoryMB: 1024},
+					Requests: manifest.ResourceList{CPUMillis: 2000, MemoryMB: 1024},
+				},
+			},
+		},
+	}
+	store.Apply(spec)
+
+	// Simulate T2.1: the scheduler's Allocate records a core assignment.
+	// Seed it before reconcilePending so the capture-and-persist step has
+	// something to copy into the store.
+	tracker.RestoreAssignment("pinned-pod", []int{2, 3})
+
+	r.reconcileOnce(context.Background())
+
+	rec, ok := store.Get("pinned-pod")
+	if !ok {
+		t.Fatal("pod missing from store")
+	}
+	if len(rec.AssignedCores) != 2 || rec.AssignedCores[0] != 2 || rec.AssignedCores[1] != 3 {
+		t.Fatalf("expected AssignedCores=[2 3], got %v; status=%s", rec.AssignedCores, rec.Status)
+	}
+}

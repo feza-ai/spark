@@ -48,9 +48,20 @@ func NewResourceTracker(total Resources, systemReserve Resources, gpuDevices []i
 		rt.gpuMax = gpuMax
 		rt.gpuAssignments = make(map[string][]int)
 	}
+	// Compute allocatable cores: total.Cores minus systemReserve.Cores.
 	if len(total.Cores) > 0 {
-		rt.cores = make([]int, len(total.Cores))
-		copy(rt.cores, total.Cores)
+		reserved := make(map[int]bool, len(systemReserve.Cores))
+		for _, c := range systemReserve.Cores {
+			reserved[c] = true
+		}
+		var allocCores []int
+		for _, c := range total.Cores {
+			if !reserved[c] {
+				allocCores = append(allocCores, c)
+			}
+		}
+		rt.cores = allocCores
+		rt.allocatable.Cores = allocCores
 		rt.coreAssignments = make(map[string][]int)
 	}
 	return rt
@@ -97,6 +108,27 @@ func (rt *ResourceTracker) Allocate(name string, req manifest.ResourceList) erro
 		rt.gpuAssignments[name] = devs
 	}
 
+	// Core-set assignment: only integer-CPU pods get a contiguous core range.
+	// If the pod already has an assignment (e.g., RestoreAssignment after
+	// recovery, or a duplicate Allocate from a retry), reuse it so the
+	// running container's cpuset stays consistent.
+	if len(rt.cores) > 0 && req.CPUMillis >= 1000 && req.CPUMillis%1000 == 0 {
+		n := req.CPUMillis / 1000
+		if existing, ok := rt.coreAssignments[name]; ok && len(existing) == n {
+			// Already assigned the right number of cores -- no change.
+		} else {
+			cores := rt.unassignedCoresLocked(n)
+			if cores == nil {
+				// Roll back any GPU assignment made above to avoid orphaning it.
+				if rt.gpuAssignments != nil {
+					delete(rt.gpuAssignments, name)
+				}
+				return fmt.Errorf("insufficient CPU cores: requested %d, available %d", n, len(rt.cores)-rt.assignedCoreCountLocked())
+			}
+			rt.coreAssignments[name] = cores
+		}
+	}
+
 	rt.allocations[name] = req
 	return nil
 }
@@ -109,6 +141,9 @@ func (rt *ResourceTracker) Release(name string) {
 	delete(rt.allocations, name)
 	if rt.gpuAssignments != nil {
 		delete(rt.gpuAssignments, name)
+	}
+	if rt.coreAssignments != nil {
+		delete(rt.coreAssignments, name)
 	}
 }
 
@@ -132,6 +167,22 @@ func (rt *ResourceTracker) AssignedCores(name string) []int {
 		return nil
 	}
 	return rt.coreAssignments[name]
+}
+
+// RestoreAssignment installs a pre-existing core assignment for a pod, used
+// during recovery so the tracker matches the running container's cpuset.
+// It is the caller's responsibility to ensure cores are not double-assigned.
+func (rt *ResourceTracker) RestoreAssignment(name string, cores []int) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.coreAssignments == nil {
+		rt.coreAssignments = make(map[string][]int)
+	}
+	if len(cores) > 0 {
+		cs := make([]int, len(cores))
+		copy(cs, cores)
+		rt.coreAssignments[name] = cs
+	}
 }
 
 // unassignedDevicesLocked returns up to n unassigned GPU device IDs.
@@ -159,6 +210,15 @@ func (rt *ResourceTracker) assignedDeviceCountLocked() int {
 	count := 0
 	for _, devs := range rt.gpuAssignments {
 		count += len(devs)
+	}
+	return count
+}
+
+// assignedCoreCountLocked returns the total number of assigned CPU cores.
+func (rt *ResourceTracker) assignedCoreCountLocked() int {
+	count := 0
+	for _, cs := range rt.coreAssignments {
+		count += len(cs)
 	}
 	return count
 }
@@ -232,6 +292,12 @@ func (rt *ResourceTracker) CanFit(req manifest.ResourceList) bool {
 			return false
 		}
 	}
+	if len(rt.cores) > 0 && req.CPUMillis >= 1000 && req.CPUMillis%1000 == 0 {
+		n := req.CPUMillis / 1000
+		if rt.unassignedCoresLocked(n) == nil {
+			return false
+		}
+	}
 	return true
 }
 
@@ -257,12 +323,17 @@ func (rt *ResourceTracker) Allocatable() Resources {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	return Resources{
+	out := Resources{
 		CPUMillis:   rt.allocatable.CPUMillis,
 		MemoryMB:    rt.allocatable.MemoryMB,
 		GPUCount:    rt.allocatable.GPUCount,
 		GPUMemoryMB: rt.allocatable.GPUMemoryMB,
 	}
+	if len(rt.allocatable.Cores) > 0 {
+		out.Cores = make([]int, len(rt.allocatable.Cores))
+		copy(out.Cores, rt.allocatable.Cores)
+	}
+	return out
 }
 
 // UpdateAllocation updates the tracked allocation for a pod with actual resource values.
@@ -279,12 +350,28 @@ func (rt *ResourceTracker) UpdateAllocation(name string, actual manifest.Resourc
 
 func (rt *ResourceTracker) availableLocked() Resources {
 	alloc := rt.allocatedLocked()
-	return Resources{
+	out := Resources{
 		CPUMillis:   rt.allocatable.CPUMillis - alloc.CPUMillis,
 		MemoryMB:    rt.allocatable.MemoryMB - alloc.MemoryMB,
 		GPUCount:    rt.allocatable.GPUCount - alloc.GPUCount,
 		GPUMemoryMB: rt.allocatable.GPUMemoryMB - alloc.GPUMemoryMB,
 	}
+	if len(rt.cores) > 0 {
+		assigned := make(map[int]bool)
+		for _, cs := range rt.coreAssignments {
+			for _, c := range cs {
+				assigned[c] = true
+			}
+		}
+		free := make([]int, 0, len(rt.cores))
+		for _, c := range rt.cores {
+			if !assigned[c] {
+				free = append(free, c)
+			}
+		}
+		out.Cores = free
+	}
+	return out
 }
 
 func (rt *ResourceTracker) allocatedLocked() Resources {

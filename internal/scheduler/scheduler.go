@@ -59,6 +59,12 @@ func NewScheduler(tracker *ResourceTracker) *Scheduler {
 	}
 }
 
+// AssignedCores proxies to the underlying tracker so callers that only hold
+// a *Scheduler (e.g. the reconciler) can read per-pod core assignments.
+func (s *Scheduler) AssignedCores(name string) []int {
+	return s.tracker.AssignedCores(name)
+}
+
 // Schedule attempts to schedule a pod. Returns Scheduled if resources fit,
 // Preempting with victim list if preemption is possible, or Pending otherwise.
 func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
@@ -169,6 +175,13 @@ func (s *Scheduler) isAntiThrashed(name string, now time.Time) bool {
 		}
 	}
 	return count > 3
+}
+
+// Tracker returns the underlying ResourceTracker. Callers outside the
+// scheduler package (e.g. the reconciler) use it to read assignment state
+// such as AssignedCores after a successful Schedule().
+func (s *Scheduler) Tracker() *ResourceTracker {
+	return s.tracker
 }
 
 // ScheduleAttempts returns the total number of Schedule() calls.

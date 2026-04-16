@@ -3,6 +3,8 @@ package state
 import (
 	"database/sql"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
@@ -41,7 +43,8 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		source_path TEXT DEFAULT '',
 		reason TEXT DEFAULT '',
 		start_attempts INTEGER DEFAULT 0,
-		last_attempt_at TEXT
+		last_attempt_at TEXT,
+		assigned_cores TEXT DEFAULT ''
 	)`
 	if _, err := db.Exec(createPods); err != nil {
 		db.Close()
@@ -78,8 +81,50 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureColumn(db, "pods", "assigned_cores", "TEXT DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &SQLiteStore{db: db}, nil
+}
+
+// encodeCores serialises a core list as a comma-joined string (e.g. "0,1,2").
+// Empty/nil returns "".
+func encodeCores(cores []int) string {
+	if len(cores) == 0 {
+		return ""
+	}
+	parts := make([]string, len(cores))
+	for i, c := range cores {
+		parts[i] = strconv.Itoa(c)
+	}
+	return strings.Join(parts, ",")
+}
+
+// decodeCores parses a comma-joined core string back to []int.
+// Empty string returns nil. Malformed entries are skipped.
+func decodeCores(s string) []int {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		v, err := strconv.Atoi(p)
+		if err != nil {
+			continue
+		}
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ensureColumn adds `column <ddl>` to `table` if the column is not already present.
@@ -130,11 +175,11 @@ func (s *SQLiteStore) SavePod(rec *PodRecord) error {
 	}
 
 	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR REPLACE INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at, assigned_cores)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Spec.Name, string(specJSON), string(rec.Status),
 		startedAt, finishedAt, rec.Restarts, rec.RetryCount, rec.SourcePath,
-		rec.Reason, rec.StartAttempts, lastAttemptAt,
+		rec.Reason, rec.StartAttempts, lastAttemptAt, encodeCores(rec.AssignedCores),
 	)
 	return err
 }
@@ -151,7 +196,7 @@ func (s *SQLiteStore) SaveEvent(podName string, event PodEvent) error {
 // LoadAll reads all pods and their events from the database.
 func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at FROM pods`,
+		`SELECT name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at, assigned_cores FROM pods`,
 	)
 	if err != nil {
 		return nil, err
@@ -165,8 +210,9 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 		var restarts, retryCount int
 		var sourcePath, reason string
 		var startAttempts int
+		var assignedCores sql.NullString
 
-		if err := rows.Scan(&name, &specJSON, &status, &startedAt, &finishedAt, &restarts, &retryCount, &sourcePath, &reason, &startAttempts, &lastAttemptAt); err != nil {
+		if err := rows.Scan(&name, &specJSON, &status, &startedAt, &finishedAt, &restarts, &retryCount, &sourcePath, &reason, &startAttempts, &lastAttemptAt, &assignedCores); err != nil {
 			return nil, err
 		}
 
@@ -183,6 +229,7 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 			SourcePath:    sourcePath,
 			Reason:        reason,
 			StartAttempts: startAttempts,
+			AssignedCores: decodeCores(assignedCores.String),
 		}
 		if startedAt.Valid {
 			if t, err := time.Parse(time.RFC3339, startedAt.String); err == nil {
