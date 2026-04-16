@@ -126,9 +126,9 @@ separate manifest file generated for a single-issue plan.
 
 #### Wave 1: Foundations (parallel, 4 agents)
 
-- [ ] T1.1 Extend `scheduler.Resources` with `Cores []int` and add
-  `coreAssignments map[string][]int` to `ResourceTracker`  Owner: TBD
-  Est: 60m  verifies: [UC-024]
+- [x] T1.1 Extend `scheduler.Resources` with `Cores []int` and add
+  `coreAssignments map[string][]int` to `ResourceTracker`  Owner: task-T1.1
+  Est: 60m  verifies: [UC-024]  Completed: 2026-04-15 (PR #23)
   - Mirror the `gpuAssignments` pattern in
     `internal/scheduler/resources.go`.
   - Add `unassignedCoresLocked(n int) []int` returning the lowest-index
@@ -138,8 +138,8 @@ separate manifest file generated for a single-issue plan.
   - Acceptance: package builds, no behaviour change yet (callers do not
     request cores). New unit test covers selection logic.
 
-- [ ] T1.2 Add `--system-reserve-cores` flag and parser  Owner: TBD
-  Est: 45m  verifies: [UC-024]
+- [x] T1.2 Add `--system-reserve-cores` flag and parser  Owner: task-T1.2
+  Est: 45m  verifies: [UC-024]  Completed: 2026-04-15 (PR #23)
   - In `cmd/spark/main.go`, declare
     `flag.String("system-reserve-cores", "", ...)`.
   - Add a small helper (in `internal/scheduler` or a new `cpuset.go`)
@@ -150,8 +150,8 @@ separate manifest file generated for a single-issue plan.
   - Acceptance: unit test covers happy path, malformed input, and
     out-of-range core IDs.
 
-- [ ] T1.3 Update `docs/design.md` "Key Invariants" with cpuset model
-  Owner: TBD  Est: 20m  verifies: [infrastructure]
+- [x] T1.3 Update `docs/design.md` "Key Invariants" with cpuset model
+  Owner: coordinator  Est: 20m  verifies: [infrastructure]  Completed: 2026-04-15 (commit 50f66ce)
   - Add: "CPU isolation: scheduler assigns specific core IDs per pod;
     executor passes `--cpuset-cpus` so container threads cannot land on
     reserved cores. `--system-reserve-cores` defines the host's
@@ -159,8 +159,8 @@ separate manifest file generated for a single-issue plan.
   - Cross-reference docs/adr/012-cpu-pinning-cpuset.md.
   - Acceptance: design.md mentions cpuset and references ADR-012.
 
-- [ ] T1.4 Detect host core IDs in `internal/gpu/system.go`
-  Owner: TBD  Est: 30m  verifies: [UC-024]
+- [x] T1.4 Detect host core IDs in `internal/gpu/system.go`
+  Owner: task-T1.4  Est: 30m  verifies: [UC-024]  Completed: 2026-04-15 (PR #23)
   - Extend `SystemInfo` with `CoreIDs []int` populated as
     `[0..runtime.NumCPU())`.
   - Threaded into `main.go` so the tracker receives the full host core
@@ -307,11 +307,11 @@ Depends on: Waves 1-4 merged.
 
 ### Waves
 
-### Wave 1: Foundations (4 agents)
-- [ ] T1.1 Scheduler `Cores` + `coreAssignments`
-- [ ] T1.2 `--system-reserve-cores` flag + parser
-- [ ] T1.3 design.md cpuset invariant note
-- [ ] T1.4 `SystemInfo.CoreIDs`
+### Wave 1: Foundations (4 agents) — COMPLETE 2026-04-15 (PR #23)
+- [x] T1.1 Scheduler `Cores` + `coreAssignments`
+- [x] T1.2 `--system-reserve-cores` flag + parser
+- [x] T1.3 design.md cpuset invariant note (commit 50f66ce, inline before agent dispatch)
+- [x] T1.4 `SystemInfo.CoreIDs`
 
 ### Wave 2: Scheduler + executor wiring (3 agents)
 - [ ] T2.1 `Allocate` reserves cores
@@ -366,6 +366,11 @@ Depends on: Waves 1-4 merged.
   unit tests).
 
 ## Progress Log
+
+### 2026-04-15: Wave 1 shipped (PR #23 merged)
+- T1.1, T1.2, T1.4 implemented in parallel by three sub-agents in worktrees, merged via wave-1-integration. T1.3 done inline pre-dispatch.
+- CI staticcheck initially failed on unused private helper (`assignedCoreCountLocked`); dropped from this PR (Wave 2 reintroduces when needed).
+- Final main commits: 6cce378 (T1.2 parser), a644ce9 (T1.2 flag), 60cd637 (T1.1 scheduler), 04ea7f3 (T1.4 gpu), 5ddd030 (CI fix). All tests pass with -race; no behaviour change yet (Wave 2 wires it).
 
 ### 2026-04-15: Change Summary
 - Trimmed completed E58 (issue #13). Knowledge moved to `docs/devlog.md`
