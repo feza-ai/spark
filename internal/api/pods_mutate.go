@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -37,6 +38,28 @@ func (s *Server) handleApplyPod(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
+	}
+
+	// Up-front structural guard: reject pods whose total CPU request exceeds
+	// the host's allocatable cores. Distinct from the "queue for later"
+	// admission path that handles transient unavailability.
+	if s.tracker != nil {
+		if cores := s.tracker.Allocatable().Cores; len(cores) > 0 {
+			for _, pod := range result.Pods {
+				totalCPU := pod.TotalRequests().CPUMillis
+				if totalCPU >= 1000 && totalCPU%1000 == 0 {
+					n := totalCPU / 1000
+					if n > len(cores) {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusBadRequest)
+						json.NewEncoder(w).Encode(map[string]string{
+							"error": fmt.Sprintf("limits.cpu %d exceeds allocatable cores %d", n, len(cores)),
+						})
+						return
+					}
+				}
+			}
+		}
 	}
 
 	type podStatus struct {
