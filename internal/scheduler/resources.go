@@ -25,6 +25,7 @@ type ResourceTracker struct {
 	gpuMax          int
 	gpuAssignments  map[string][]int
 	cores           []int
+	reservedCores   []int
 	coreAssignments map[string][]int
 }
 
@@ -64,7 +65,24 @@ func NewResourceTracker(total Resources, systemReserve Resources, gpuDevices []i
 		rt.allocatable.Cores = allocCores
 		rt.coreAssignments = make(map[string][]int)
 	}
+	if len(systemReserve.Cores) > 0 {
+		rt.reservedCores = make([]int, len(systemReserve.Cores))
+		copy(rt.reservedCores, systemReserve.Cores)
+	}
 	return rt
+}
+
+// ReservedCores returns the host CPU core IDs reserved for the system
+// (excluded from allocation). Returns nil if no cores are reserved.
+func (rt *ResourceTracker) ReservedCores() []int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if len(rt.reservedCores) == 0 {
+		return nil
+	}
+	out := make([]int, len(rt.reservedCores))
+	copy(out, rt.reservedCores)
+	return out
 }
 
 // Allocate reserves resources for a pod. Returns error if insufficient.
