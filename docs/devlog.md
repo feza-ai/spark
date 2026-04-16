@@ -1,5 +1,18 @@
 # Spark Development Log
 
+## 2026-04-15: Issue #13 fix shipped, v1.8.1 deployed, auto-upgrade live
+
+**Type:** finding
+**Tags:** v1.8.1, reconciler, issue-13, deployment, auto-upgrade
+
+**Problem:** Issue #13 -- when `podman pod create` failed during `reconcilePending`, the pod was stored with `StatusScheduled` but the underlying podman pod was missing. Subsequent reconcile ticks called `podman pod inspect`, got `no such pod`, logged the error, and never re-queued. The pod stuck indefinitely until the client issued `DELETE` + fresh `POST`.
+
+**Root cause:** `reconcileScheduled` returned on any inspect error without distinguishing `no such pod` (authoritative: missing) from transient daemon flakes.
+
+**Fix:** Added `isNoSuchPod(err)` helper. `reconcileScheduled` now switches on inspect error: `nil` -> proceed; `no such pod` -> treat as not-running and continue to staleness check; other errors -> log and return. `scheduledStaleness` reduced from 30s to 10s so the next 5s tick can act. Pre-reset `BackoffLimit` check transitions to `StatusFailed` instead of resetting to `Pending` when attempts exceed the limit. Four new `TestReconcileScheduled_*` cases cover missing-after-staleness, missing-within-staleness, transient-error, and backoff-limit-exceeded.
+
+**Impact:** PR #18 merged (commit `a35ac4e`), issue #13 auto-closed. v1.8.1 released and deployed to DGX `192.168.86.250`. Auto-upgrade infrastructure (script + systemd timer at 15-minute interval) installed and active on production DGX, so future Spark releases self-deploy without manual intervention.
+
 ## 2026-04-15: Resolve open GitHub issues (#8, #10, #12)
 
 **Type:** finding
