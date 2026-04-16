@@ -33,6 +33,14 @@ nfpms:
         dst: /etc/systemd/system/spark.service
       - src: deploy/registry.service
         dst: /etc/systemd/system/registry.service
+      - src: deploy/spark-auto-upgrade.service
+        dst: /etc/systemd/system/spark-auto-upgrade.service
+      - src: deploy/spark-auto-upgrade.timer
+        dst: /etc/systemd/system/spark-auto-upgrade.timer
+      - src: deploy/spark-auto-upgrade.sh
+        dst: /usr/local/lib/spark/auto-upgrade.sh
+        file_info:
+          mode: 0755
       - src: deploy/spark.env
         dst: /etc/spark/spark.env
         type: config
