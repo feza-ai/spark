@@ -256,16 +256,16 @@ Depends on: Wave 2.
 
 Depends on: Waves 1-4 merged.
 
-- [ ] T5.1 Open PR, wait for CI, rebase-merge  Owner: TBD  Est: 30m
-  verifies: [infrastructure]
+- [x] T5.1 Open PR, wait for CI, rebase-merge  Owner: coordinator  Est: 30m
+  verifies: [infrastructure]  Completed: 2026-04-15 (PRs #23, #24, #25; issue #22 closed manually since commits used `refs #22` not `fixes #22`)
   - Branch: `fix/cpu-pinning-cpuset`.
   - PR body: link to issue #22, summarise the cpuset model, link
     docs/adr/012-cpu-pinning-cpuset.md.
   - Acceptance: PR state MERGED, main green, issue #22 auto-closes
     from `fixes #22`.
 
-- [ ] T5.2 Cut release via release-please  Owner: TBD  Est: 15m
-  verifies: [infrastructure]
+- [x] T5.2 Cut release via release-please  Owner: coordinator  Est: 15m
+  verifies: [infrastructure]  Completed: 2026-04-15 (v1.9.0 released; auto-upgrade timer on DGX picks it up within 15 min)
   - Depends on: T5.1.
   - Merge the release-please version-bump PR. The DGX auto-upgrade
     timer (15-min interval) picks up the new tag automatically.
@@ -273,7 +273,8 @@ Depends on: Waves 1-4 merged.
     the new tag within 30 minutes.
 
 - [ ] T5.3 DGX smoke test of the offending Wolf manifest
-  Owner: TBD  Est: 30m  verifies: [UC-024]
+  Owner: operator  Est: 30m  verifies: [UC-024]
+  PENDING: requires (a) DGX auto-upgrade timer to pull v1.9.0 (within 15min) AND v1.9.1 deploy (carries SPARK_SYSTEM_RESERVE_CORES=0-1 in spark.env), (b) operator to submit the Wolf CrossAsset training manifest, (c) concurrent ping/ssh observation. The deploy/ change is on main but hasn't been released yet — the DGX systemd unit needs updating before the cpuset feature activates.
   - Depends on: T5.2 + DGX auto-upgrade complete.
   - Submit the issue #22 manifest (Wolf CrossAsset GPU training with
     `ZERFOO_DISABLE_CUDA_GRAPH=1`).
@@ -326,10 +327,10 @@ Depends on: Waves 1-4 merged.
 - [x] T4.1 `spark_pod_cpu_throttled_seconds`
 - [x] T4.2 `spark_host_loadavg` + softirq
 
-### Wave 5: Ship + validate (1 agent)
-- [ ] T5.1 PR, CI, rebase-merge
-- [ ] T5.2 release-please version bump merged
-- [ ] T5.3 DGX smoke test
+### Wave 5: Ship + validate (1 agent) — IN PROGRESS
+- [x] T5.1 PR, CI, rebase-merge — Done as PRs #23, #24, #25; issue #22 closed manually 2026-04-15
+- [x] T5.2 release-please version bump merged — v1.9.0 released 2026-04-15
+- [ ] T5.3 DGX smoke test — pending operator action after a v1.9.1 deploy that carries the spark.env update wiring SPARK_SYSTEM_RESERVE_CORES=0-1
 
 ## Timeline and Milestones
 
@@ -366,6 +367,12 @@ Depends on: Waves 1-4 merged.
   unit tests).
 
 ## Progress Log
+
+### 2026-04-15: Wave 5 (Ship) — v1.9.0 released, issue #22 closed
+- T5.1: shipped via three PRs (#23 Wave 1, #24 Wave 2, #25 Waves 3+4) rather than a single PR. Commit messages used `refs #22` so the issue did not auto-close on merge; closed manually with a summary comment instead.
+- T5.2: release-please PR #21 merged; v1.9.0 published. The DGX auto-upgrade timer (15-min interval) pulls the .deb automatically.
+- Deploy-side enabler: spark.service now references `${SPARK_SYSTEM_RESERVE_CORES}`; spark.env declares it (empty default). Will land in the next release; until that lands and the DGX picks it up, the cpuset feature on the DGX remains opt-out.
+- T5.3: DGX smoke test deferred to an operator after the next release (v1.9.1) carries the spark.env change, sets `SPARK_SYSTEM_RESERVE_CORES=0-1`, and the auto-upgrade pulls it.
 
 ### 2026-04-15: Wave 3+4 shipped (PR #25 merged)
 - T3.1, T3.2, T4.1, T4.2 implemented inline by coordinator after sub-agents went idle without completing the work. Combined into a single PR.
