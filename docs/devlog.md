@@ -1,5 +1,18 @@
 # Spark Development Log
 
+## 2026-04-16: Issue #22 cpuset pinning shipped (v1.9.0-v1.10.1), DGX validated
+
+**Type:** finding
+**Tags:** v1.9.0, v1.10.0, v1.10.1, cpuset, issue-22, deployment, auto-upgrade
+
+**Problem:** Issue #22: pods with integer CPU limits still saturated all 20 DGX cores because Spark only passed `--cpus` (CFS quota) to podman, not `--cpuset-cpus` (core pinning). This caused 40+ minutes of 100% packet loss and SSH banner timeouts during Wolf CrossAsset GPU training.
+
+**Root cause:** `internal/executor/podman.go` emitted only `--cpus=N.0` which is a cumulative time quota, not a CPU set restriction. Container threads could land on any core including those handling network IRQs and sshd.
+
+**Fix:** Five waves across PRs #23, #24, #25: scheduler tracks per-pod core assignments mirroring the GPU device-slot pattern; executor emits `--cpuset-cpus`; SQLite persists assignments for restart recovery; `--system-reserve-cores` flag excludes host cores; `/api/v1/node` exposes the partition; admission rejects oversize pods; three new Prometheus metrics added. ADR-012 documents the decision. v1.9.0 released with the code; v1.10.0 added the deploy/spark.env wiring; v1.10.1 added version in /healthz + auto-upgrade conffile fix.
+
+**Impact:** DGX validated: pod with limits.cpu=4 pinned to cpuset-cpus=2-5, oversize pod rejected 400, /healthz returns version=1.10.1. Auto-upgrade pipeline verified end-to-end (push -> release-please -> GoReleaser .deb -> DGX timer -> dpkg install -> restart). The `--force-confold` fix prevents future conffile prompt failures in non-interactive upgrades.
+
 ## 2026-04-15: Issue #13 fix shipped, v1.8.1 deployed, auto-upgrade live
 
 **Type:** finding

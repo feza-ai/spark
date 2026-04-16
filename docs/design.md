@@ -40,6 +40,7 @@ internal/
 - All pods join `spark-net` for name-based pod-to-pod communication.
 - CronJob concurrency policies: Allow (always create), Forbid (skip if active), Replace (delete active, create new).
 - GPU device isolation: scheduler assigns specific device IDs via `NVIDIA_VISIBLE_DEVICES`; `--gpu-max` limits concurrent GPU pods.
+- Metrics: Prometheus text exposition via /metrics. Pod-level: spark_pod_cpu_throttled_seconds (cgroup v2). Host-level: spark_host_loadavg (1m/5m/15m), spark_host_softirq_seconds (per-type). Scrape orchestration wired in a follow-up; parsers/renderers/setters are in place.
 - Init containers run sequentially to completion before main containers start. Any init failure aborts the pod.
 - Container ports declared in manifests are mapped via `podman pod create --publish`.
 - SecurityContext: runAsUser, privileged, capabilities (add/drop) are forwarded to podman container args.
@@ -49,7 +50,9 @@ internal/
 - GPU resource model: `nvidia.com/gpu: N` allocates N device slots (GPUCount), distinct from GPU memory. Scheduler tracks count-based allocation.
 - Liveness probes: exec probes run via `podman exec`; HTTP probes via stdlib `net/http`. Reconciler polls on each tick respecting InitialDelaySeconds, PeriodSeconds, FailureThreshold.
 - CronJob HTTP management: GET /api/v1/cronjobs (list), GET /api/v1/cronjobs/{name} (detail), DELETE /api/v1/cronjobs/{name} (unregister).
-- Node info: GET /api/v1/node exposes hostname, OS, arch, CPU cores, memory, GPU model, GPU count, device IDs, GPU memory.
+- Node info: GET /api/v1/node exposes hostname, OS, arch, CPU cores, cpu_reserved_cores, cpu_allocatable_cores, memory, GPU model, GPU count, device IDs, GPU memory.
+- Admission guard: POST /api/v1/pods rejects manifests whose total integer-CPU request exceeds allocatable cores with HTTP 400. Fractional CPU bypasses the check.
+- Healthz: GET /healthz returns status and version (injected by GoReleaser ldflags).
 - Reconciler treats `no such pod` from `podman pod inspect` on a `StatusScheduled` record as authoritative (pod is missing). After `scheduledStaleness` (10s) the record transitions back to `StatusPending`, respecting `BackoffLimit`. Transient inspect errors leave the record alone.
 - CPU isolation: scheduler assigns specific core IDs per pod for integer CPU limits; executor passes `--cpuset-cpus` so container threads cannot land on reserved cores. `--system-reserve-cores` defines the host's dedicated core set (sshd, ksoftirqd, Spark itself). See docs/adr/012-cpu-pinning-cpuset.md.
 
