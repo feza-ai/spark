@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.1](https://github.com/feza-ai/spark/compare/v1.8.0...v1.8.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* **reconciler:** reset scheduled pod with no events when podman pod is missing ([3caeb6a](https://github.com/feza-ai/spark/commit/3caeb6a8482d5963361305f47b7d87573ddadc27))
+* **reconciler:** retry create when scheduled pod is missing in podman ([a35ac4e](https://github.com/feza-ai/spark/commit/a35ac4efe614859a4a844a63a39ea5c72a81e1bd)), closes [#13](https://github.com/feza-ai/spark/issues/13)
+
 ## [1.8.0](https://github.com/feza-ai/spark/compare/v1.7.0...v1.8.0) (2026-04-15)
 
 
