@@ -207,15 +207,6 @@ func (rt *ResourceTracker) unassignedCoresLocked(n int) []int {
 	return result
 }
 
-// assignedCoreCountLocked returns the total number of assigned cores.
-func (rt *ResourceTracker) assignedCoreCountLocked() int {
-	count := 0
-	for _, cs := range rt.coreAssignments {
-		count += len(cs)
-	}
-	return count
-}
-
 // Available returns currently available resources.
 func (rt *ResourceTracker) Available() Resources {
 	rt.mu.Lock()
