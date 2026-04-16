@@ -61,7 +61,7 @@ echo "spark-auto-upgrade: downloading ${DEB_URL}"
 curl -fsSL -o "${DEB_FILE}" "${DEB_URL}"
 
 echo "spark-auto-upgrade: installing ${DEB_FILE}"
-dpkg -i "${DEB_FILE}"
+DEBIAN_FRONTEND=noninteractive dpkg -i --force-confold "${DEB_FILE}"
 
 echo "spark-auto-upgrade: restarting spark.service"
 systemctl restart spark.service
