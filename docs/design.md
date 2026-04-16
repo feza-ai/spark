@@ -51,6 +51,7 @@ internal/
 - CronJob HTTP management: GET /api/v1/cronjobs (list), GET /api/v1/cronjobs/{name} (detail), DELETE /api/v1/cronjobs/{name} (unregister).
 - Node info: GET /api/v1/node exposes hostname, OS, arch, CPU cores, memory, GPU model, GPU count, device IDs, GPU memory.
 - Reconciler treats `no such pod` from `podman pod inspect` on a `StatusScheduled` record as authoritative (pod is missing). After `scheduledStaleness` (10s) the record transitions back to `StatusPending`, respecting `BackoffLimit`. Transient inspect errors leave the record alone.
+- CPU isolation: scheduler assigns specific core IDs per pod for integer CPU limits; executor passes `--cpuset-cpus` so container threads cannot land on reserved cores. `--system-reserve-cores` defines the host's dedicated core set (sshd, ksoftirqd, Spark itself). See docs/adr/012-cpu-pinning-cpuset.md.
 
 ## Interfaces
 
