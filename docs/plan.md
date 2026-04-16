@@ -212,8 +212,8 @@ Depends on: T1.1, T1.2, T1.4.
 
 Depends on: T2.1.
 
-- [ ] T3.1 `GET /api/v1/node` includes core fields  Owner: TBD
-  Est: 30m  verifies: [UC-046]
+- [x] T3.1 `GET /api/v1/node` includes core fields  Owner: coordinator
+  Est: 30m  verifies: [UC-046]  Completed: 2026-04-15 (PR #25)
   - Add `cpu_reserved_cores []int` and `cpu_allocatable_cores []int`
     to `NodeResponse`.
   - Populated from the tracker (new `Allocatable().Cores` plus a stored
@@ -221,8 +221,8 @@ Depends on: T2.1.
   - Acceptance: `node_test.go` asserts both fields are present and
     non-overlapping.
 
-- [ ] T3.2 Admission rejects oversize pods  Owner: TBD  Est: 45m
-  verifies: [UC-051]
+- [x] T3.2 Admission rejects oversize pods  Owner: coordinator  Est: 45m
+  verifies: [UC-051]  Completed: 2026-04-15 (PR #25)
   - In `POST /api/v1/pods` (and the NATS apply path), after parsing,
     call `tracker.CanFit` and return 400 with body
     `{"error": "limits.cpu N exceeds allocatable cores M"}` when N > M.
@@ -237,16 +237,16 @@ Depends on: T2.1.
 
 Depends on: Wave 2.
 
-- [ ] T4.1 Prometheus metric `spark_pod_cpu_throttled_seconds`
-  Owner: TBD  Est: 60m  verifies: [UC-024]
+- [x] T4.1 Prometheus metric `spark_pod_cpu_throttled_seconds`
+  Owner: coordinator  Est: 60m  verifies: [UC-024]  Completed: 2026-04-15 (PR #25; cgroup-path discovery a follow-up)
   - Read `cpu.stat` from each pod's cgroup
     (`/sys/fs/cgroup/.../cpu.stat` field `throttled_usec`).
   - Register in `internal/metrics`; expose via `/metrics`.
   - Acceptance: metrics test renders the gauge with a synthetic value.
 
-- [ ] T4.2 Host metrics `spark_host_loadavg` and
-  `spark_host_softirq_seconds`  Owner: TBD  Est: 60m
-  verifies: [UC-046]
+- [x] T4.2 Host metrics `spark_host_loadavg` and
+  `spark_host_softirq_seconds`  Owner: coordinator  Est: 60m
+  verifies: [UC-046]  Completed: 2026-04-15 (PR #25; scrape orchestration a follow-up)
   - `loadavg`: read `/proc/loadavg` and export `_1m`, `_5m`, `_15m`.
   - `softirq_seconds`: parse `/proc/stat` `softirq` row, export per
     softirq type.
@@ -318,13 +318,13 @@ Depends on: Waves 1-4 merged.
 - [x] T2.2 Executor emits `--cpuset-cpus`
 - [x] T2.3 Reconciler reuses cpuset on recovery
 
-### Wave 3: Admission + API surface (2 agents)
-- [ ] T3.1 `/api/v1/node` exposes core fields
-- [ ] T3.2 Admission rejects oversize pods
+### Wave 3: Admission + API surface (2 agents) — COMPLETE 2026-04-15 (PR #25, combined)
+- [x] T3.1 `/api/v1/node` exposes core fields
+- [x] T3.2 Admission rejects oversize pods
 
-### Wave 4: Telemetry (2 agents)
-- [ ] T4.1 `spark_pod_cpu_throttled_seconds`
-- [ ] T4.2 `spark_host_loadavg` + softirq
+### Wave 4: Telemetry (2 agents) — COMPLETE 2026-04-15 (PR #25, combined)
+- [x] T4.1 `spark_pod_cpu_throttled_seconds`
+- [x] T4.2 `spark_host_loadavg` + softirq
 
 ### Wave 5: Ship + validate (1 agent)
 - [ ] T5.1 PR, CI, rebase-merge
@@ -366,6 +366,14 @@ Depends on: Waves 1-4 merged.
   unit tests).
 
 ## Progress Log
+
+### 2026-04-15: Wave 3+4 shipped (PR #25 merged)
+- T3.1, T3.2, T4.1, T4.2 implemented inline by coordinator after sub-agents went idle without completing the work. Combined into a single PR.
+- T3.1: NodeResponse adds cpu_reserved_cores and cpu_allocatable_cores; ResourceTracker.ReservedCores accessor added.
+- T3.2: handleApplyPod rejects pods whose total CPU request (integer cores) exceeds allocatable cores with HTTP 400.
+- T4.1: parser/reader/renderer for spark_pod_cpu_throttled_seconds; cgroup-path discovery deferred to follow-up.
+- T4.2: parsers/renderers for spark_host_loadavg and spark_host_softirq_seconds; scrape orchestration deferred.
+- Final main commits: 64f94c3 (T3.1 scheduler), 1f8c27e (T3.1 api), ae1b3d2 (T3.2), df910c3 (T4.1+T4.2). Build/vet/staticcheck/tests all green.
 
 ### 2026-04-15: Wave 2 shipped (PR #24 merged)
 - T2.1 (scheduler Allocate + main.go wiring), T2.2 (executor --cpuset-cpus + reconciler caller), T2.3 (SQLite persistence + RestoreAssignment) implemented in parallel by three sub-agents.
