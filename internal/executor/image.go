@@ -85,6 +85,25 @@ func (p *PodmanExecutor) PullImage(ctx context.Context, name string) error {
 	return nil
 }
 
+// PruneImages runs `podman image prune -f` and returns the number of
+// images reclaimed. Podman emits one image ID per line on stdout for the
+// images it removed; counting non-empty lines yields the count.
+func (p *PodmanExecutor) PruneImages(ctx context.Context) (int, error) {
+	args := []string{"image", "prune", "-f"}
+	slog.Info("pruning images", "cmd", "podman", "args", args)
+	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("podman image prune: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // EnsureImage checks if a container image is available locally.
 // If not found, it pulls the image.
 func EnsureImage(ctx context.Context, imageRef string) error {

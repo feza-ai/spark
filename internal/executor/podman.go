@@ -26,6 +26,25 @@ type Status struct {
 type PodListEntry struct {
 	Name    string
 	Running bool
+	// Status is the raw podman pod status string (e.g. "Running",
+	// "Exited", "Stopped", "Created"). Empty when not reported.
+	Status string
+}
+
+// IsTerminal reports whether the entry represents a podman pod in a
+// terminal (non-running, non-creating) state — i.e. eligible for orphan
+// reaping. Mirrors the podman pod state machine where "Exited", "Stopped",
+// "Dead", and "Degraded" are not going to spontaneously start running.
+func (e PodListEntry) IsTerminal() bool {
+	if e.Running {
+		return false
+	}
+	switch strings.ToLower(e.Status) {
+	case "exited", "stopped", "dead", "degraded", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 // PodResourceUsage represents actual resource usage of a running pod.
@@ -55,6 +74,7 @@ type Executor interface {
 	ExecPod(ctx context.Context, podName string, containerName string, command []string) ([]byte, []byte, int, error)
 	ListImages(ctx context.Context) ([]ImageInfo, error)
 	PullImage(ctx context.Context, name string) error
+	PruneImages(ctx context.Context) (int, error)
 	ExecProbe(ctx context.Context, podName string, containerName string, command []string, timeout time.Duration) (int, error)
 	HTTPProbe(ctx context.Context, port int, path string, timeout time.Duration) error
 }
@@ -546,6 +566,7 @@ func parsePodsJSON(data []byte) ([]PodListEntry, error) {
 		result[i] = PodListEntry{
 			Name:    r.Name,
 			Running: r.Status == "Running",
+			Status:  r.Status,
 		}
 	}
 	return result, nil
