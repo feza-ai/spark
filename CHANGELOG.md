@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.11.0](https://github.com/feza-ai/spark/compare/v1.10.1...v1.11.0) (2026-04-28)
+
+
+### Features
+
+* **executor:** add PruneImages and pod status reporting ([42bb64f](https://github.com/feza-ai/spark/commit/42bb64f9ef3b9da168accf8029ed500365996250))
+* **housekeeper:** TTL pod reaping, orphan reap, image prune ([b64cf53](https://github.com/feza-ai/spark/commit/b64cf535333d70e53b58b505efffc06bb97a29ce))
+* **manifest:** support YAML flow lists and | block scalars ([2eb8fe2](https://github.com/feza-ai/spark/commit/2eb8fe2b8df0ddb356cc0bb128eb489955327f21))
+* **metrics:** emit housekeeping counters ([4de3e7c](https://github.com/feza-ai/spark/commit/4de3e7c1a52a1b2b70503b894c9b6027ac7d1910))
+* **spark:** wire housekeeper into daemon ([a209a30](https://github.com/feza-ai/spark/commit/a209a30712050a6e6a18f22fbdae14a98c256916))
+
+
+### Bug Fixes
+
+* **executor:** translate Container.Command to --entrypoint per K8s pod spec ([233c4b3](https://github.com/feza-ai/spark/commit/233c4b3313f961eca75bae8a884d086e31513d64))
+* **manifest:** drop unused stripN variable (staticcheck SA4006) ([653500b](https://github.com/feza-ai/spark/commit/653500b04bea44005cf1230fd3a00a9c84df5c97))
+
 ## [1.10.1](https://github.com/feza-ai/spark/compare/v1.10.0...v1.10.1) (2026-04-16)
 
 
