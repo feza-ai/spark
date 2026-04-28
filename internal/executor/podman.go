@@ -243,11 +243,29 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 		args = append(args, "--device", "nvidia.com/gpu=all")
 	}
 
+	// K8s pod spec semantics: Container.Command overrides the image's
+	// ENTRYPOINT, and Container.Args overrides CMD. Translate to podman:
+	//   --entrypoint <cmd>      (single token)
+	//   --entrypoint '["a","b"]'  (multi token, JSON array form)
+	// Args (or Command[1:] when Args is empty) are appended after the
+	// image so they form the container CMD.
+	if len(container.Command) > 0 {
+		if len(container.Command) == 1 {
+			args = append(args, "--entrypoint", container.Command[0])
+		} else {
+			encoded, err := json.Marshal(container.Command)
+			if err == nil {
+				args = append(args, "--entrypoint", string(encoded))
+			} else {
+				// Fallback: pass first token as entrypoint and the rest
+				// as CMD-style args.
+				args = append(args, "--entrypoint", container.Command[0])
+			}
+		}
+	}
+
 	args = append(args, container.Image)
 
-	if len(container.Command) > 0 {
-		args = append(args, container.Command...)
-	}
 	if len(container.Args) > 0 {
 		args = append(args, container.Args...)
 	}

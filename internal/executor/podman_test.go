@@ -194,23 +194,115 @@ func TestBuildRunArgs_ResourceLimits(t *testing.T) {
 }
 
 func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
+	tests := []struct {
+		name           string
+		command        []string
+		argv           []string
+		wantEntrypoint string // "" means no --entrypoint flag expected
+		wantTail       []string
+	}{
+		{
+			name:           "only args set",
+			command:        nil,
+			argv:           []string{"--flag", "value"},
+			wantEntrypoint: "",
+			wantTail:       []string{"--flag", "value"},
+		},
+		{
+			name:           "single-token command no args",
+			command:        []string{"/bin/echo"},
+			argv:           nil,
+			wantEntrypoint: "/bin/echo",
+			wantTail:       nil,
+		},
+		{
+			name:           "multi-token command no args",
+			command:        []string{"nsys", "profile", "-o", "/out"},
+			argv:           nil,
+			wantEntrypoint: `["nsys","profile","-o","/out"]`,
+			wantTail:       nil,
+		},
+		{
+			name:           "command and args",
+			command:        []string{"/bin/sh", "-c"},
+			argv:           []string{"echo hello"},
+			wantEntrypoint: `["/bin/sh","-c"]`,
+			wantTail:       []string{"echo hello"},
+		},
+		{
+			name:           "neither set",
+			command:        nil,
+			argv:           nil,
+			wantEntrypoint: "",
+			wantTail:       nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := manifest.ContainerSpec{
+				Name:    "app",
+				Image:   "myimage:latest",
+				Command: tt.command,
+				Args:    tt.argv,
+			}
+			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+
+			imgIdx := slices.Index(args, "myimage:latest")
+			if imgIdx < 0 {
+				t.Fatalf("image not found in args: %v", args)
+			}
+
+			// Verify --entrypoint placement.
+			epIdx := slices.Index(args, "--entrypoint")
+			if tt.wantEntrypoint == "" {
+				if epIdx >= 0 {
+					t.Errorf("unexpected --entrypoint in %v", args)
+				}
+			} else {
+				if epIdx < 0 {
+					t.Fatalf("--entrypoint missing from %v", args)
+				}
+				if epIdx >= imgIdx {
+					t.Errorf("--entrypoint at %d must be before image at %d: %v", epIdx, imgIdx, args)
+				}
+				if got := args[epIdx+1]; got != tt.wantEntrypoint {
+					t.Errorf("entrypoint = %q, want %q", got, tt.wantEntrypoint)
+				}
+			}
+
+			tail := args[imgIdx+1:]
+			if !slices.Equal(tail, tt.wantTail) {
+				t.Errorf("tail after image = %v, want %v", tail, tt.wantTail)
+			}
+		})
+	}
+}
+
+func TestBuildRunArgs_NsysProfileWrap(t *testing.T) {
+	// Integration-style: Wolf's nsys profile use case.
 	container := manifest.ContainerSpec{
-		Name:    "app",
-		Image:   "myimage:latest",
-		Command: []string{"/bin/sh", "-c"},
-		Args:    []string{"echo hello"},
+		Name:    "wolf",
+		Image:   "ghcr.io/feza-ai/wolf-train:latest",
+		Command: []string{"nsys", "profile", "-o", "/out/trace", "--stats=true"},
+		Args:    []string{"--config", "/cfg/run.yaml", "--epochs", "5"},
 	}
 	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 
-	// Image should appear, followed by command and args.
-	imgIdx := slices.Index(args, "myimage:latest")
+	imgIdx := slices.Index(args, "ghcr.io/feza-ai/wolf-train:latest")
 	if imgIdx < 0 {
-		t.Fatalf("image not found in args: %v", args)
+		t.Fatalf("image not in args: %v", args)
 	}
-	tail := args[imgIdx+1:]
-	want := []string{"/bin/sh", "-c", "echo hello"}
-	if !slices.Equal(tail, want) {
-		t.Errorf("command+args = %v, want %v", tail, want)
+	epIdx := slices.Index(args, "--entrypoint")
+	if epIdx < 0 || epIdx >= imgIdx {
+		t.Fatalf("--entrypoint must be present and before image: %v", args)
+	}
+	wantEP := `["nsys","profile","-o","/out/trace","--stats=true"]`
+	if args[epIdx+1] != wantEP {
+		t.Errorf("entrypoint = %q, want %q", args[epIdx+1], wantEP)
+	}
+	wantTail := []string{"--config", "/cfg/run.yaml", "--epochs", "5"}
+	if !slices.Equal(args[imgIdx+1:], wantTail) {
+		t.Errorf("tail = %v, want %v", args[imgIdx+1:], wantTail)
 	}
 }
 
