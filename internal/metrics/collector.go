@@ -12,11 +12,20 @@ type SchedulerMetrics interface {
 	PreemptionCount() int64
 }
 
+// HousekeepingMetrics exposes housekeeper counters for /metrics.
+// If nil, housekeeping metrics are omitted.
+type HousekeepingMetrics interface {
+	PodsReaped(reason string) int64
+	ImagesPruned() int64
+	LastRunSeconds() int64
+}
+
 // Collector gathers metrics from the pod store and resource tracker.
 type Collector struct {
-	store     *state.PodStore
-	tracker   *scheduler.ResourceTracker
-	scheduler SchedulerMetrics
+	store        *state.PodStore
+	tracker      *scheduler.ResourceTracker
+	scheduler    SchedulerMetrics
+	housekeeping HousekeepingMetrics
 
 	// Wave 4 (#22) telemetry: caller pushes fresh samples; emission
 	// happens in Collect() so empty samples produce no metric line.
@@ -33,6 +42,12 @@ func NewCollector(store *state.PodStore, tracker *scheduler.ResourceTracker, sch
 		tracker:   tracker,
 		scheduler: sched,
 	}
+}
+
+// SetHousekeeping wires the housekeeping counter source. Pass nil to
+// disable housekeeping metric emission.
+func (c *Collector) SetHousekeeping(h HousekeepingMetrics) {
+	c.housekeeping = h
 }
 
 // Collect gathers all metrics at call time and returns them as MetricFamily slices.
@@ -141,6 +156,36 @@ func (c *Collector) Collect() []MetricFamily {
 			Help: "Total preemptions",
 			Type: "counter",
 			Metrics: []Metric{{Value: float64(c.scheduler.PreemptionCount())}},
+		})
+	}
+
+	// Housekeeping metrics (optional).
+	if c.housekeeping != nil {
+		reasons := []string{"ttl_completed", "ttl_failed", "orphan"}
+		reaped := make([]Metric, 0, len(reasons))
+		for _, r := range reasons {
+			reaped = append(reaped, Metric{
+				Labels: map[string]string{"reason": r},
+				Value:  float64(c.housekeeping.PodsReaped(r)),
+			})
+		}
+		families = append(families, MetricFamily{
+			Name:    "spark_pods_reaped_total",
+			Help:    "Total pods reaped by housekeeping, by reason",
+			Type:    "counter",
+			Metrics: reaped,
+		})
+		families = append(families, MetricFamily{
+			Name:    "spark_images_pruned_total",
+			Help:    "Total images reclaimed by housekeeping",
+			Type:    "counter",
+			Metrics: []Metric{{Value: float64(c.housekeeping.ImagesPruned())}},
+		})
+		families = append(families, MetricFamily{
+			Name:    "spark_housekeeping_last_run_seconds",
+			Help:    "Unix timestamp of the last housekeeping pass (0 if never)",
+			Type:    "gauge",
+			Metrics: []Metric{{Value: float64(c.housekeeping.LastRunSeconds())}},
 		})
 	}
 
