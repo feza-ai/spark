@@ -52,6 +52,23 @@ func parseYAMLLines(lines []string, start, baseIndent int, m map[string]interfac
 		}
 
 		if rest != "" {
+			// Flow-style list: ["a", "b", 1]
+			if strings.HasPrefix(rest, "[") {
+				list, err := parseFlowList(rest)
+				if err != nil {
+					return 0, fmt.Errorf("line %d: %w", i+1, err)
+				}
+				m[key] = list
+				i++
+				continue
+			}
+			// Block scalar indicators: | (literal), |- (strip), > (folded), >- (folded strip).
+			if rest == "|" || rest == "|-" || rest == ">" || rest == ">-" {
+				scalar, newIdx := parseBlockScalar(lines, i+1, baseIndent, rest)
+				m[key] = scalar
+				i = newIdx
+				continue
+			}
 			m[key] = unquote(rest)
 			i++
 		} else {
@@ -150,6 +167,155 @@ func parseYAMLList(lines []string, start, baseIndent int) ([]interface{}, int, e
 		}
 	}
 	return list, i, nil
+}
+
+// parseFlowList parses a YAML flow-style sequence like `[a, "b", 1]`.
+// Nested flow lists or maps are not supported and return an error.
+func parseFlowList(s string) ([]interface{}, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
+		return nil, fmt.Errorf("malformed flow list: %q", s)
+	}
+	inner := strings.TrimSpace(s[1 : len(s)-1])
+	if inner == "" {
+		return []interface{}{}, nil
+	}
+	var items []interface{}
+	var buf strings.Builder
+	inSingle, inDouble := false, false
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		switch c {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+			buf.WriteByte(c)
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+			buf.WriteByte(c)
+		case '[', '{':
+			if !inSingle && !inDouble {
+				return nil, fmt.Errorf("nested flow collections are not supported: %q", s)
+			}
+			buf.WriteByte(c)
+		case ',':
+			if !inSingle && !inDouble {
+				items = append(items, unquote(strings.TrimSpace(buf.String())))
+				buf.Reset()
+				continue
+			}
+			buf.WriteByte(c)
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	if inSingle || inDouble {
+		return nil, fmt.Errorf("unterminated quote in flow list: %q", s)
+	}
+	last := strings.TrimSpace(buf.String())
+	if last != "" {
+		items = append(items, unquote(last))
+	}
+	return items, nil
+}
+
+// parseBlockScalar consumes a YAML block scalar (|, |-, >, >-) starting
+// at line `start`. Lines that are more indented than `parentIndent` are
+// included; the common indent (the indent of the first non-empty content
+// line) is stripped. Returns the joined string and the next line index.
+//
+//	|   literal — preserve newlines, keep one trailing newline.
+//	|-  literal strip — preserve newlines, strip trailing newlines.
+//	>   folded  — join lines with single spaces, keep one trailing newline.
+//	>-  folded strip — join lines with single spaces, strip trailing newlines.
+func parseBlockScalar(lines []string, start, parentIndent int, indicator string) (string, int) {
+	folded := strings.HasPrefix(indicator, ">")
+	strip := strings.HasSuffix(indicator, "-")
+
+	// Find content indent: first non-empty line with indent > parentIndent.
+	contentIndent := -1
+	end := start
+	for end < len(lines) {
+		line := lines[end]
+		if strings.TrimSpace(line) == "" {
+			end++
+			continue
+		}
+		ind := countIndent(line)
+		if ind <= parentIndent {
+			break
+		}
+		if contentIndent < 0 {
+			contentIndent = ind
+		}
+		if ind < contentIndent {
+			break
+		}
+		end++
+	}
+	if contentIndent < 0 {
+		return "", end
+	}
+
+	var collected []string
+	for j := start; j < end; j++ {
+		line := lines[j]
+		if strings.TrimSpace(line) == "" {
+			collected = append(collected, "")
+			continue
+		}
+		// Strip exactly contentIndent spaces (after expanding tabs as
+		// countIndent does); use min so we don't slice past length.
+		stripN := contentIndent
+		if stripN > len(line) {
+			stripN = len(line)
+		}
+		// Walk the prefix until we've stripped contentIndent columns.
+		col := 0
+		k := 0
+		for k < len(line) && col < contentIndent {
+			if line[k] == ' ' {
+				col++
+				k++
+			} else if line[k] == '\t' {
+				col += 2
+				k++
+			} else {
+				break
+			}
+		}
+		collected = append(collected, line[k:])
+	}
+
+	var joined string
+	if folded {
+		// Fold: replace single newlines with space, keep blank lines.
+		var b strings.Builder
+		for i, ln := range collected {
+			if i > 0 {
+				prev := collected[i-1]
+				if prev == "" || ln == "" {
+					b.WriteString("\n")
+				} else {
+					b.WriteString(" ")
+				}
+			}
+			b.WriteString(ln)
+		}
+		joined = b.String()
+	} else {
+		joined = strings.Join(collected, "\n")
+	}
+
+	if strip {
+		joined = strings.TrimRight(joined, "\n")
+	} else {
+		joined = strings.TrimRight(joined, "\n") + "\n"
+	}
+	return joined, end
 }
 
 func countIndent(line string) int {
