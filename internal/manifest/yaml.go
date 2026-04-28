@@ -267,13 +267,8 @@ func parseBlockScalar(lines []string, start, parentIndent int, indicator string)
 			collected = append(collected, "")
 			continue
 		}
-		// Strip exactly contentIndent spaces (after expanding tabs as
-		// countIndent does); use min so we don't slice past length.
-		stripN := contentIndent
-		if stripN > len(line) {
-			stripN = len(line)
-		}
-		// Walk the prefix until we've stripped contentIndent columns.
+		// Walk the prefix until we've stripped contentIndent columns
+		// (counting tabs as 2, matching countIndent).
 		col := 0
 		k := 0
 		for k < len(line) && col < contentIndent {
