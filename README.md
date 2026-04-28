@@ -67,6 +67,13 @@ Spark will detect system resources (CPU, memory, GPU), connect to NATS, and begi
 | `--reconcile-resources-interval` | `60s` | Resource reconciliation interval |
 | `--log-format` | `text` | Log output format (text or json) |
 | `--api-token-file` | *(empty)* | Path to file containing API bearer token |
+| `--housekeeping-interval` | `1m` | Housekeeping loop interval |
+| `--completed-pod-ttl` | `1h` | TTL after which Completed pods are reaped (0 disables) |
+| `--failed-pod-ttl` | `24h` | TTL after which Failed pods are reaped (0 disables) |
+| `--orphan-reap-ttl` | `1h` | TTL after which terminal-state orphan podman pods are reaped (0 disables) |
+| `--image-prune-interval` | `24h` | Interval between `podman image prune -f` runs (0 disables) |
+
+Per-pod TTL override is available via the `spark.feza.ai/ttl-after-finished` annotation (any value parseable by `time.ParseDuration`; `0s` disables cleanup for that pod).
 
 ## HTTP API
 

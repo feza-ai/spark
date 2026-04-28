@@ -17,12 +17,13 @@ import (
 
 	"github.com/feza-ai/spark/internal/api"
 	"github.com/feza-ai/spark/internal/bus"
-	"github.com/feza-ai/spark/internal/metrics"
 	"github.com/feza-ai/spark/internal/cron"
 	"github.com/feza-ai/spark/internal/executor"
 	"github.com/feza-ai/spark/internal/gpu"
+	"github.com/feza-ai/spark/internal/housekeeper"
 	"github.com/feza-ai/spark/internal/lifecycle"
 	"github.com/feza-ai/spark/internal/manifest"
+	"github.com/feza-ai/spark/internal/metrics"
 	"github.com/feza-ai/spark/internal/reconciler"
 	"github.com/feza-ai/spark/internal/scheduler"
 	"github.com/feza-ai/spark/internal/state"
@@ -50,6 +51,11 @@ func main() {
 	reconcileResourcesInterval := flag.Duration("reconcile-resources-interval", 60*time.Second, "resource reconciliation interval")
 	logFormat := flag.String("log-format", "text", "log output format (text or json)")
 	apiTokenFile := flag.String("api-token-file", "", "path to file containing API bearer token")
+	housekeepingInterval := flag.Duration("housekeeping-interval", time.Minute, "housekeeping loop interval")
+	completedPodTTL := flag.Duration("completed-pod-ttl", time.Hour, "TTL after which Completed pods are reaped (0 disables)")
+	failedPodTTL := flag.Duration("failed-pod-ttl", 24*time.Hour, "TTL after which Failed pods are reaped (0 disables)")
+	orphanReapTTL := flag.Duration("orphan-reap-ttl", time.Hour, "TTL after which terminal-state orphan podman pods are reaped (0 disables)")
+	imagePruneInterval := flag.Duration("image-prune-interval", 24*time.Hour, "interval between 'podman image prune -f' runs (0 disables)")
 	flag.Parse()
 
 	reserveCores, err := scheduler.ParseCoreRange(*systemReserveCoresStr, runtime.NumCPU())
@@ -264,6 +270,24 @@ func main() {
 
 	// 12a. Create metrics collector.
 	metricsCollector := metrics.NewCollector(store, tracker, sched)
+
+	// 12b. Start housekeeper (TTL pod reap, orphan reap, image prune).
+	hk, hkCounters := housekeeper.New(store, exec, housekeeper.Config{
+		Interval:           *housekeepingInterval,
+		CompletedPodTTL:    *completedPodTTL,
+		FailedPodTTL:       *failedPodTTL,
+		OrphanReapTTL:      *orphanReapTTL,
+		ImagePruneInterval: *imagePruneInterval,
+	})
+	metricsCollector.SetHousekeeping(hkCounters)
+	go hk.Run(ctx)
+	slog.Info("housekeeper started",
+		"interval", *housekeepingInterval,
+		"completed_ttl", *completedPodTTL,
+		"failed_ttl", *failedPodTTL,
+		"orphan_ttl", *orphanReapTTL,
+		"image_prune_interval", *imagePruneInterval,
+	)
 
 	// 13. Start HTTP API server.
 	var gpuInfoPtr *gpu.GPUInfo
