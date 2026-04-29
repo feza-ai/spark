@@ -1,6 +1,6 @@
 # Spark: Resolve Open GitHub Issue #32 (Stuck-Pending GPU Pod Watchdog + HostPath Validation)
 
-## Status: Planned
+## Status: Done (2026-04-28, v1.12.0, issue #32 closed)
 
 ## Context
 
@@ -138,9 +138,9 @@ Out of scope:
 
 - [x] T2.1 `go vet ./... && staticcheck ./... && go test ./... -race -timeout 120s` -- verified clean on main post-merge of PRs #33/#34/#35.
 - [x] T2.2 Append a devlog.md entry: reproduce summary, root cause, fix description (done in PR #35, 2026-04-28).
-- [ ] T2.3 Verify release-please cuts a tag (release PR #36 = v1.12.0 open); merge it; wait for the release artifact. Owner: TBD  Est: 15m  verifies: [infrastructure]
-- [ ] T2.4 Deploy on DGX (`192.168.86.250`) and re-run the issue #32 repro: submit the pod manifest verbatim (block-style); confirm either it schedules or emits a watchdog event within one reconcile interval. Submit a deliberately-broken manifest with empty hostPath; confirm a 4xx response naming the volume. Capture `curl` output. Owner: TBD  Est: 30m  verifies: [issue-32-ask-1, issue-32-ask-2, issue-32-ask-3]
-- [ ] T2.5 Close issue #32 with a comment linking the PR, the release tag, and the live verification output. Owner: TBD  Est: 10m  delivers: [closed issue #32]
+- [x] T2.3 Release v1.12.0 cut via release-please PR #36 (merged 2026-04-28); DGX auto-upgraded.
+- [x] T2.4 DGX live verification on v1.12.0: empty `hostPath.path` -> HTTP 400 with `volume "bad": hostPath.path is empty`; CPU-overcommit pod emits `pending` + `PendingWatchdog` events every reconcile tick with exact shortfall (`cpu 11000m > 7000m free`); issue manifest schedules cleanly when resources fit. (Curl output captured in issue #32 close comment.)
+- [x] T2.5 Issue #32 closed with verification comment linking v1.12.0 and PRs #33/#34/#35.
 
 ## Parallel Work
 
