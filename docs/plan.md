@@ -114,13 +114,13 @@ Out of scope:
 
 ### Wave 1: Implementation (3 agents)
 
-- [ ] T1.1 Add hostPath validation in `internal/manifest/parse.go`. Reject empty `path` with `volume %q: hostPath.path is empty`. Owner: TBD  Est: 45m  verifies: [issue-32-ask-3]
+- [x] T1.1 Add hostPath validation in `internal/manifest/parse.go`. Reject empty `path` with `volume %q: hostPath.path is empty`. (PR #33, merged 2026-04-28.) Owner: TBD  Est: 45m  verifies: [issue-32-ask-3]
   - Acceptance: parse returns error naming the volume; existing parse tests still pass.
   - Subtasks: S1.1.1 unit tests in `parse_test.go` (valid hostPath, empty hostPath, missing hostPath when `emptyDir` not set).
-- [ ] T1.2 Add pending watchdog to `internal/reconciler/reconciler.go`. In `reconcilePending`, every code path -- `Scheduled`, `Preempting`, `Pending`, error -- must call `updateStatus` with a non-empty message OR emit a dedicated event via the OnStatusChange hook. The `case scheduler.Pending` arm at reconciler.go:394 must record `awaiting-resources: <reason from scheduler>`. Owner: TBD  Est: 90m  verifies: [issue-32-ask-2]
+- [x] T1.2 Add pending watchdog to `internal/reconciler/reconciler.go`. (PR #34, merged 2026-04-28.) In `reconcilePending`, every code path -- `Scheduled`, `Preempting`, `Pending`, error -- must call `updateStatus` with a non-empty message OR emit a dedicated event via the OnStatusChange hook. The `case scheduler.Pending` arm at reconciler.go:394 must record `awaiting-resources: <reason from scheduler>`. Owner: TBD  Est: 90m  verifies: [issue-32-ask-2]
   - Acceptance: a Pending pod that does not fit gets a status message every tick; integration test inspects the events list and asserts at least one watchdog event after one reconcile interval.
   - Subtasks: S1.2.1 extend `Schedule()` result with a `Reason string` (or read from existing fields) so the watchdog can quote why scheduling failed; S1.2.2 integration test in `reconciler_integration_test.go` covering a GPU=1 pending pod with no GPU available.
-- [ ] T1.3 Investigate the original repro: drop a fresh pod identical to the issue manifest into a unit-style fixture and assert the reconciler reaches `reconcilePending`. If we find a state where the reconciler does NOT reach `reconcilePending` for a Pending record, file the path and fix it in T2.x. Owner: TBD  Est: 60m  verifies: [issue-32-ask-1]
+- [x] T1.3 Investigate the original repro (PR #35, merged 2026-04-28). Finding: `reconcileOnce` always reaches `reconcilePending` for a `Pending` pod; the silent path was inside `reconcilePending`'s `case scheduler.Pending` arm and is fixed by T1.2. FU1.3b filed for separate scheduler-accounting audit.: drop a fresh pod identical to the issue manifest into a unit-style fixture and assert the reconciler reaches `reconcilePending`. If we find a state where the reconciler does NOT reach `reconcilePending` for a Pending record, file the path and fix it in T2.x. Owner: TBD  Est: 60m  verifies: [issue-32-ask-1]
   - Acceptance: written finding in docs/devlog.md; if a code defect was found, a follow-up task is added; if not, the watchdog (T1.2) is documented as the sufficient mitigation.
 
 #### Wave 1 follow-ups (from T1.3 Issue #32 investigation)
@@ -136,9 +136,9 @@ Out of scope:
 
 ### Wave 2: Test, lint, document, release (1 agent, sequential)
 
-- [ ] T2.1 `go vet ./... && staticcheck ./... && go test ./... -race -timeout 120s`. Fix any failures. Owner: TBD  Est: 30m  verifies: [infrastructure]
-- [ ] T2.2 Append a devlog.md entry: reproduce summary, root cause, fix description, deployed version. Owner: TBD  Est: 20m  delivers: [docs/devlog.md entry for issue #32]
-- [ ] T2.3 Open PR; rebase-and-merge to main; verify release-please cuts a tag; wait for the release artifact. Owner: TBD  Est: 30m  verifies: [infrastructure]
+- [x] T2.1 `go vet ./... && staticcheck ./... && go test ./... -race -timeout 120s` -- verified clean on main post-merge of PRs #33/#34/#35.
+- [x] T2.2 Append a devlog.md entry: reproduce summary, root cause, fix description (done in PR #35, 2026-04-28).
+- [ ] T2.3 Verify release-please cuts a tag (release PR #36 = v1.12.0 open); merge it; wait for the release artifact. Owner: TBD  Est: 15m  verifies: [infrastructure]
 - [ ] T2.4 Deploy on DGX (`192.168.86.250`) and re-run the issue #32 repro: submit the pod manifest verbatim (block-style); confirm either it schedules or emits a watchdog event within one reconcile interval. Submit a deliberately-broken manifest with empty hostPath; confirm a 4xx response naming the volume. Capture `curl` output. Owner: TBD  Est: 30m  verifies: [issue-32-ask-1, issue-32-ask-2, issue-32-ask-3]
 - [ ] T2.5 Close issue #32 with a comment linking the PR, the release tag, and the live verification output. Owner: TBD  Est: 10m  delivers: [closed issue #32]
 
