@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -663,6 +664,76 @@ func TestParse_PodBackoffLimit(t *testing.T) {
 			}
 			if result.Pods[0].BackoffLimit != tt.want {
 				t.Errorf("BackoffLimit = %d, want %d", result.Pods[0].BackoffLimit, tt.want)
+			}
+		})
+	}
+}
+
+func TestParse_VolumeValidation(t *testing.T) {
+	const podHeader = `apiVersion: v1
+kind: Pod
+metadata:
+  name: vol-test
+spec:
+  containers:
+    - name: main
+      image: busybox
+  volumes:
+`
+
+	tests := []struct {
+		name      string
+		volumes   string
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "valid hostPath",
+			volumes: `    - name: data
+      hostPath:
+        path: /mnt/data
+`,
+			wantErr: false,
+		},
+		{
+			name: "valid emptyDir only",
+			volumes: `    - name: scratch
+      emptyDir: {}
+`,
+			wantErr: false,
+		},
+		{
+			name: "empty hostPath path",
+			volumes: `    - name: data
+      hostPath:
+        path: ""
+`,
+			wantErr:   true,
+			errSubstr: `volume "data": hostPath.path is empty`,
+		},
+		{
+			name: "missing hostPath and emptyDir",
+			volumes: `    - name: orphan
+`,
+			wantErr:   true,
+			errSubstr: `volume "orphan": must set hostPath or emptyDir`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(podHeader+tt.volumes), nil)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errSubstr)
+				}
+				if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}

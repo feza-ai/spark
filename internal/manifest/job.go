@@ -83,7 +83,11 @@ func parsePodFromMap(specMap map[string]interface{}, priorityClasses map[string]
 		if !ok {
 			continue
 		}
-		pod.Volumes = append(pod.Volumes, parseVolume(vm))
+		vol, err := parseVolume(vm)
+		if err != nil {
+			return PodSpec{}, err
+		}
+		pod.Volumes = append(pod.Volumes, vol)
 	}
 
 	return pod, nil
@@ -249,10 +253,11 @@ func parseProbe(pm map[string]interface{}) *ProbeSpec {
 	return probe
 }
 
-func parseVolume(vm map[string]interface{}) VolumeSpec {
+func parseVolume(vm map[string]interface{}) (VolumeSpec, error) {
 	v := VolumeSpec{
 		Name: getString(vm, "name"),
 	}
+	_, hostPathPresent := vm["hostPath"]
 	if hp := getMap(vm, "hostPath"); hp != nil {
 		v.HostPath = getString(hp, "path")
 	}
@@ -264,5 +269,11 @@ func parseVolume(vm map[string]interface{}) VolumeSpec {
 			v.EmptyDir = true
 		}
 	}
-	return v
+	if hostPathPresent && v.HostPath == "" {
+		return VolumeSpec{}, fmt.Errorf("volume %q: hostPath.path is empty", v.Name)
+	}
+	if !hostPathPresent && !v.EmptyDir {
+		return VolumeSpec{}, fmt.Errorf("volume %q: must set hostPath or emptyDir", v.Name)
+	}
+	return v, nil
 }
