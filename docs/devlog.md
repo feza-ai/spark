@@ -1,5 +1,18 @@
 # Spark Development Log
 
+## 2026-04-29: Issue #37 phantom-running pods leak resources
+
+**Type:** finding
+**Tags:** reconciler, executor, podman, issue-37, resource-leak
+
+**Problem:** A pod stayed in `phase: running` in the Spark API after its podman pod had been removed (silent exit, OOM, or manual `podman pod rm`). The pod's CPU/GPU/memory quota was held forever; subsequent pods needing the same resources queued indefinitely. Workaround was a manual `DELETE /api/v1/pods/<name>`.
+
+**Root cause:** `internal/executor/podman.go` `PodStatus` runs `podman pod inspect <name>`. When the pod has been removed entirely, that command exits non-zero and `PodStatus` returns an error. `internal/reconciler/reconciler.go` `reconcileRunning` treated every `PodStatus` error as transient (`slog.Error` + return), so the state machine never transitioned. A primitive `isNoSuchPod(err)` already existed and was used by `reconcileScheduled`; `reconcileRunning` simply did not consult it.
+
+**Fix:** In `reconcileRunning`, switch on the error class. If `isNoSuchPod(err)`, synthesize `Status{Running: false, ExitCode: -1}`, append a `lost` event, and fall through to the existing exited-pod transition path (release scheduler resources and apply restart policy). All other errors keep the existing log-and-return behaviour. Test: `TestIssue37_NoSuchPodRecoversResources` injects a `no such pod` error from a stub executor and asserts the pod ends up Failed with the resources released and a `lost` event recorded.
+
+**Impact:** A pod whose podman backing has gone away is detected within one reconcile tick (~5s) and its quota is released. No new dependencies, no API change, parallel to the existing `reconcileScheduled` recovery path.
+
 ## 2026-04-28: Issue #32 silent-pending investigation (T1.3)
 
 **Type:** investigation
