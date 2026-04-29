@@ -415,7 +415,19 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 // reconcileRunning checks the actual status of running pods and handles failures.
 func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) {
 	st, err := r.executor.PodStatus(ctx, pod.Spec.Name)
-	if err != nil {
+	switch {
+	case err == nil:
+		// fall through to normal handling below.
+	case isNoSuchPod(err):
+		// Issue #37: the podman pod has been removed behind Spark's back
+		// (silent exit, OOM, manual `podman pod rm`). Treat as a non-running
+		// container with an unknown exit code so the policy switch below
+		// either restarts it or marks it failed; either way the scheduler
+		// resources are released so the quota does not leak.
+		slog.Warn("running pod missing in podman; recovering", "pod", pod.Spec.Name, "err", err)
+		st = executor.Status{Running: false, ExitCode: -1}
+		r.store.AddEvent(pod.Spec.Name, "lost", "podman pod missing; releasing resources")
+	default:
 		slog.Error("failed to get pod status", "pod", pod.Spec.Name, "err", err)
 		return
 	}

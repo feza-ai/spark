@@ -472,6 +472,64 @@ func TestPodStatusErrorKeepsRunning(t *testing.T) {
 	}
 }
 
+// TestIssue37_NoSuchPodRecoversResources covers Issue #37. When a pod's
+// underlying podman pod is removed behind Spark's back, PodStatus returns
+// a "no such pod" error. The reconciler must treat that as a non-running
+// container, mark the pod Failed (under restartPolicy=Never), release
+// scheduler resources, and emit a "lost" event. Otherwise the resource
+// quota leaks forever.
+func TestIssue37_NoSuchPodRecoversResources(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("phantom", "Never", 0)
+	store.Apply(spec)
+
+	// Tick 1: schedule and create. After this the scheduler holds the pod's
+	// resources and the store records it as Running.
+	r.reconcileOnce(context.Background())
+	r.reconcileOnce(context.Background())
+
+	rec, _ := store.Get("phantom")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("setup: expected Running, got %s", rec.Status)
+	}
+	if _, held := sched.Tracker().AllocatedBy("phantom"); !held {
+		t.Fatal("setup: expected scheduler to hold phantom's resources")
+	}
+
+	// Simulate the issue: the podman pod is gone, so PodStatus returns
+	// a "no such pod" error (matches isNoSuchPod).
+	exec.mu.Lock()
+	exec.statusErr = errors.New("Error: no such pod phantom")
+	exec.mu.Unlock()
+
+	// Tick 2: reconciler must detect the missing podman pod and recover.
+	r.reconcileOnce(context.Background())
+
+	rec, _ = store.Get("phantom")
+	if rec.Status != state.StatusFailed {
+		t.Fatalf("expected Failed after no-such-pod recovery, got %s", rec.Status)
+	}
+	if _, held := sched.Tracker().AllocatedBy("phantom"); held {
+		t.Fatal("expected scheduler resources to be released after recovery")
+	}
+	// Confirm a "lost" event was recorded so operators see why the pod
+	// transitioned without a clean exit signal.
+	var sawLost bool
+	for _, e := range rec.Events {
+		if e.Type == "lost" {
+			sawLost = true
+			break
+		}
+	}
+	if !sawLost {
+		t.Fatalf("expected a 'lost' event in pod history, got %+v", rec.Events)
+	}
+}
+
 func TestRunLoopStopsOnCancel(t *testing.T) {
 	store := state.NewPodStore()
 	sched := newTestScheduler()
