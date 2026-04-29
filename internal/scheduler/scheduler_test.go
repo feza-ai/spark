@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,53 @@ func TestSchedule_ResourcesAvailable(t *testing.T) {
 	// Verify resources were allocated.
 	if _, ok := tracker.AllocatedBy("pod-a"); !ok {
 		t.Fatal("expected pod-a to be allocated")
+	}
+}
+
+// TestSchedule_CpusetShortfallReason covers FU1.3b from Issue #32. When
+// cpuset pinning is on and the only constraint that blocks scheduling is
+// the contiguous-core block (millis-level resources fit), the Pending
+// reason must name the cpuset shortfall instead of the useless
+// "resources unavailable".
+func TestSchedule_CpusetShortfallReason(t *testing.T) {
+	// 8 pinnable cores, plenty of memory, no GPU. Construct the tracker
+	// the supported way: pass total.Cores so coreAssignments is initialised.
+	tracker := NewResourceTracker(
+		Resources{CPUMillis: 8000, MemoryMB: 32768, GPUMemoryMB: 0, Cores: []int{0, 1, 2, 3, 4, 5, 6, 7}},
+		Resources{},
+		nil, 0,
+	)
+	s := NewScheduler(tracker)
+
+	// Allocate a 5-core hog so 5 cores are pinned and 3 remain free.
+	if err := tracker.Allocate("hog", manifest.ResourceList{CPUMillis: 5000, MemoryMB: 4096}); err != nil {
+		t.Fatalf("allocate hog: %v", err)
+	}
+	s.AddPod(PodInfo{
+		Name:      "hog",
+		Priority:  0, // highest priority — never a preemption candidate
+		Resources: manifest.ResourceList{CPUMillis: 5000, MemoryMB: 4096},
+		StartTime: time.Now(),
+	})
+
+	// Manually shrink the hog's millis claim to 3000m without releasing
+	// cores. Millis-available is now 8000-3000=5000m — a 4-core (4000m)
+	// request fits the millis check but cannot find 4 unassigned cores
+	// (only 3 are free), so CanFit fails on the cpuset block. This is the
+	// FU1.3b shape: millis fit, cpuset doesn't.
+	tracker.allocations["hog"] = manifest.ResourceList{CPUMillis: 3000, MemoryMB: 4096}
+
+	result := s.Schedule(podSpec("need-4-cores", 100, 4000, 1024, 0))
+
+	if result.Action != Pending {
+		t.Fatalf("expected Pending, got action=%d reason=%q", result.Action, result.Reason)
+	}
+	if result.Reason == "" {
+		t.Fatal("expected non-empty Reason")
+	}
+	wantSub := "cpuset cores: need 4 unassigned, 3 free"
+	if !strings.Contains(result.Reason, wantSub) {
+		t.Fatalf("Reason missing cpuset shortfall: got %q, want substring %q", result.Reason, wantSub)
 	}
 }
 

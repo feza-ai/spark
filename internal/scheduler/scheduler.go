@@ -12,9 +12,12 @@ import (
 )
 
 // describeShortfall returns a human-readable summary of which resource
-// dimensions in req exceed avail. Returned string is never empty when the
-// request does not fit.
-func describeShortfall(req manifest.ResourceList, avail Resources) string {
+// dimensions in req exceed avail. When cpusetEnabled is true and the
+// request is for whole cores (CPUMillis a positive multiple of 1000),
+// the cpuset core-block constraint is also reported when fewer
+// unassignedCores are free than requested. Returned string is never empty
+// when the request does not fit.
+func describeShortfall(req manifest.ResourceList, avail Resources, cpusetEnabled bool, unassignedCores int) string {
 	var parts []string
 	if req.CPUMillis > avail.CPUMillis {
 		parts = append(parts, fmt.Sprintf("cpu %dm > %dm free", req.CPUMillis, avail.CPUMillis))
@@ -27,6 +30,12 @@ func describeShortfall(req manifest.ResourceList, avail Resources) string {
 	}
 	if req.GPUMemoryMB > avail.GPUMemoryMB {
 		parts = append(parts, fmt.Sprintf("gpu-memory %dMB > %dMB free", req.GPUMemoryMB, avail.GPUMemoryMB))
+	}
+	if cpusetEnabled && req.CPUMillis >= 1000 && req.CPUMillis%1000 == 0 {
+		needed := req.CPUMillis / 1000
+		if unassignedCores < needed {
+			parts = append(parts, fmt.Sprintf("cpuset cores: need %d unassigned, %d free", needed, unassignedCores))
+		}
 	}
 	if len(parts) == 0 {
 		return "resources unavailable"
@@ -125,7 +134,9 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 		candidates = append(candidates, pod)
 	}
 
-	shortfall := describeShortfall(req, s.tracker.Available())
+	cpusetOn := s.tracker.CoresEnabled()
+	freeCores := s.tracker.UnassignedCoreCount()
+	shortfall := describeShortfall(req, s.tracker.Available(), cpusetOn, freeCores)
 
 	if len(candidates) == 0 {
 		return ScheduleResult{
@@ -185,7 +196,7 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 				MemoryMB:    freed.MemoryMB,
 				GPUCount:    freed.GPUCount,
 				GPUMemoryMB: freed.GPUMemoryMB,
-			})),
+			}, cpusetOn, freeCores)),
 	}
 }
 
