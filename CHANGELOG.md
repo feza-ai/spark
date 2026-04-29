@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/feza-ai/spark/compare/v1.12.0...v1.13.0) (2026-04-29)
+
+
+### Features
+
+* **scheduler:** cpuset-aware shortfall reason (FU1.3b, refs [#32](https://github.com/feza-ai/spark/issues/32)) ([0d42ab3](https://github.com/feza-ai/spark/commit/0d42ab33e0fa7ebd2cfa5d9eb73f11d5e27ffcd3))
+
 ## [1.12.0](https://github.com/feza-ai/spark/compare/v1.11.0...v1.12.0) (2026-04-29)
 
 
