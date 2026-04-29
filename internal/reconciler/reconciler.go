@@ -388,11 +388,27 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 				r.onPodRunning(pod.Spec.Name)
 			}
 		} else {
-			slog.Warn("pod still not schedulable after preemption", "pod", pod.Spec.Name)
+			reason := retry.Reason
+			if reason == "" {
+				reason = "still not schedulable after preemption"
+			}
+			msg := "awaiting-resources: " + reason
+			slog.Warn("pod still not schedulable after preemption", "pod", pod.Spec.Name, "reason", reason)
+			r.updateStatus(pod.Spec.Name, state.StatusPending, msg)
+			r.store.AddEvent(pod.Spec.Name, "PendingWatchdog", msg)
 		}
 
 	case scheduler.Pending:
-		slog.Debug("pod cannot be scheduled yet", "pod", pod.Spec.Name)
+		// Watchdog: every Pending reconcile MUST emit at least one
+		// observable signal so operators can see why a pod is stuck.
+		reason := result.Reason
+		if reason == "" {
+			reason = "scheduler reported Pending without a reason"
+		}
+		msg := "awaiting-resources: " + reason
+		slog.Info("pod awaiting resources", "pod", pod.Spec.Name, "reason", reason)
+		r.updateStatus(pod.Spec.Name, state.StatusPending, msg)
+		r.store.AddEvent(pod.Spec.Name, "PendingWatchdog", msg)
 	}
 }
 
