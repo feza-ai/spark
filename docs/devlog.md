@@ -1,5 +1,26 @@
 # Spark Development Log
 
+## 2026-04-28: Issue #32 silent-pending investigation (T1.3)
+
+**Type:** investigation
+**Tags:** reconciler, scheduler, issue-32, watchdog, silent-pending
+
+**Problem:** Issue #32: a high-priority GPU pod (`ztensor102-v17-r2`, GPU=1, priorityClassName=high, restartPolicy=Never) sat in `status: pending` for 20+ minutes with `events: []`, `startAttempts: 0`, empty `reason`. The user asked whether `reconcileOnce` could fail to reach `reconcilePending` for a "logically pending" pod -- e.g. because a prior failed attempt had left the record in `Scheduled` state.
+
+**Reproduction:** New file `internal/reconciler/reconciler_issue32_test.go`. Three tests:
+
+1. `TestIssue32_PendingPodReachesReconcilePending` -- submit the exact issue manifest as a `PodSpec` literal into a fresh `PodStore`, run `reconcileOnce` once, assert `Status == Running` and `CreatePod` was called. Passes -- the natural Pending state DOES reach `reconcilePending`.
+2. `TestIssue32_StatusGatesReconcilePath` -- table-driven over `Pending|Scheduled|Running|Completed|Failed|Preempted`. Only `Pending` triggers a `CreatePod` (proxy for "reached `reconcilePending`"). Confirmed: every other status takes a different switch arm; none silently re-routes a pending-equivalent pod into `reconcilePending`.
+3. `TestIssue32_SchedulerPendingIsSilent` -- give the scheduler too little CPU to fit the request and no preemption candidates; `Schedule()` returns `Action=Pending`. Reconciler reaches `reconcilePending` and hits the `case scheduler.Pending` arm.
+
+**Root cause (pre-fix):** This is NOT a "wrong status routes around `reconcilePending`" bug. `reconcileOnce`'s switch is exhaustive over the states it cares about, and `Apply` always inserts new pods as `StatusPending`. The defect was INSIDE `reconcilePending`: when `Schedule()` returned `Action=Pending`, the only side effect was `slog.Debug(...)`. From an API consumer's perspective this was indistinguishable from "the reconciler never ran" -- exactly the user-reported symptom.
+
+**Fix:** T1.2 (PR #34, this same wave) addresses the visibility half: the `case scheduler.Pending` arm now calls `updateStatus(name, StatusPending, "awaiting-resources: "+reason)` and `store.AddEvent(name, "PendingWatchdog", msg)`. The `ScheduleResult.Reason` field plumbs the scheduler's shortfall description (e.g. "no preemption candidates; shortfall: gpu 1 > 0 free") to the reconciler. After this Wave 1 lands, the issue's symptom (silent forever-pending) is impossible by construction.
+
+**Outstanding:** the second-order question -- WHY did `Schedule()` return `Pending` for a pod that fit free capacity in the original repro -- remains. Likely candidate: `scheduler.go:89` skips candidates with `pod.Priority <= spec.Priority`, so if the running CPU-only pod's `Priority` was equal to (or lower numeric than) the new pod's, it was skipped during preemption-candidate gathering. Tracked as FU1.3b in the plan.
+
+**Impact:** `reconcileOnce` cannot fail to reach `reconcilePending` for a `Pending` pod -- confirmed by test. The watchdog (T1.2) is sufficient to mitigate the user-visible symptom; the scheduler-accounting audit (FU1.3b) is a separate follow-up.
+
 ## 2026-04-16: Issue #22 cpuset pinning shipped (v1.9.0-v1.10.1), DGX validated
 
 **Type:** finding

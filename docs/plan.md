@@ -123,6 +123,17 @@ Out of scope:
 - [ ] T1.3 Investigate the original repro: drop a fresh pod identical to the issue manifest into a unit-style fixture and assert the reconciler reaches `reconcilePending`. If we find a state where the reconciler does NOT reach `reconcilePending` for a Pending record, file the path and fix it in T2.x. Owner: TBD  Est: 60m  verifies: [issue-32-ask-1]
   - Acceptance: written finding in docs/devlog.md; if a code defect was found, a follow-up task is added; if not, the watchdog (T1.2) is documented as the sufficient mitigation.
 
+#### Wave 1 follow-ups (from T1.3 Issue #32 investigation)
+
+- [ ] FU1.3b Audit why the live scheduler returned `Pending` for
+  Issue #32's pod despite ample free GPU/RAM/CPU. Likely candidate:
+  `scheduler.go:89` skips candidates with `pod.Priority <= spec.Priority`,
+  so if the running CPU-only pod's `Priority` was equal to (or lower
+  numeric than) the new pod's, it was skipped during preemption-candidate
+  gathering. Verify the priority class -> numeric mapping and the live
+  `scheduler.pods` content during repro. Separate from T1.2 watchdog
+  (visibility) -- this is correctness. Est: 90m.
+
 ### Wave 2: Test, lint, document, release (1 agent, sequential)
 
 - [ ] T2.1 `go vet ./... && staticcheck ./... && go test ./... -race -timeout 120s`. Fix any failures. Owner: TBD  Est: 30m  verifies: [infrastructure]
