@@ -241,6 +241,28 @@ func (rt *ResourceTracker) assignedCoreCountLocked() int {
 	return count
 }
 
+// CoresEnabled reports whether cpuset pinning is active (i.e. the tracker
+// was constructed with a non-empty pinnable-core list). When false, the
+// whole-core block check in CanFit is skipped.
+func (rt *ResourceTracker) CoresEnabled() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return len(rt.cores) > 0
+}
+
+// UnassignedCoreCount returns the number of cpuset-pinnable cores not
+// currently assigned to any pod. Returns 0 when cpuset pinning is disabled.
+// Used by Schedule() to surface a precise shortfall reason when CanFit
+// fails the whole-core block check while millis-level resources fit.
+func (rt *ResourceTracker) UnassignedCoreCount() int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if len(rt.cores) == 0 {
+		return 0
+	}
+	return len(rt.cores) - rt.assignedCoreCountLocked()
+}
+
 // unassignedCoresLocked returns n unassigned CPU core IDs. It prefers the
 // lowest-index contiguous block of n cores when one exists; otherwise it
 // returns any n unassigned cores in ascending order. Returns nil if fewer
