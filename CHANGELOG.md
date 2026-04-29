@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.1](https://github.com/feza-ai/spark/compare/v1.13.0...v1.13.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* **reconciler:** recover from missing podman pods (closes [#37](https://github.com/feza-ai/spark/issues/37)) ([5100e89](https://github.com/feza-ai/spark/commit/5100e890da343170f7ccb1a60337e92f1203efcd))
+
 ## [1.13.0](https://github.com/feza-ai/spark/compare/v1.12.0...v1.13.0) (2026-04-29)
 
 
