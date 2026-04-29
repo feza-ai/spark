@@ -125,7 +125,16 @@ Out of scope:
 
 #### Wave 1 follow-ups (from T1.3 Issue #32 investigation)
 
-- [ ] FU1.3b Audit why the live scheduler returned `Pending` for
+- [x] FU1.3b Cpuset-aware shortfall reason in scheduler (PR #38, merged
+  2026-04-28). Root cause was NOT priority-class accounting -- it was
+  cpuset-block invisibility: `CanFit` required N contiguous unassigned
+  cores for whole-core requests, but `describeShortfall` only checked
+  millis/memory/GPU and so reported `"resources unavailable"` whenever
+  the cpuset block was the sole blocker. Fix: added `CoresEnabled`
+  and `UnassignedCoreCount` accessors, extended `describeShortfall`
+  with cpuset-aware output (`cpuset cores: need N unassigned, M free`).
+  ORIGINAL HYPOTHESIS (priority-class) was wrong:
+  Audit why the live scheduler returned `Pending` for
   Issue #32's pod despite ample free GPU/RAM/CPU. Likely candidate:
   `scheduler.go:89` skips candidates with `pod.Priority <= spec.Priority`,
   so if the running CPU-only pod's `Priority` was equal to (or lower
