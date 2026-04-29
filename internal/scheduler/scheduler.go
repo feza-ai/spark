@@ -1,13 +1,38 @@
 package scheduler
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
 )
+
+// describeShortfall returns a human-readable summary of which resource
+// dimensions in req exceed avail. Returned string is never empty when the
+// request does not fit.
+func describeShortfall(req manifest.ResourceList, avail Resources) string {
+	var parts []string
+	if req.CPUMillis > avail.CPUMillis {
+		parts = append(parts, fmt.Sprintf("cpu %dm > %dm free", req.CPUMillis, avail.CPUMillis))
+	}
+	if req.MemoryMB > avail.MemoryMB {
+		parts = append(parts, fmt.Sprintf("memory %dMB > %dMB free", req.MemoryMB, avail.MemoryMB))
+	}
+	if req.GPUCount > avail.GPUCount {
+		parts = append(parts, fmt.Sprintf("gpu %d > %d free", req.GPUCount, avail.GPUCount))
+	}
+	if req.GPUMemoryMB > avail.GPUMemoryMB {
+		parts = append(parts, fmt.Sprintf("gpu-memory %dMB > %dMB free", req.GPUMemoryMB, avail.GPUMemoryMB))
+	}
+	if len(parts) == 0 {
+		return "resources unavailable"
+	}
+	return strings.Join(parts, ", ")
+}
 
 // ScheduleAction represents the outcome type of a scheduling attempt.
 type ScheduleAction int
@@ -22,6 +47,11 @@ const (
 type ScheduleResult struct {
 	Action  ScheduleAction
 	Victims []string // pod names to preempt (only when Action == Preempting)
+	// Reason is a human-readable explanation of why the scheduler picked
+	// this Action. Always populated for Pending (e.g. "no node has 1 free
+	// GPU", "preemption candidate set empty"); optional for Scheduled and
+	// Preempting. Watchdogs in the reconciler quote this verbatim.
+	Reason string
 }
 
 // PodInfo tracks a running pod's metadata for scheduling decisions.
@@ -95,8 +125,13 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 		candidates = append(candidates, pod)
 	}
 
+	shortfall := describeShortfall(req, s.tracker.Available())
+
 	if len(candidates) == 0 {
-		return ScheduleResult{Action: Pending}
+		return ScheduleResult{
+			Action: Pending,
+			Reason: "no preemption candidates (lower-priority, non-thrashed pods); shortfall: " + shortfall,
+		}
 	}
 
 	// Step 3: sort candidates by StartTime descending (most recent first)
@@ -142,7 +177,16 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 		return ScheduleResult{Action: Preempting, Victims: victims}
 	}
 
-	return ScheduleResult{Action: Pending}
+	return ScheduleResult{
+		Action: Pending,
+		Reason: fmt.Sprintf("preemption insufficient: even after evicting %d candidate(s), shortfall remains: %s",
+			len(candidates), describeShortfall(req, Resources{
+				CPUMillis:   freed.CPUMillis,
+				MemoryMB:    freed.MemoryMB,
+				GPUCount:    freed.GPUCount,
+				GPUMemoryMB: freed.GPUMemoryMB,
+			})),
+	}
 }
 
 // AddPod registers a running pod for preemption candidacy.
