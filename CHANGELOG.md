@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.12.0](https://github.com/feza-ai/spark/compare/v1.11.0...v1.12.0) (2026-04-29)
+
+
+### Features
+
+* **manifest:** reject empty hostPath at parse time ([43cd6a7](https://github.com/feza-ai/spark/commit/43cd6a73499cf55c79737c3ff467174375db54e3)), closes [#32](https://github.com/feza-ai/spark/issues/32)
+* **reconciler:** pending-watchdog event for stuck pods ([2b864b5](https://github.com/feza-ai/spark/commit/2b864b51271bc04e0b164aa5c953caf2e6c8ecd4)), closes [#32](https://github.com/feza-ai/spark/issues/32)
+* **scheduler:** add Reason field to ScheduleResult for Pending outcomes ([0cf7e9d](https://github.com/feza-ai/spark/commit/0cf7e9da487e2eddf27843418a76144017c8ce7a)), closes [#32](https://github.com/feza-ai/spark/issues/32)
+
 ## [1.11.0](https://github.com/feza-ai/spark/compare/v1.10.1...v1.11.0) (2026-04-28)
 
 
