@@ -141,9 +141,9 @@ func TestInjectGPUDevices(t *testing.T) {
 		t.Errorf("expected --device nvidia.com/gpu=all in args, got %v", injected)
 	}
 
-	// Image should still be present
-	if !slices.Contains(injected, "myimage:latest") {
-		t.Errorf("expected image myimage:latest in args, got %v", injected)
+	// Image should still be present (normalized, issue #45)
+	if !slices.Contains(injected, "docker.io/library/myimage:latest") {
+		t.Errorf("expected image docker.io/library/myimage:latest in args, got %v", injected)
 	}
 }
 
@@ -247,7 +247,7 @@ func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
 			}
 			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
 
-			imgIdx := slices.Index(args, "myimage:latest")
+			imgIdx := slices.Index(args, "docker.io/library/myimage:latest")
 			if imgIdx < 0 {
 				t.Fatalf("image not found in args: %v", args)
 			}
