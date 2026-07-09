@@ -209,31 +209,41 @@ func TestUpdateAllocation(t *testing.T) {
 		t.Fatalf("expected 1000 CPU millis allocated, got %d", alloc.CPUMillis)
 	}
 
-	// Update with actual usage: lower CPU, higher memory
+	// Update with actual usage: lower CPU, higher memory. The allocation
+	// may only grow (issue #43): CPU stays at the admitted request, memory
+	// rises to the observed high-water mark.
 	actual := manifest.ResourceList{CPUMillis: 500, MemoryMB: 3000, GPUMemoryMB: 0}
 	rt.UpdateAllocation("pod-a", actual)
 
 	alloc = rt.Allocated()
-	if alloc.CPUMillis != 500 {
-		t.Errorf("expected 500 CPU millis after update, got %d", alloc.CPUMillis)
+	if alloc.CPUMillis != 1000 {
+		t.Errorf("expected CPU millis to stay at admitted 1000, got %d", alloc.CPUMillis)
 	}
 	if alloc.MemoryMB != 3000 {
 		t.Errorf("expected 3000 MB memory after update, got %d", alloc.MemoryMB)
 	}
 
-	// Verify AllocatedBy returns the updated values
+	// Verify AllocatedBy returns the merged values
+	want := manifest.ResourceList{CPUMillis: 1000, MemoryMB: 3000, GPUMemoryMB: 0}
 	got, ok := rt.AllocatedBy("pod-a")
 	if !ok {
 		t.Fatal("expected pod-a to still be tracked")
 	}
-	if got != actual {
-		t.Errorf("expected %+v, got %+v", actual, got)
+	if got != want {
+		t.Errorf("expected %+v, got %+v", want, got)
+	}
+
+	// A later update reporting lower usage must not shrink the allocation.
+	rt.UpdateAllocation("pod-a", manifest.ResourceList{CPUMillis: 100, MemoryMB: 64})
+	got, _ = rt.AllocatedBy("pod-a")
+	if got != want {
+		t.Errorf("allocation shrank after low-usage update: expected %+v, got %+v", want, got)
 	}
 
 	// UpdateAllocation on nonexistent pod is a no-op
 	rt.UpdateAllocation("nonexistent", manifest.ResourceList{CPUMillis: 9999})
 	alloc = rt.Allocated()
-	if alloc.CPUMillis != 500 {
+	if alloc.CPUMillis != 1000 {
 		t.Errorf("expected no change from nonexistent update, got %d CPU millis", alloc.CPUMillis)
 	}
 }

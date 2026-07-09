@@ -376,16 +376,35 @@ func (rt *ResourceTracker) Allocatable() Resources {
 	return out
 }
 
-// UpdateAllocation updates the tracked allocation for a pod with actual resource values.
-// Only updates if the pod exists in the allocation map.
+// UpdateAllocation raises the tracked allocation for a pod to reflect actual
+// resource usage. Only updates if the pod exists in the allocation map.
+//
+// Values are monotonic: each field may only grow, never shrink. The initial
+// allocation is the admitted request; shrinking it to a pod's instantaneous
+// usage would let the scheduler admit new pods into memory the running pod
+// is entitled to claim back, overcommitting the node (issue #43). A pod
+// observed using more than it requested is accounted at its high-water mark.
 func (rt *ResourceTracker) UpdateAllocation(name string, actual manifest.ResourceList) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	if _, ok := rt.allocations[name]; !ok {
+	cur, ok := rt.allocations[name]
+	if !ok {
 		return
 	}
-	rt.allocations[name] = actual
+	if actual.CPUMillis > cur.CPUMillis {
+		cur.CPUMillis = actual.CPUMillis
+	}
+	if actual.MemoryMB > cur.MemoryMB {
+		cur.MemoryMB = actual.MemoryMB
+	}
+	if actual.GPUCount > cur.GPUCount {
+		cur.GPUCount = actual.GPUCount
+	}
+	if actual.GPUMemoryMB > cur.GPUMemoryMB {
+		cur.GPUMemoryMB = actual.GPUMemoryMB
+	}
+	rt.allocations[name] = cur
 }
 
 func (rt *ResourceTracker) availableLocked() Resources {
