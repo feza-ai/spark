@@ -20,6 +20,11 @@ import (
 type Status struct {
 	Running  bool
 	ExitCode int
+	// Containers holds per-container states when the pod-level state made
+	// them worth fetching (Degraded/Exited/Stopped — i.e. at least one
+	// container has exited). Empty for pods where every container is up,
+	// so the reconciler pays the extra podman call only for degraded pods.
+	Containers []ContainerStatus
 }
 
 // PodListEntry represents a pod discovered from podman.
@@ -66,6 +71,7 @@ type Executor interface {
 	CreatePod(ctx context.Context, spec manifest.PodSpec) error
 	StopPod(ctx context.Context, name string, gracePeriod int) error
 	PodStatus(ctx context.Context, name string) (Status, error)
+	StartContainer(ctx context.Context, containerName string) error
 	RemovePod(ctx context.Context, name string) error
 	ListPods(ctx context.Context) ([]PodListEntry, error)
 	PodStats(ctx context.Context, name string) (PodResourceUsage, error)
@@ -351,6 +357,19 @@ func buildRemoveArgs(name string) []string {
 }
 
 // StopPod stops a pod with the given grace period in seconds and removes it.
+// StartContainer starts an exited container in place (same config,
+// same filesystem) via `podman start`. Used for per-container restarts:
+// a crashed container comes back without touching its pod siblings.
+func (p *PodmanExecutor) StartContainer(ctx context.Context, containerName string) error {
+	args := []string{"start", containerName}
+	slog.Info("starting container", "cmd", "podman", "args", args)
+	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("podman start %s: %w: %s", containerName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func (p *PodmanExecutor) StopPod(ctx context.Context, name string, gracePeriod int) error {
 	args := buildStopArgs(name, gracePeriod)
 	slog.Info("stopping pod", "cmd", "podman", "args", args)
@@ -393,7 +412,9 @@ func (p *PodmanExecutor) PodStatus(ctx context.Context, name string) (Status, er
 		if err != nil {
 			return Status{}, fmt.Errorf("pod %s is %s: %w", name, state, err)
 		}
-		return derivePodStatus(containers), nil
+		derived := derivePodStatus(containers)
+		derived.Containers = containers
+		return derived, nil
 	case "Dead", "Error":
 		return Status{Running: false, ExitCode: 1}, nil
 	default:
