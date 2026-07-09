@@ -92,8 +92,11 @@ func (rr *ResourceReconciler) ReconcileOnce(ctx context.Context) {
 			)
 		}
 
-		// Update tracker with actual values.
-		// Preserve original CPU and GPU requests (PodStats doesn't provide these in comparable units).
+		// Raise the tracked allocation if actual usage exceeds it. The
+		// tracker never shrinks an allocation below the admitted request
+		// (issue #43); this only accounts pods that under-requested.
+		// Preserve original CPU and GPU requests (PodStats doesn't provide
+		// these in comparable units).
 		actual := manifest.ResourceList{
 			CPUMillis:   requested.CPUMillis,
 			MemoryMB:    stats.MemoryMB,

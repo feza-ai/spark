@@ -71,7 +71,11 @@ func TestResourceReconciler_MemoryExceeded(t *testing.T) {
 	}
 }
 
-func TestResourceReconciler_UpdatesTracker(t *testing.T) {
+// Issue #43 regression: a running pod whose instantaneous usage is below its
+// request must keep its full reservation. Shrinking it let the scheduler
+// co-admit a second heavy pod into memory the first was still ramping into,
+// which froze the unified-memory host.
+func TestResourceReconciler_NeverShrinksBelowRequest(t *testing.T) {
 	store := state.NewPodStore()
 	exec := newStubExecutor()
 	tracker := newTestTracker()
@@ -89,7 +93,7 @@ func TestResourceReconciler_UpdatesTracker(t *testing.T) {
 		t.Fatalf("expected initial memory %d, got %d", req.MemoryMB, before.MemoryMB)
 	}
 
-	// Return different actual memory
+	// Actual usage (96 MB) is below the 128 MB request.
 	exec.podStats = map[string]executor.PodResourceUsage{
 		"track": {CPUPercent: 25.0, MemoryMB: 96},
 	}
@@ -98,8 +102,8 @@ func TestResourceReconciler_UpdatesTracker(t *testing.T) {
 	rr.ReconcileOnce(context.Background())
 
 	after := tracker.Allocated()
-	if after.MemoryMB != 96 {
-		t.Errorf("expected allocated memory updated to 96, got %d", after.MemoryMB)
+	if after.MemoryMB != req.MemoryMB {
+		t.Errorf("expected allocated memory to stay at requested %d, got %d", req.MemoryMB, after.MemoryMB)
 	}
 	// CPU should be preserved from original request
 	if after.CPUMillis != req.CPUMillis {
