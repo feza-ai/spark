@@ -9,6 +9,26 @@ import (
 	"strings"
 )
 
+// normalizeImage qualifies Docker Hub short names the way Kubernetes and
+// containerd do: a ref whose first path component is not a registry (no dot,
+// no port, not "localhost") gets docker.io prepended, and bare names also get
+// the library/ namespace. Fully qualified refs pass through untouched.
+// Without this, podman fails short names outright when no unqualified-search
+// registries are configured (issue #45).
+func normalizeImage(ref string) string {
+	if ref == "" {
+		return ref
+	}
+	first, _, found := strings.Cut(ref, "/")
+	if !found {
+		return "docker.io/library/" + ref
+	}
+	if strings.ContainsAny(first, ".:") || first == "localhost" {
+		return ref
+	}
+	return "docker.io/" + ref
+}
+
 // buildImageExistsArgs constructs the arguments for checking if an image exists locally.
 func buildImageExistsArgs(imageRef string) []string {
 	return []string{"image", "exists", imageRef}
@@ -76,6 +96,7 @@ func formatSize(bytes int64) string {
 
 // PullImage pulls a container image by name.
 func (p *PodmanExecutor) PullImage(ctx context.Context, name string) error {
+	name = normalizeImage(name)
 	args := buildPullArgs(name)
 	slog.Info("pulling image", "cmd", "podman", "args", args)
 	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
@@ -107,6 +128,7 @@ func (p *PodmanExecutor) PruneImages(ctx context.Context) (int, error) {
 // EnsureImage checks if a container image is available locally.
 // If not found, it pulls the image.
 func EnsureImage(ctx context.Context, imageRef string) error {
+	imageRef = normalizeImage(imageRef)
 	args := buildImageExistsArgs(imageRef)
 	slog.Info("checking image", "cmd", "podman", "args", args)
 	_, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()

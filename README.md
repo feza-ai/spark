@@ -134,6 +134,10 @@ curl -X POST http://localhost:8080/api/v1/pods \
 
 Accepts a Kubernetes manifest (YAML) in the request body. Supports Pod, Job, CronJob, Deployment, and StatefulSet kinds.
 
+#### Image references
+
+Docker Hub short names are qualified the way Kubernetes does it: `pgvector/pgvector:pg16` becomes `docker.io/pgvector/pgvector:pg16`, and bare names like `alpine:latest` become `docker.io/library/alpine:latest`. Refs whose first component is a registry (contains a dot or port, or is `localhost`) pass through untouched.
+
 #### Resource quantities
 
 - **CPU**: whole or fractional cores (`"2"`, `"0.5"`) or millicores (`"500m"`).
