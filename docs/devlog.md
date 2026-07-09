@@ -1,5 +1,16 @@
 # Spark Development Log
 
+## 2026-07-09: Issue #46 per-container restarts (crash-looping sidecar no longer cycles siblings)
+
+**Type:** finding
+**Tags:** reconciler, executor, podman, issue-46, issue-52, restart-policy
+
+**Problem:** one crash-looping container tore down and recreated every container in its pod each cycle. Hit in production as a GitHub Actions runner + database sidecar: each sidecar failure re-registered the runner, colliding with its own half-dead session (`TaskAgentSessionConflictException`).
+
+**Fix (builds on the #52 status work):** `PodStatus` now returns per-container states for degraded pods (`Status.Containers`, populated only when the pod-level state says something exited — healthy pods pay no extra podman call). `reconcileRunning` restarts exited workload containers in place via `podman start` (same config, same filesystem), per policy: `Always` restarts any exit; `OnFailure` restarts non-zero exits; `Never` leaves them down while siblings run. In-place restarts use per-container exponential backoff (10s doubling to 5m cap, tracked in reconciler memory, reset on pod exit) and do NOT count against `BackoffLimit` — that budget stays for whole-pod failures, matching Kubernetes.
+
+**Landmine:** backoff state lives in reconciler memory only; a Spark restart resets it. Acceptable (worst case: one immediate restart after an upgrade), but don't "fix" it into the store without also handling clock skew across restarts.
+
 ## 2026-07-09: Issue #52 every failed job reported success (Degraded state mapping)
 
 **Type:** finding
