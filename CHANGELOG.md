@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.15.0](https://github.com/feza-ai/spark/compare/v1.14.0...v1.15.0) (2026-07-09)
+
+
+### Features
+
+* **executor:** expose per-container states and in-place container start ([c16be07](https://github.com/feza-ai/spark/commit/c16be0752f0607fe4bdd7741a1710674843babfb))
+
+
+### Bug Fixes
+
+* **reconciler:** apply restartPolicy per container (refs [#46](https://github.com/feza-ai/spark/issues/46)) ([b4bb41e](https://github.com/feza-ai/spark/commit/b4bb41e965364376211393a4f5b395ffbfbef853))
+
 ## [1.14.0](https://github.com/feza-ai/spark/compare/v1.13.3...v1.14.0) (2026-07-09)
 
 
