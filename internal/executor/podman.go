@@ -264,7 +264,7 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 		}
 	}
 
-	args = append(args, container.Image)
+	args = append(args, normalizeImage(container.Image))
 
 	if len(container.Args) > 0 {
 		args = append(args, container.Args...)
