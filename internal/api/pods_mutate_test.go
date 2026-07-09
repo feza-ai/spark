@@ -34,6 +34,8 @@ func (e *stubExecutor) CreatePod(_ context.Context, spec manifest.PodSpec) error
 	return nil
 }
 
+func (e *stubExecutor) StartContainer(_ context.Context, _ string) error { return nil }
+
 func (e *stubExecutor) StopPod(_ context.Context, name string, _ int) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
