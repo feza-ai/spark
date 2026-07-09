@@ -15,6 +15,10 @@
 
 **Impact:** the incident manifest is now rejected at submit time; limits-only pods are fully accounted. Remaining hardening (host memory headroom reservation, usage-based alerting) tracked separately in #47.
 
+**Root cause #2 (found by live verification of v1.13.2):** with the parser fixed, two valid 60Gi-request pods STILL co-scheduled on the live host. `ResourceReconciler.ReconcileOnce` called `tracker.UpdateAllocation(pod, actual)` with `actual.MemoryMB = stats.MemoryMB` — the pod's instantaneous usage. A pod that requested 60Gi but was still ramping (using a few MB) had its reservation rewritten down to that usage within one 60s tick, and the next pod was admitted into the freed space. This, not the parser, is what co-scheduled the two render pods in the original incident timeline (pod B arrived minutes after pod A — plenty of ticks). Fix: `UpdateAllocation` is now monotonic per field — an allocation starts at the admitted request and may only grow to the observed high-water mark, never shrink. Live acceptance test: submit two 60Gi-request alpine pods back-to-back; the second must stay `pending` with an `awaiting-resources` shortfall reason for longer than one resource-reconcile interval (60s).
+
+**Lesson:** a "sync actual vs requested" loop that writes into the same ledger admission reads from silently converts request-based admission into usage-based admission. Reservations and observations need one-way flow: observations may raise the ledger, never lower it.
+
 ## 2026-04-29: Issue #37 phantom-running pods leak resources
 
 **Type:** finding
