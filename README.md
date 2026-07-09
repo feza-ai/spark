@@ -134,6 +134,16 @@ curl -X POST http://localhost:8080/api/v1/pods \
 
 Accepts a Kubernetes manifest (YAML) in the request body. Supports Pod, Job, CronJob, Deployment, and StatefulSet kinds.
 
+#### Resource quantities
+
+- **CPU**: whole or fractional cores (`"2"`, `"0.5"`) or millicores (`"500m"`).
+- **Memory**: plain bytes or a `Ki`/`Mi`/`Gi` (binary) / `K`/`M`/`G` (decimal) suffix, e.g. `512Mi`, `1.5Gi`. A lowercase `m` suffix is rejected — in Kubernetes quantity syntax it means *millibytes*, which is never what you want.
+- **GPU**: `nvidia.com/gpu` takes a non-negative integer count.
+
+A manifest containing an unparseable quantity is rejected with `400 Bad Request` naming the container and value — it is never silently treated as zero, since a zero-valued request would bypass admission control.
+
+Per Kubernetes semantics, a request left unspecified defaults to the corresponding limit, so limits-only manifests are fully accounted by the scheduler.
+
 ### Delete Pod
 
 ```bash

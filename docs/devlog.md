@@ -1,5 +1,20 @@
 # Spark Development Log
 
+## 2026-07-09: Issue #43 silent-zero resource quantities overcommit the node
+
+**Type:** finding
+**Tags:** manifest, scheduler, admission, issue-43, oom, host-freeze
+
+**Problem:** Two pods each requesting `memory: 102400m` were both admitted on a node with ~114GiB allocatable. Unified memory was exhausted, the NVIDIA driver hit `NV_ERR_NO_MEMORY`, and the host hard-froze (physical power-cycle required). Admission control appeared to ignore memory entirely.
+
+**Root cause:** `internal/manifest/yaml.go` `parseMemory` matched only case-sensitive `Gi/Mi/Ki/G/M/K` suffixes, then fell through to `strconv.Atoi` with the error discarded. `"102400m"` (lowercase m) matched no suffix, `Atoi` failed, and the request was recorded as **0 MB**. The scheduler's `CanFit` check is correct — it was fed a zero. `parseCPU` and `parseGPU` had the same silent-zero failure mode. A second, independent hole: `TotalRequests` only sums `Requests`, and nothing defaulted requests from limits, so limits-only manifests (the documented GPU pattern) were also admitted with zero accounting.
+
+**Fix:** `parseCPU`/`parseMemory`/`parseGPU` now return errors; an unparseable quantity fails `manifest.Parse`, which the API surfaces as `400 Bad Request` naming the container, field, and value. Lowercase `m` on memory gets a dedicated hint (Kubernetes millibytes trap). Fractional quantities (`1.5Gi`) are now supported. Requests left unspecified default to the corresponding limit, per Kubernetes semantics — checked per-key on the raw map so an explicit `"0"` request is preserved.
+
+**Landmine for operators:** in Kubernetes quantity syntax `102400m` memory means 102.4 *bytes* (milli-units), while podman's `--memory 102400m` means 100 GiB. Always use `Mi`/`Gi` in Spark manifests.
+
+**Impact:** the incident manifest is now rejected at submit time; limits-only pods are fully accounted. Remaining hardening (host memory headroom reservation, usage-based alerting) tracked separately in #47.
+
 ## 2026-04-29: Issue #37 phantom-running pods leak resources
 
 **Type:** finding
