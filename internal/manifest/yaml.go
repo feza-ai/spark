@@ -162,6 +162,16 @@ func parseYAMLList(lines []string, start, baseIndent int) ([]interface{}, int, e
 			}
 			list = append(list, itemMap)
 		} else {
+			// Block scalar as a list item (`- |`), e.g. a multi-line
+			// shell script in a container command. Must go through
+			// parseBlockScalar or the item becomes the literal string
+			// "|" and the script lines are silently dropped (issue #44).
+			if itemContent == "|" || itemContent == "|-" || itemContent == ">" || itemContent == ">-" {
+				scalar, newIdx := parseBlockScalar(lines, i+1, baseIndent, itemContent)
+				list = append(list, scalar)
+				i = newIdx
+				continue
+			}
 			list = append(list, unquote(itemContent))
 			i++
 		}
