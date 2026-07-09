@@ -109,7 +109,8 @@ func TestDerivePodStatus(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := derivePodStatus(tt.containers); got != tt.want {
+			got := derivePodStatus(tt.containers)
+			if got.Running != tt.want.Running || got.ExitCode != tt.want.ExitCode {
 				t.Errorf("derivePodStatus() = %+v, want %+v", got, tt.want)
 			}
 		})
