@@ -134,6 +134,10 @@ curl -X POST http://localhost:8080/api/v1/pods \
 
 Accepts a Kubernetes manifest (YAML) in the request body. Supports Pod, Job, CronJob, Deployment, and StatefulSet kinds.
 
+#### Restart semantics
+
+`restartPolicy` applies per container, matching Kubernetes: when one container in a multi-container pod crashes, only that container is restarted in place (config and filesystem intact) — its siblings keep running. In-place restarts back off exponentially (10s doubling to a 5m cap) and do not count against a Job's `backoffLimit`, which governs whole-pod failures. Under `Never`, a crashed container stays down while the rest of the pod runs; the pod completes or fails once all containers have exited (first non-zero exit code wins).
+
 #### Image references
 
 Docker Hub short names are qualified the way Kubernetes does it: `pgvector/pgvector:pg16` becomes `docker.io/pgvector/pgvector:pg16`, and bare names like `alpine:latest` become `docker.io/library/alpine:latest`. Refs whose first component is a registry (contains a dot or port, or is `localhost`) pass through untouched.
