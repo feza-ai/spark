@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.2](https://github.com/feza-ai/spark/compare/v1.13.1...v1.13.2) (2026-07-09)
+
+
+### Bug Fixes
+
+* **manifest:** reject invalid resource quantities instead of silently parsing to zero ([9699cf2](https://github.com/feza-ai/spark/commit/9699cf21df721c7968e8581d6528a1fe590e3589)), closes [#43](https://github.com/feza-ai/spark/issues/43)
+
 ## [1.13.1](https://github.com/feza-ai/spark/compare/v1.13.0...v1.13.1) (2026-04-29)
 
 
