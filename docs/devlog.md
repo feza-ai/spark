@@ -1,5 +1,18 @@
 # Spark Development Log
 
+## 2026-07-09: Issue #52 every failed job reported success (Degraded state mapping)
+
+**Type:** finding
+**Tags:** executor, podman, issue-52, issue-46, exit-codes, infra-container
+
+**Problem:** Filed as "partially-crashed multi-container pods are marked Completed", but a live probe showed it is far broader: a **single-container** pod whose container exits non-zero (probe: exit 7, restartPolicy Never) was reported `status: completed`. Every failed job on Spark reported success, and OnFailure retries never fired through the normal exit path.
+
+**Root cause:** every podman pod carries an always-running infra container, so any workload container failure leaves the pod in state `Degraded` (never `Exited`). `PodStatus` switched on the pod-level state string and mapped unknown states — including `Degraded` — to `{Running: false, ExitCode: 0}`, which the reconciler reads as clean exit → `Completed`.
+
+**Fix:** for `Degraded`/`Exited`/`Stopped`, derive the verdict from per-container states (`podman ps -a --filter pod=<name> --format json`), excluding infra (by `IsInfra`, with a `-infra` name-suffix fallback for older podman): any workload container running → pod running; all exited → first non-zero exit code wins. Sidecar-crashed-but-main-healthy pods now stay `running` instead of being torn down (the destruction half of #46); per-container restarts remain tracked in #46.
+
+**Landmine:** podman pod-level state can NEVER distinguish workload success from failure — the infra container masks it. Any future status logic must read container states, not pod state.
+
 ## 2026-07-09: Issue #43 silent-zero resource quantities overcommit the node
 
 **Type:** finding
