@@ -384,13 +384,96 @@ func (p *PodmanExecutor) PodStatus(ctx context.Context, name string) (Status, er
 	switch state {
 	case "Running":
 		return Status{Running: true, ExitCode: 0}, nil
-	case "Exited":
-		return Status{Running: false, ExitCode: 0}, nil
+	case "Degraded", "Exited", "Stopped":
+		// The pod-level state cannot distinguish success from failure, and
+		// the always-running infra container means ANY workload container
+		// failure leaves the pod "Degraded" rather than "Exited" (issue #52).
+		// Derive the verdict from per-container states instead.
+		containers, err := p.ContainerStatuses(ctx, name)
+		if err != nil {
+			return Status{}, fmt.Errorf("pod %s is %s: %w", name, state, err)
+		}
+		return derivePodStatus(containers), nil
 	case "Dead", "Error":
 		return Status{Running: false, ExitCode: 1}, nil
 	default:
 		return Status{Running: false, ExitCode: 0}, nil
 	}
+}
+
+// ContainerStatus represents one container's runtime state within a pod.
+type ContainerStatus struct {
+	Name     string
+	Running  bool
+	ExitCode int
+	IsInfra  bool
+}
+
+// ContainerStatuses returns the per-container states of a pod, including
+// exited containers.
+func (p *PodmanExecutor) ContainerStatuses(ctx context.Context, podName string) ([]ContainerStatus, error) {
+	args := []string{"ps", "-a", "--filter", "pod=" + podName, "--format", "json"}
+	out, err := exec.CommandContext(ctx, "podman", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("podman ps: %w", err)
+	}
+	return parseContainerPS(out)
+}
+
+// parseContainerPS parses `podman ps -a --format json` output.
+func parseContainerPS(out []byte) ([]ContainerStatus, error) {
+	var rows []struct {
+		Names    []string `json:"Names"`
+		State    string   `json:"State"`
+		ExitCode int      `json:"ExitCode"`
+		IsInfra  bool     `json:"IsInfra"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, fmt.Errorf("parsing podman ps output: %w", err)
+	}
+	statuses := make([]ContainerStatus, 0, len(rows))
+	for _, r := range rows {
+		name := ""
+		if len(r.Names) > 0 {
+			name = r.Names[0]
+		}
+		statuses = append(statuses, ContainerStatus{
+			Name:     name,
+			Running:  strings.EqualFold(r.State, "running"),
+			ExitCode: r.ExitCode,
+			// Belt and braces: older podman versions omit IsInfra from the
+			// ps JSON, but the infra container name always ends in "-infra".
+			IsInfra: r.IsInfra || strings.HasSuffix(name, "-infra"),
+		})
+	}
+	return statuses, nil
+}
+
+// derivePodStatus reduces per-container states to a pod verdict. The infra
+// container is ignored: it stays up as long as the pod exists and says
+// nothing about the workload. The pod counts as running while any workload
+// container runs; once all have exited, the first non-zero exit code wins.
+func derivePodStatus(containers []ContainerStatus) Status {
+	var sawWorkload bool
+	exitCode := 0
+	for _, c := range containers {
+		if c.IsInfra {
+			continue
+		}
+		sawWorkload = true
+		if c.Running {
+			return Status{Running: true, ExitCode: 0}
+		}
+		if exitCode == 0 && c.ExitCode != 0 {
+			exitCode = c.ExitCode
+		}
+	}
+	if !sawWorkload {
+		// Only the infra container remains — nothing was ever started or
+		// everything was removed. Treat as failed rather than succeeded.
+		return Status{Running: false, ExitCode: 1}
+	}
+	return Status{Running: false, ExitCode: exitCode}
 }
 
 // RemovePod forcefully removes a pod.
