@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.3](https://github.com/feza-ai/spark/compare/v1.13.2...v1.13.3) (2026-07-09)
+
+
+### Bug Fixes
+
+* **reconciler:** document one-way allocation flow in resource reconciliation (refs [#43](https://github.com/feza-ai/spark/issues/43)) ([47d8526](https://github.com/feza-ai/spark/commit/47d85264f8b2d1259d89d8d9f9d5edea92bfeeb1))
+* **scheduler:** make UpdateAllocation monotonic so reservations never shrink (refs [#43](https://github.com/feza-ai/spark/issues/43)) ([b28d3f7](https://github.com/feza-ai/spark/commit/b28d3f714cc4f096c8291b1350e20bb536879c80))
+
 ## [1.13.2](https://github.com/feza-ai/spark/compare/v1.13.1...v1.13.2) (2026-07-09)
 
 
