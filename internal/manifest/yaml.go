@@ -458,45 +458,66 @@ func traverse(m map[string]interface{}, keys ...string) interface{} {
 	return traverse(child, keys[1:]...)
 }
 
-// parseCPU converts a CPU quantity string to millicores.
-func parseCPU(s string) int {
+// parseCPU converts a CPU quantity string to millicores. An empty string
+// means "not specified" and parses to 0. Any other unparseable value is an
+// error: a request that silently became 0 would bypass admission control.
+func parseCPU(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
 	if strings.HasSuffix(s, "m") {
-		v, _ := strconv.Atoi(strings.TrimSuffix(s, "m"))
-		return v
+		v, err := strconv.Atoi(strings.TrimSuffix(s, "m"))
+		if err != nil || v < 0 {
+			return 0, fmt.Errorf("invalid cpu quantity %q", s)
+		}
+		return v, nil
 	}
 	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0
+	if err != nil || f < 0 {
+		return 0, fmt.Errorf("invalid cpu quantity %q (use cores like \"2\" or \"0.5\", or millicores like \"500m\")", s)
 	}
-	return int(f * 1000)
+	return int(f * 1000), nil
 }
 
-// parseMemory converts a memory quantity string to megabytes.
-func parseMemory(s string) int {
-	if strings.HasSuffix(s, "Gi") {
-		v, _ := strconv.Atoi(strings.TrimSuffix(s, "Gi"))
-		return v * 1024
+// memoryUnits maps memory quantity suffixes to their megabyte multiplier.
+// Ordered so that two-letter binary suffixes match before their one-letter
+// decimal prefixes (Gi before G).
+var memoryUnits = []struct {
+	suffix string
+	mb     float64
+}{
+	{"Gi", 1024},
+	{"Mi", 1},
+	{"Ki", 1.0 / 1024},
+	{"G", 1000},
+	{"M", 1},
+	{"K", 1.0 / 1000},
+	{"k", 1.0 / 1000},
+}
+
+// parseMemory converts a memory quantity string to megabytes. An empty
+// string means "not specified" and parses to 0. Any other unparseable value
+// is an error: a request that silently became 0 would bypass admission
+// control and overcommit the node (issue #43).
+func parseMemory(s string) (int, error) {
+	if s == "" {
+		return 0, nil
 	}
-	if strings.HasSuffix(s, "Mi") {
-		v, _ := strconv.Atoi(strings.TrimSuffix(s, "Mi"))
-		return v
+	for _, u := range memoryUnits {
+		if strings.HasSuffix(s, u.suffix) {
+			v, err := strconv.ParseFloat(strings.TrimSuffix(s, u.suffix), 64)
+			if err != nil || v < 0 {
+				return 0, fmt.Errorf("invalid memory quantity %q", s)
+			}
+			return int(v * u.mb), nil
+		}
 	}
-	if strings.HasSuffix(s, "Ki") {
-		v, _ := strconv.Atoi(strings.TrimSuffix(s, "Ki"))
-		return v / 1024
+	if strings.HasSuffix(s, "m") {
+		return 0, fmt.Errorf("invalid memory quantity %q: a lowercase \"m\" suffix means millibytes in Kubernetes; use \"Mi\" or \"Gi\"", s)
 	}
-	if strings.HasSuffix(s, "G") {
-		v, _ := strconv.Atoi(strings.TrimSuffix(s, "G"))
-		return v * 1000
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("invalid memory quantity %q (use plain bytes or a Ki/Mi/Gi/K/M/G suffix)", s)
 	}
-	if strings.HasSuffix(s, "M") {
-		v, _ := strconv.Atoi(strings.TrimSuffix(s, "M"))
-		return v
-	}
-	if strings.HasSuffix(s, "K") {
-		v, _ := strconv.Atoi(strings.TrimSuffix(s, "K"))
-		return v / 1000
-	}
-	v, _ := strconv.Atoi(s)
-	return v / (1024 * 1024)
+	return int(v / (1024 * 1024)), nil
 }

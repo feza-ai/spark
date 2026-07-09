@@ -209,7 +209,10 @@ func TestParse_ResourceQuantities(t *testing.T) {
 	}
 	for _, tt := range cpuTests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseCPU(tt.cpu)
+			got, err := parseCPU(tt.cpu)
+			if err != nil {
+				t.Fatalf("parseCPU(%q) unexpected error: %v", tt.cpu, err)
+			}
 			if got != tt.wantCPU {
 				t.Errorf("parseCPU(%q) = %d, want %d", tt.cpu, got, tt.wantCPU)
 			}
@@ -226,7 +229,10 @@ func TestParse_ResourceQuantities(t *testing.T) {
 	}
 	for _, tt := range memTests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseMemory(tt.mem)
+			got, err := parseMemory(tt.mem)
+			if err != nil {
+				t.Fatalf("parseMemory(%q) unexpected error: %v", tt.mem, err)
+			}
 			if got != tt.wantMB {
 				t.Errorf("parseMemory(%q) = %d, want %d", tt.mem, got, tt.wantMB)
 			}

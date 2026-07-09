@@ -56,7 +56,10 @@ func TestParseMemoryKiAndK(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := parseMemory(tt.input)
+			got, err := parseMemory(tt.input)
+			if err != nil {
+				t.Fatalf("parseMemory(%q) unexpected error: %v", tt.input, err)
+			}
 			if got != tt.want {
 				t.Errorf("parseMemory(%q) = %d, want %d", tt.input, got, tt.want)
 			}
