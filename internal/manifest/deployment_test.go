@@ -231,11 +231,11 @@ func TestParseDeploymentResourceParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := parseCPU(tt.cpu); got != tt.wantCPU {
-				t.Errorf("parseCPU(%q) = %d, want %d", tt.cpu, got, tt.wantCPU)
+			if got, err := parseCPU(tt.cpu); err != nil || got != tt.wantCPU {
+				t.Errorf("parseCPU(%q) = %d, %v, want %d", tt.cpu, got, err, tt.wantCPU)
 			}
-			if got := parseMemory(tt.mem); got != tt.wantMem {
-				t.Errorf("parseMemory(%q) = %d, want %d", tt.mem, got, tt.wantMem)
+			if got, err := parseMemory(tt.mem); err != nil || got != tt.wantMem {
+				t.Errorf("parseMemory(%q) = %d, %v, want %d", tt.mem, got, err, tt.wantMem)
 			}
 		})
 	}

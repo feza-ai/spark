@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"strconv"
 )
 
 // parseJob extracts a PodSpec from a parsed Job manifest node.
@@ -67,7 +68,11 @@ func parsePodFromMap(specMap map[string]interface{}, priorityClasses map[string]
 		if !ok {
 			continue
 		}
-		pod.InitContainers = append(pod.InitContainers, parseContainer(cm))
+		c, err := parseContainer(cm)
+		if err != nil {
+			return PodSpec{}, err
+		}
+		pod.InitContainers = append(pod.InitContainers, c)
 	}
 
 	for _, item := range getList(specMap, "containers") {
@@ -75,7 +80,11 @@ func parsePodFromMap(specMap map[string]interface{}, priorityClasses map[string]
 		if !ok {
 			continue
 		}
-		pod.Containers = append(pod.Containers, parseContainer(cm))
+		c, err := parseContainer(cm)
+		if err != nil {
+			return PodSpec{}, err
+		}
+		pod.Containers = append(pod.Containers, c)
 	}
 
 	for _, item := range getList(specMap, "volumes") {
@@ -93,7 +102,7 @@ func parsePodFromMap(specMap map[string]interface{}, priorityClasses map[string]
 	return pod, nil
 }
 
-func parseContainer(cm map[string]interface{}) ContainerSpec {
+func parseContainer(cm map[string]interface{}) (ContainerSpec, error) {
 	var c ContainerSpec
 	c.Name = getString(cm, "name")
 	c.Image = getString(cm, "image")
@@ -154,10 +163,14 @@ func parseContainer(cm map[string]interface{}) ContainerSpec {
 		})
 	}
 
-	c.Resources = parseResources(getMap(cm, "resources"))
+	res, err := parseResources(getMap(cm, "resources"))
+	if err != nil {
+		return ContainerSpec{}, fmt.Errorf("container %q: %w", c.Name, err)
+	}
+	c.Resources = res
 	c.SecurityContext = parseSecurityContext(getMap(cm, "securityContext"))
 	c.LivenessProbe = parseProbe(getMap(cm, "livenessProbe"))
-	return c
+	return c, nil
 }
 
 func parseSecurityContext(sc map[string]interface{}) *SecurityContext {
@@ -182,35 +195,76 @@ func parseSecurityContext(sc map[string]interface{}) *SecurityContext {
 	return ctx
 }
 
-func parseResources(rm map[string]interface{}) ResourceRequirements {
+func parseResources(rm map[string]interface{}) (ResourceRequirements, error) {
 	if rm == nil {
-		return ResourceRequirements{}
+		return ResourceRequirements{}, nil
 	}
-	return ResourceRequirements{
-		Requests: parseResourceList(getMap(rm, "requests")),
-		Limits:   parseResourceList(getMap(rm, "limits")),
+	requestsMap := getMap(rm, "requests")
+	limitsMap := getMap(rm, "limits")
+
+	requests, err := parseResourceList(requestsMap)
+	if err != nil {
+		return ResourceRequirements{}, fmt.Errorf("resources.requests: %w", err)
 	}
+	limits, err := parseResourceList(limitsMap)
+	if err != nil {
+		return ResourceRequirements{}, fmt.Errorf("resources.limits: %w", err)
+	}
+
+	// Kubernetes semantics: a request left unspecified defaults to the limit.
+	// Without this, a limits-only pod is admitted with zero accounted
+	// resources and the node overcommits (issue #43).
+	if requestsMap == nil {
+		requests = limits
+	} else if limitsMap != nil {
+		if _, ok := requestsMap["cpu"]; !ok {
+			requests.CPUMillis = limits.CPUMillis
+		}
+		if _, ok := requestsMap["memory"]; !ok {
+			requests.MemoryMB = limits.MemoryMB
+		}
+		if _, ok := requestsMap["nvidia.com/gpu"]; !ok {
+			requests.GPUCount = limits.GPUCount
+		}
+	}
+
+	return ResourceRequirements{Requests: requests, Limits: limits}, nil
 }
 
-func parseResourceList(rm map[string]interface{}) ResourceList {
+func parseResourceList(rm map[string]interface{}) (ResourceList, error) {
 	if rm == nil {
-		return ResourceList{}
+		return ResourceList{}, nil
+	}
+	cpu, err := parseCPU(getString(rm, "cpu"))
+	if err != nil {
+		return ResourceList{}, err
+	}
+	mem, err := parseMemory(getString(rm, "memory"))
+	if err != nil {
+		return ResourceList{}, err
+	}
+	gpu, err := parseGPU(getString(rm, "nvidia.com/gpu"))
+	if err != nil {
+		return ResourceList{}, err
 	}
 	return ResourceList{
-		CPUMillis:   parseCPU(getString(rm, "cpu")),
-		MemoryMB:    parseMemory(getString(rm, "memory")),
-		GPUCount:  parseGPU(getString(rm, "nvidia.com/gpu")),
-	}
+		CPUMillis: cpu,
+		MemoryMB:  mem,
+		GPUCount:  gpu,
+	}, nil
 }
 
-// parseGPU converts a GPU count string (e.g. "2") to an integer.
-func parseGPU(s string) int {
+// parseGPU converts a GPU count string (e.g. "2") to an integer. An empty
+// string means "not specified" and parses to 0.
+func parseGPU(s string) (int, error) {
 	if s == "" {
-		return 0
+		return 0, nil
 	}
-	var n int
-	fmt.Sscanf(s, "%d", &n)
-	return n
+	v, err := strconv.Atoi(s)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("invalid gpu quantity %q (must be a non-negative integer)", s)
+	}
+	return v, nil
 }
 
 func parseProbe(pm map[string]interface{}) *ProbeSpec {
