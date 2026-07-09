@@ -28,6 +28,12 @@ type Reconciler struct {
 
 	probeStates map[string]*probeState
 
+	// containerRestarts tracks per-container backoff state for in-place
+	// restarts of crashed containers inside still-running pods (issue #46).
+	// Keyed by pod name, then podman container name. Like probeStates,
+	// only touched from the single reconcile goroutine.
+	containerRestarts map[string]map[string]*containerRestartState
+
 	// orphanFirstSeen tracks the first time an orphaned podman pod was
 	// observed. Orphans only become eligible for removal once they have
 	// been seen for at least orphanGrace, avoiding a race with
@@ -57,10 +63,11 @@ func NewReconciler(store *state.PodStore, sched *scheduler.Scheduler, exec execu
 		scheduler:       sched,
 		executor:        exec,
 		interval:        interval,
-		probeStates:     make(map[string]*probeState),
-		orphanFirstSeen: make(map[string]time.Time),
-		orphanGrace:     defaultOrphanGrace,
-		now:             time.Now,
+		probeStates:       make(map[string]*probeState),
+		containerRestarts: make(map[string]map[string]*containerRestartState),
+		orphanFirstSeen:   make(map[string]time.Time),
+		orphanGrace:       defaultOrphanGrace,
+		now:               time.Now,
 	}
 }
 
@@ -433,6 +440,11 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 	}
 
 	if st.Running {
+		// The pod is up, but individual containers may have exited
+		// (podman "Degraded"). Kubernetes semantics: restartPolicy applies
+		// per container — restart the crashed ones in place, never their
+		// healthy siblings (issue #46).
+		r.restartCrashedContainers(ctx, pod, st.Containers)
 		// Check liveness probes for the first container.
 		r.checkLivenessProbe(ctx, pod)
 		return
@@ -444,8 +456,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 		r.onPodStopped(pod.Spec.Name)
 	}
 
-	// Clean up probe state for exited pods.
+	// Clean up probe and container-restart state for exited pods.
 	delete(r.probeStates, pod.Spec.Name)
+	delete(r.containerRestarts, pod.Spec.Name)
 
 	// Release scheduler resources.
 	r.scheduler.RemovePod(pod.Spec.Name)
@@ -476,6 +489,86 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 			slog.Info("pod failed", "pod", pod.Spec.Name, "exitCode", st.ExitCode)
 		}
 	}
+}
+
+// containerRestartState tracks the exponential-backoff schedule for
+// in-place restarts of one crashed container.
+type containerRestartState struct {
+	count       int
+	lastAttempt time.Time
+}
+
+const (
+	containerRestartBaseDelay = 10 * time.Second
+	containerRestartMaxDelay  = 5 * time.Minute
+)
+
+// restartCrashedContainers restarts exited workload containers of a pod
+// that is still running, per the pod's restartPolicy. The containers list
+// is only populated by the executor when the pod is degraded, so the
+// common all-healthy case is a no-op. Never restarts pod siblings: podman
+// start brings an exited container back with its config and filesystem
+// intact.
+func (r *Reconciler) restartCrashedContainers(ctx context.Context, pod state.PodRecord, containers []executor.ContainerStatus) {
+	for _, c := range containers {
+		if c.IsInfra || c.Running {
+			continue
+		}
+		switch policy := pod.Spec.RestartPolicy; {
+		case policy == "Always":
+			// Restart regardless of exit code.
+		case policy == "OnFailure" && c.ExitCode != 0:
+			// Restart on failure. Per Kubernetes semantics, in-place
+			// container restarts do not count against the pod BackoffLimit;
+			// that budget applies to whole-pod failures.
+		default:
+			// Never, or OnFailure after a clean exit: leave the container
+			// exited. The pod-level verdict engages once all workload
+			// containers have exited.
+			continue
+		}
+		if !r.containerBackoffElapsed(pod.Spec.Name, c.Name) {
+			continue
+		}
+		if err := r.executor.StartContainer(ctx, c.Name); err != nil {
+			slog.Warn("container restart failed", "pod", pod.Spec.Name, "container", c.Name, "err", err)
+			continue
+		}
+		slog.Info("container restarted in place", "pod", pod.Spec.Name, "container", c.Name, "exitCode", c.ExitCode)
+		r.store.IncrementRestarts(pod.Spec.Name)
+		r.store.AddEvent(pod.Spec.Name, "container-restarted",
+			fmt.Sprintf("restarted exited container %s (exit code %d); siblings untouched", c.Name, c.ExitCode))
+	}
+}
+
+// containerBackoffElapsed reports whether the container is due for another
+// restart attempt, and records the attempt when it is. Delays double from
+// containerRestartBaseDelay up to containerRestartMaxDelay; the first
+// restart is immediate. State is per pod and cleared when the pod exits.
+func (r *Reconciler) containerBackoffElapsed(podName, containerName string) bool {
+	pods := r.containerRestarts[podName]
+	if pods == nil {
+		pods = make(map[string]*containerRestartState)
+		r.containerRestarts[podName] = pods
+	}
+	s := pods[containerName]
+	if s == nil {
+		pods[containerName] = &containerRestartState{count: 1, lastAttempt: r.now()}
+		return true
+	}
+	delay := containerRestartBaseDelay
+	for i := 1; i < s.count && delay < containerRestartMaxDelay; i++ {
+		delay *= 2
+	}
+	if delay > containerRestartMaxDelay {
+		delay = containerRestartMaxDelay
+	}
+	if r.now().Sub(s.lastAttempt) < delay {
+		return false
+	}
+	s.count++
+	s.lastAttempt = r.now()
+	return true
 }
 
 // scheduledStaleness is how long a pod can stay in StatusScheduled with the

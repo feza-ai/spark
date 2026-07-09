@@ -25,6 +25,8 @@ func (e *stubExecutor) CreatePod(_ context.Context, _ manifest.PodSpec) error {
 	return nil
 }
 
+func (e *stubExecutor) StartContainer(_ context.Context, _ string) error { return nil }
+
 func (e *stubExecutor) StopPod(_ context.Context, name string, _ int) error {
 	e.stopped = append(e.stopped, name)
 	return e.stopErr

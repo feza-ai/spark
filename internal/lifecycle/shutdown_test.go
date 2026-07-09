@@ -16,14 +16,16 @@ import (
 
 // stubExecutor implements executor.Executor for testing.
 type stubExecutor struct {
-	mu         sync.Mutex
-	stopCalls  []string
+	mu          sync.Mutex
+	stopCalls   []string
 	removeCalls []string
-	stopErr    error
-	stopDelay  time.Duration
+	stopErr     error
+	stopDelay   time.Duration
 }
 
 func (s *stubExecutor) CreatePod(_ context.Context, _ manifest.PodSpec) error { return nil }
+
+func (s *stubExecutor) StartContainer(_ context.Context, _ string) error { return nil }
 
 func (s *stubExecutor) StopPod(ctx context.Context, name string, _ int) error {
 	if s.stopDelay > 0 {
@@ -110,7 +112,7 @@ func newTestScheduler() *scheduler.Scheduler {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 0},
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
-	nil, 0,
+		nil, 0,
 	)
 	return scheduler.NewScheduler(tracker)
 }

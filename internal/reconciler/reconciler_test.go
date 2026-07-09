@@ -34,6 +34,10 @@ type stubExecutor struct {
 	execProbeExit int
 	execProbeErr  error
 	httpProbeErr  error
+
+	// Container restart stubs (issue #46).
+	containerStarts   []string
+	startContainerErr error
 }
 
 func newStubExecutor() *stubExecutor {
@@ -51,6 +55,16 @@ func (s *stubExecutor) CreatePod(_ context.Context, spec manifest.PodSpec) error
 	}
 	// Mark as running by default.
 	s.statuses[spec.Name] = executor.Status{Running: true}
+	return nil
+}
+
+func (s *stubExecutor) StartContainer(_ context.Context, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.startContainerErr != nil {
+		return s.startContainerErr
+	}
+	s.containerStarts = append(s.containerStarts, name)
 	return nil
 }
 
