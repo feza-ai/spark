@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.14.0](https://github.com/feza-ai/spark/compare/v1.13.3...v1.14.0) (2026-07-09)
+
+
+### Features
+
+* **executor:** qualify Docker Hub short-name images like Kubernetes ([78ee2f4](https://github.com/feza-ai/spark/commit/78ee2f4acbb9f0bd8f49877e559d227568a342a3)), closes [#45](https://github.com/feza-ai/spark/issues/45)
+
+
+### Bug Fixes
+
+* **executor:** derive pod status from per-container states, not podman pod state ([8716760](https://github.com/feza-ai/spark/commit/8716760a1fa23b92863e99ec2058e6a4002b61ed)), closes [#52](https://github.com/feza-ai/spark/issues/52)
+* **manifest:** parse block scalars as list items instead of dropping them ([23744c3](https://github.com/feza-ai/spark/commit/23744c3aae6c53ca3181e2556d2d2185e35e9b98)), closes [#44](https://github.com/feza-ai/spark/issues/44)
+
 ## [1.13.3](https://github.com/feza-ai/spark/compare/v1.13.2...v1.13.3) (2026-07-09)
 
 
