@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.1](https://github.com/feza-ai/spark/compare/v1.16.0...v1.16.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **deploy:** KillMode=process so systemd stops spark without killing pod conmons (refs [#53](https://github.com/feza-ai/spark/issues/53)) ([3c137b2](https://github.com/feza-ai/spark/commit/3c137b22ca65f4e2e8558b9579d8fdd19d8c082a))
+* **reconciler:** adopt surviving pods on presence, not pod-level Running (refs [#53](https://github.com/feza-ai/spark/issues/53)) ([f8b2eda](https://github.com/feza-ai/spark/commit/f8b2eda98aaa7976244107517ed6fe004b5fc5c4))
+
 ## [1.16.0](https://github.com/feza-ai/spark/compare/v1.15.0...v1.16.0) (2026-07-10)
 
 
