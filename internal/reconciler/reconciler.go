@@ -224,14 +224,26 @@ func (r *Reconciler) RecoverPods(ctx context.Context) error {
 			continue
 		}
 		if rec.Status == state.StatusRunning {
-			// Already tracked as running, no action needed.
+			// Tracked as running, but this is a fresh process with an empty
+			// scheduler ledger. Re-adopt so the pod's quota is held again —
+			// otherwise admission overcommits into resources the survivors
+			// are using (issue #53).
+			if p.Running {
+				r.scheduler.AdoptPod(scheduler.PodInfo{
+					Name:      rec.Spec.Name,
+					Priority:  rec.Spec.Priority,
+					Resources: rec.Spec.TotalRequests(),
+					StartTime: rec.StartedAt,
+				})
+				slog.Info("re-adopted running pod after restart", "pod", p.Name)
+			}
 			continue
 		}
 		if p.Running {
 			// Pod is running in podman but store says otherwise. Update store.
 			r.store.UpdateStatus(p.Name, state.StatusRunning, "recovered: pod found running in podman after restart")
-			// Re-register in scheduler.
-			r.scheduler.AddPod(scheduler.PodInfo{
+			// Re-register in scheduler, ledger included.
+			r.scheduler.AdoptPod(scheduler.PodInfo{
 				Name:      rec.Spec.Name,
 				Priority:  rec.Spec.Priority,
 				Resources: rec.Spec.TotalRequests(),
