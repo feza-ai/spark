@@ -187,6 +187,16 @@ func (rt *ResourceTracker) AssignedCores(name string) []int {
 	return rt.coreAssignments[name]
 }
 
+// ForceAllocate records an allocation without capacity checks. Used when
+// adopting pods that are already running after a restart: reality outranks
+// the ledger, and an unrecorded running pod would let admission hand the
+// same resources out twice. Core and GPU assignments are not touched.
+func (rt *ResourceTracker) ForceAllocate(name string, req manifest.ResourceList) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.allocations[name] = req
+}
+
 // RestoreAssignment installs a pre-existing core assignment for a pod, used
 // during recovery so the tracker matches the running container's cpuset.
 // It is the caller's responsibility to ensure cores are not double-assigned.
