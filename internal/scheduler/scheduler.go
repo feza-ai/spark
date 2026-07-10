@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -205,6 +206,27 @@ func (s *Scheduler) AddPod(info PodInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pods[info.Name] = info
+}
+
+// AdoptPod registers a pod that is already running — after a control-plane
+// restart — for both preemption candidacy and the resource ledger. Unlike
+// Schedule, adoption never rejects: the pod is running whether or not the
+// ledger has room, and leaving it unrecorded would let admission hand out
+// the same resources twice (issues #53, #43). Idempotent: a pod that
+// already holds an allocation is left untouched.
+func (s *Scheduler) AdoptPod(info PodInfo) {
+	s.mu.Lock()
+	s.pods[info.Name] = info
+	s.mu.Unlock()
+
+	if _, held := s.tracker.AllocatedBy(info.Name); held {
+		return
+	}
+	if err := s.tracker.Allocate(info.Name, info.Resources); err != nil {
+		slog.Warn("adopting running pod despite ledger capacity error",
+			"pod", info.Name, "err", err)
+		s.tracker.ForceAllocate(info.Name, info.Resources)
+	}
 }
 
 // RemovePod unregisters a pod (after it exits or is preempted).
