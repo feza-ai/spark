@@ -63,7 +63,8 @@ Spark will detect system resources (CPU, memory, GPU), connect to NATS, and begi
 | `--state-db` | `/var/lib/spark/state.db` | Path to SQLite database file |
 | `--pod-retention` | `168h` | Retention period for completed/failed pods |
 | `--http-addr` | `:8080` | HTTP listen address |
-| `--shutdown-timeout` | `30s` | Max time to drain pods on shutdown |
+| `--shutdown-timeout` | `30s` | Max time to drain pods on shutdown (only with `--drain-on-shutdown`) |
+| `--drain-on-shutdown` | `false` | Stop all running pods on shutdown. Off by default: pods keep running through restarts and upgrades, and the new process re-adopts them (state, scheduler quota, and cpuset assignments included) |
 | `--reconcile-resources-interval` | `60s` | Resource reconciliation interval |
 | `--log-format` | `text` | Log output format (text or json) |
 | `--api-token-file` | *(empty)* | Path to file containing API bearer token |

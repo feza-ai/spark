@@ -47,7 +47,8 @@ func main() {
 	stateDB := flag.String("state-db", "/var/lib/spark/state.db", "path to SQLite database file")
 	podRetention := flag.Duration("pod-retention", 168*time.Hour, "retention for completed/failed pods")
 	httpAddr := flag.String("http-addr", ":8080", "HTTP listen address")
-	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "max time to drain pods on shutdown")
+	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "max time to drain pods on shutdown (only used with --drain-on-shutdown)")
+	drainOnShutdown := flag.Bool("drain-on-shutdown", false, "stop all running pods on shutdown; default leaves pods running so they survive restarts and upgrades")
 	reconcileResourcesInterval := flag.Duration("reconcile-resources-interval", 60*time.Second, "resource reconciliation interval")
 	logFormat := flag.String("log-format", "text", "log output format (text or json)")
 	apiTokenFile := flag.String("api-token-file", "", "path to file containing API bearer token")
@@ -435,12 +436,19 @@ func main() {
 	// 4. Cancel context to stop reconciler, watcher, heartbeat, cron, resource reconciler.
 	cancel()
 
-	// 5. Drain running pods.
-	sc := lifecycle.NewShutdownCoordinator(store, exec, sched, *shutdownTimeout)
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), *shutdownTimeout)
-	defer drainCancel()
-	if err := sc.Drain(drainCtx); err != nil {
-		slog.Error("pod drain error", "error", err)
+	// 5. Drain running pods — only when explicitly requested. The default
+	// leaves podman pods running through the restart; RecoverPods re-adopts
+	// them on the next startup. Draining on every systemd restart meant
+	// every release killed all workloads on the node (issue #53).
+	if *drainOnShutdown {
+		sc := lifecycle.NewShutdownCoordinator(store, exec, sched, *shutdownTimeout)
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), *shutdownTimeout)
+		defer drainCancel()
+		if err := sc.Drain(drainCtx); err != nil {
+			slog.Error("pod drain error", "error", err)
+		}
+	} else {
+		slog.Info("leaving pods running for recovery after restart (--drain-on-shutdown to drain)")
 	}
 
 	// 6. Close SQLite.
