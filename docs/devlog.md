@@ -1,5 +1,19 @@
 # Spark Development Log
 
+## 2026-07-09: Issue #53 every release killed every workload (drain-on-restart)
+
+**Type:** finding
+**Tags:** lifecycle, reconciler, scheduler, issue-53, auto-upgrade, recovery
+
+**Problem:** the SIGTERM path unconditionally drained all pods (30s grace, then force-kill) and nothing restored them after the new process started — so every auto-upgrade killed every workload on the node, including a 40-minute GPU render at clip 8/12. Two releases in one afternoon left ~10 pods `failed`.
+
+**Fix in three parts:**
+1. Drain is now opt-in (`--drain-on-shutdown`, default false). Default shutdown leaves podman pods running; `RecoverPods` re-adopts them at startup. This is kubelet semantics: a control-plane restart is not a node drain.
+2. Recovery previously skipped store-Running pods with a bare `continue` and, for other recovered pods, only registered preemption candidacy (`AddPod`) — **never quota**. Every restart therefore emptied the ledger while the workloads kept using the resources: the #43 overcommit reappearing through a different door. Both recovery branches now go through `Scheduler.AdoptPod`.
+3. `AdoptPod` = AddPod + ledger allocation, idempotent, and it never rejects: if the ledger has no room, `ForceAllocate` records the commitment anyway with a loud warning — a running pod is reality; refusing to book it would be lying to admission.
+
+**Landmine:** any new recovery/adoption path MUST register scheduler quota, not just `AddPod`. `AddPod` alone makes a pod preemptible but invisible to admission — the worst combination.
+
 ## 2026-07-09: Issue #46 per-container restarts (crash-looping sidecar no longer cycles siblings)
 
 **Type:** finding
