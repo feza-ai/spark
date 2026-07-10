@@ -14,6 +14,8 @@
 
 **Landmine:** any new recovery/adoption path MUST register scheduler quota, not just `AddPod`. `AddPod` alone makes a pod preemptible but invisible to admission — the worst combination.
 
+**Live-verify findings (v1.16.0, follow-up fixes):** (1) systemd's default `KillMode=control-group` waits for conmon/container processes living in spark.service's cgroup, times out after 90s on every stop, and SIGKILLs conmon — degrading the very pods the fix preserved. `KillMode=process` + `TimeoutStopSec=30` in the unit. (2) A surviving pod can therefore be `Degraded` (infra conmon dead, workload alive) when the new process runs `RecoverPods`, which gated adoption on pod-level Running — quota silently not re-registered. Adoption now keys on presence in podman; a genuinely dead pod loses the quota one reconcile tick later. (3) The verification manifest also flushed out #66: flow-style YAML maps are silently dropped by the parser — pods admitted with zero requests.
+
 ## 2026-07-09: Issue #54 crash-loop backoff for whole-pod restarts
 
 **Type:** finding

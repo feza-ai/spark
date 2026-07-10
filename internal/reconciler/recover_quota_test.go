@@ -67,3 +67,35 @@ func TestRecoverPods_RecoveredPodReclaimsQuota(t *testing.T) {
 		t.Fatal("expected lazarus to hold scheduler quota after recovery")
 	}
 }
+
+func TestRecoverPods_DegradedSurvivorStillReclaimsQuota(t *testing.T) {
+	// A pod that survived a control-plane restart can be Degraded at
+	// startup (its infra container took a hit) while the workload runs on.
+	// Quota must be re-registered on presence, not on pod-level Running;
+	// a genuinely dead pod gets its quota released one reconcile tick
+	// later via reconcileRunning.
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("degraded-survivor", "Always", 0)
+	store.Apply(spec)
+	store.UpdateStatus("degraded-survivor", state.StatusRunning, "running")
+
+	exec.listPods = []executor.PodListEntry{
+		{Name: "degraded-survivor", Running: false, Status: "Degraded"},
+	}
+
+	if err := r.RecoverPods(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, held := sched.Tracker().AllocatedBy("degraded-survivor"); !held {
+		t.Fatal("expected degraded survivor to hold scheduler quota after recovery")
+	}
+	rec, _ := store.Get("degraded-survivor")
+	if rec.Status != state.StatusRunning {
+		t.Fatalf("expected still Running, got %s", rec.Status)
+	}
+}
