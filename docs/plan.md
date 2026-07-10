@@ -1,6 +1,6 @@
 # Spark: Resolve Open GitHub Issue #37 (Phantom Running Pods Leak Resources)
 
-## Status: Planned
+## Status: Complete (shipped v1.13.1, verified live 2026-07-09 — see docs/devlog.md and docs/handover-2026-07-10.md)
 
 ## Context
 
