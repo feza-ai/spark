@@ -44,16 +44,21 @@ echo "spark-auto-upgrade: upgrading ${INSTALLED} -> ${LATEST}"
 mkdir -p "${TMP_DIR}"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-# Find the arm64 .deb asset URL.
+# Find the arm64 .deb asset URL. The `|| true` guards matter: with
+# pipefail, a no-match grep would kill the script right here, before the
+# empty check below could say anything (issue #61).
 DEB_URL=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep -o '"browser_download_url": *"[^"]*"' \
-    | grep "${DEB_PATTERN}" \
+    | { grep -o '"browser_download_url": *"[^"]*"' || true; } \
+    | { grep "${DEB_PATTERN}" || true; } \
     | head -1 \
     | sed 's/.*"\(https[^"]*\)"/\1/')
 
 if [ -z "${DEB_URL}" ]; then
-    echo "spark-auto-upgrade: ERROR no arm64 .deb found in release ${LATEST}" >&2
-    exit 1
+    # release-please creates the GitHub release at tag time; GoReleaser
+    # attaches assets a few minutes later. Landing in that window is
+    # routine, not an error — the timer retries on its next tick.
+    echo "spark-auto-upgrade: release ${LATEST} has no arm64 .deb yet (assets still uploading?); retrying next tick"
+    exit 0
 fi
 
 DEB_FILE="${TMP_DIR}/spark_${LATEST}_linux_${ARCH}.deb"
