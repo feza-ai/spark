@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.16.0](https://github.com/feza-ai/spark/compare/v1.15.0...v1.16.0) (2026-07-10)
+
+
+### Features
+
+* **scheduler:** AdoptPod registers already-running pods in the ledger (refs [#53](https://github.com/feza-ai/spark/issues/53)) ([f1f9e95](https://github.com/feza-ai/spark/commit/f1f9e9523a821f72d728779c91c0c79260581dda))
+
+
+### Bug Fixes
+
+* **deploy:** auto-upgrade treats the release asset-upload window as a clean retry ([8346c7a](https://github.com/feza-ai/spark/commit/8346c7a4405c96876b527753db309745f7919900)), closes [#61](https://github.com/feza-ai/spark/issues/61)
+* **main:** leave pods running on shutdown so upgrades stop killing workloads ([0fa2203](https://github.com/feza-ai/spark/commit/0fa220382225dadaa20120dd22e37bb0fea10413))
+* **reconciler:** exponential crash-loop backoff for whole-pod restarts ([3798cb8](https://github.com/feza-ai/spark/commit/3798cb89404046c75f6865bc2a5e2c5b78ca01bd)), closes [#54](https://github.com/feza-ai/spark/issues/54)
+* **reconciler:** re-register scheduler quota for pods recovered after restart (refs [#53](https://github.com/feza-ai/spark/issues/53)) ([3a6890a](https://github.com/feza-ai/spark/commit/3a6890adcf9582d21f2479df03ff7c0b822a63c6))
+
 ## [1.15.0](https://github.com/feza-ai/spark/compare/v1.14.0...v1.15.0) (2026-07-09)
 
 
