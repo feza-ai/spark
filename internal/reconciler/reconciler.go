@@ -232,16 +232,18 @@ func (r *Reconciler) RecoverPods(ctx context.Context) error {
 			// Tracked as running, but this is a fresh process with an empty
 			// scheduler ledger. Re-adopt so the pod's quota is held again —
 			// otherwise admission overcommits into resources the survivors
-			// are using (issue #53).
-			if p.Running {
-				r.scheduler.AdoptPod(scheduler.PodInfo{
-					Name:      rec.Spec.Name,
-					Priority:  rec.Spec.Priority,
-					Resources: rec.Spec.TotalRequests(),
-					StartTime: rec.StartedAt,
-				})
-				slog.Info("re-adopted running pod after restart", "pod", p.Name)
-			}
+			// are using (issue #53). Adopt on mere presence, not on the
+			// pod-level Running state: a surviving pod can be Degraded at
+			// startup (e.g. its infra container took a hit during the
+			// restart) while its workload containers run on. If the pod is
+			// genuinely dead, the next reconcile tick releases the quota.
+			r.scheduler.AdoptPod(scheduler.PodInfo{
+				Name:      rec.Spec.Name,
+				Priority:  rec.Spec.Priority,
+				Resources: rec.Spec.TotalRequests(),
+				StartTime: rec.StartedAt,
+			})
+			slog.Info("re-adopted running pod after restart", "pod", p.Name, "podmanRunning", p.Running)
 			continue
 		}
 		if p.Running {
