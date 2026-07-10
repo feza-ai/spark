@@ -62,6 +62,16 @@ func parseYAMLLines(lines []string, start, baseIndent int, m map[string]interfac
 				i++
 				continue
 			}
+			// Flow-style map: { cpu: "1", memory: 512Mi }
+			if strings.HasPrefix(rest, "{") {
+				fm, err := parseFlowMap(rest)
+				if err != nil {
+					return 0, fmt.Errorf("line %d: %w", i+1, err)
+				}
+				m[key] = fm
+				i++
+				continue
+			}
 			// Block scalar indicators: | (literal), |- (strip), > (folded), >- (folded strip).
 			if rest == "|" || rest == "|-" || rest == ">" || rest == ">-" {
 				scalar, newIdx := parseBlockScalar(lines, i+1, baseIndent, rest)
@@ -135,6 +145,19 @@ func parseYAMLList(lines []string, start, baseIndent int) ([]interface{}, int, e
 
 		itemContent := trimmed[2:]
 
+		// Flow collection as a list item: `- { name: x }` or `- [a, b]`.
+		// Must be checked before findMapSeparator, which would otherwise
+		// split `{ name: x }` at the colon inside the braces.
+		if strings.HasPrefix(itemContent, "{") || strings.HasPrefix(itemContent, "[") {
+			v, err := parseFlowValue(itemContent)
+			if err != nil {
+				return nil, 0, err
+			}
+			list = append(list, v)
+			i++
+			continue
+		}
+
 		if colonIdx := findMapSeparator(itemContent); colonIdx >= 0 {
 			itemMap := make(map[string]interface{})
 			key := strings.TrimSpace(itemContent[:colonIdx])
@@ -144,7 +167,11 @@ func parseYAMLList(lines []string, start, baseIndent int) ([]interface{}, int, e
 			}
 
 			if val != "" {
-				itemMap[key] = unquote(val)
+				v, err := parseFlowValue(val)
+				if err != nil {
+					return nil, 0, err
+				}
+				itemMap[key] = v
 			} else {
 				itemMap[key] = ""
 			}
@@ -179,20 +206,13 @@ func parseYAMLList(lines []string, start, baseIndent int) ([]interface{}, int, e
 	return list, i, nil
 }
 
-// parseFlowList parses a YAML flow-style sequence like `[a, "b", 1]`.
-// Nested flow lists or maps are not supported and return an error.
-func parseFlowList(s string) ([]interface{}, error) {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
-		return nil, fmt.Errorf("malformed flow list: %q", s)
-	}
-	inner := strings.TrimSpace(s[1 : len(s)-1])
-	if inner == "" {
-		return []interface{}{}, nil
-	}
-	var items []interface{}
+// splitFlowItems splits the inner text of a flow collection on top-level
+// commas, honoring quotes and nested {}/[] depth.
+func splitFlowItems(inner string) ([]string, error) {
+	var items []string
 	var buf strings.Builder
 	inSingle, inDouble := false, false
+	depth := 0
 	for i := 0; i < len(inner); i++ {
 		c := inner[i]
 		switch c {
@@ -208,12 +228,20 @@ func parseFlowList(s string) ([]interface{}, error) {
 			buf.WriteByte(c)
 		case '[', '{':
 			if !inSingle && !inDouble {
-				return nil, fmt.Errorf("nested flow collections are not supported: %q", s)
+				depth++
+			}
+			buf.WriteByte(c)
+		case ']', '}':
+			if !inSingle && !inDouble {
+				depth--
+				if depth < 0 {
+					return nil, fmt.Errorf("unbalanced brackets in flow collection: %q", inner)
+				}
 			}
 			buf.WriteByte(c)
 		case ',':
-			if !inSingle && !inDouble {
-				items = append(items, unquote(strings.TrimSpace(buf.String())))
+			if !inSingle && !inDouble && depth == 0 {
+				items = append(items, strings.TrimSpace(buf.String()))
 				buf.Reset()
 				continue
 			}
@@ -223,13 +251,127 @@ func parseFlowList(s string) ([]interface{}, error) {
 		}
 	}
 	if inSingle || inDouble {
-		return nil, fmt.Errorf("unterminated quote in flow list: %q", s)
+		return nil, fmt.Errorf("unterminated quote in flow collection: %q", inner)
 	}
-	last := strings.TrimSpace(buf.String())
-	if last != "" {
-		items = append(items, unquote(last))
+	if depth != 0 {
+		return nil, fmt.Errorf("unbalanced brackets in flow collection: %q", inner)
+	}
+	if last := strings.TrimSpace(buf.String()); last != "" {
+		items = append(items, last)
 	}
 	return items, nil
+}
+
+// parseFlowValue interprets one flow-context value: a nested flow map, a
+// nested flow list, or a plain scalar.
+func parseFlowValue(s string) (interface{}, error) {
+	s = strings.TrimSpace(s)
+	switch {
+	case strings.HasPrefix(s, "{"):
+		return parseFlowMap(s)
+	case strings.HasPrefix(s, "["):
+		return parseFlowList(s)
+	default:
+		return unquote(s), nil
+	}
+}
+
+// parseFlowList parses a YAML flow-style sequence like `[a, "b", 1]`.
+// Items may themselves be flow maps or lists.
+func parseFlowList(s string) ([]interface{}, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
+		return nil, fmt.Errorf("malformed flow list: %q", s)
+	}
+	inner := strings.TrimSpace(s[1 : len(s)-1])
+	if inner == "" {
+		return []interface{}{}, nil
+	}
+	parts, err := splitFlowItems(inner)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]interface{}, 0, len(parts))
+	for _, p := range parts {
+		v, err := parseFlowValue(p)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, v)
+	}
+	return items, nil
+}
+
+// flowMapSeparator returns the index of the first top-level colon in a flow
+// map entry, honoring quotes and nested collections. -1 when absent.
+func flowMapSeparator(s string) int {
+	inSingle, inDouble := false, false
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '[', '{':
+			if !inSingle && !inDouble {
+				depth++
+			}
+		case ']', '}':
+			if !inSingle && !inDouble {
+				depth--
+			}
+		case ':':
+			if !inSingle && !inDouble && depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// parseFlowMap parses a YAML flow-style mapping like `{ cpu: "1", memory: 512Mi }`.
+// Values may be scalars or nested flow collections. A malformed map is an
+// error: treating flow maps as scalar strings silently discarded them —
+// pods with flow-style resources were admitted with zero requests (issue #66).
+func parseFlowMap(s string) (map[string]interface{}, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{") || !strings.HasSuffix(s, "}") {
+		return nil, fmt.Errorf("malformed flow map: %q", s)
+	}
+	inner := strings.TrimSpace(s[1 : len(s)-1])
+	m := make(map[string]interface{})
+	if inner == "" {
+		return m, nil
+	}
+	parts, err := splitFlowItems(inner)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		colon := flowMapSeparator(p)
+		if colon < 0 {
+			return nil, fmt.Errorf("flow map entry %q is missing a colon in %q", p, s)
+		}
+		key := unquote(strings.TrimSpace(p[:colon]))
+		val := ""
+		if colon+1 < len(p) {
+			val = strings.TrimSpace(p[colon+1:])
+		}
+		v, err := parseFlowValue(val)
+		if err != nil {
+			return nil, err
+		}
+		m[key] = v
+	}
+	return m, nil
 }
 
 // parseBlockScalar consumes a YAML block scalar (|, |-, >, >-) starting

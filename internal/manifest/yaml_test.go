@@ -96,8 +96,8 @@ func TestParseFlowList(t *testing.T) {
 
 func TestParseFlowList_Errors(t *testing.T) {
 	cases := []string{
-		`[a, [b]]`,
 		`["unterminated, x]`,
+		`[a, [b]`, // unbalanced nesting
 	}
 	for _, c := range cases {
 		if _, err := parseFlowList(c); err == nil {

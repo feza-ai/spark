@@ -1,5 +1,16 @@
 # Spark Development Log
 
+## 2026-07-09: Issue #66 flow-style YAML maps silently dropped (zero-request admission)
+
+**Type:** finding
+**Tags:** manifest, yaml, issue-66, issue-43, silent-zero
+
+**Problem:** the hand-rolled YAML parser handled flow-style lists but not flow-style maps: `limits: { cpu: "1", memory: 512Mi }` parsed as the scalar string `{ cpu: "1", memory: 512Mi }`, `getMap` returned nil, and the pod was admitted with zero requests — no error, no event. Found live during #53 verification; retroactively explains ledger oddities seen on v1.13.x (the #42 runbook manifest was flow-style).
+
+**Fix:** `parseFlowMap` + a depth-aware `splitFlowItems` shared with `parseFlowList` (which now supports nested collections instead of erroring). Flow maps work as map values, list items (`- { name: FOO }`), and nested inside each other. Malformed flow collections are parse errors surfaced as 400s.
+
+**Lesson (fourth instance of the same class):** #43 quantities, #44 block scalars, #52 pod states, #66 flow maps — every silent-default in the input path eventually admitted something dangerous. Any new parser branch must reject what it does not understand.
+
 ## 2026-07-09: Issue #53 every release killed every workload (drain-on-restart)
 
 **Type:** finding

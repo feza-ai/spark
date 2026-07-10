@@ -135,6 +135,8 @@ curl -X POST http://localhost:8080/api/v1/pods \
 
 Accepts a Kubernetes manifest (YAML) in the request body. Supports Pod, Job, CronJob, Deployment, and StatefulSet kinds.
 
+Both block-style and flow-style YAML collections are supported (`limits: { cpu: "1", memory: 512Mi }`, `env: [{ name: FOO, value: bar }]`). A malformed flow collection is a `400 Bad Request`, never a silently ignored value.
+
 #### Restart semantics
 
 `restartPolicy` applies per container, matching Kubernetes: when one container in a multi-container pod crashes, only that container is restarted in place (config and filesystem intact) — its siblings keep running. In-place restarts back off exponentially (10s doubling to a 5m cap) and do not count against a Job's `backoffLimit`, which governs whole-pod failures. Under `Never`, a crashed container stays down while the rest of the pod runs; the pod completes or fails once all containers have exited (first non-zero exit code wins).
