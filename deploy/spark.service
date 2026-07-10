@@ -25,6 +25,13 @@ ExecStart=/usr/local/bin/spark \
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
+# Pods must survive control-plane restarts (issue #53). podman run from this
+# service puts conmon and the containers in the service cgroup; the default
+# KillMode=control-group makes systemd wait for them on stop, time out after
+# 90s, and SIGKILL conmon — degrading every surviving pod. Signal only the
+# spark process itself.
+KillMode=process
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
