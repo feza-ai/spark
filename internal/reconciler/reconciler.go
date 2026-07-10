@@ -34,6 +34,10 @@ type Reconciler struct {
 	// only touched from the single reconcile goroutine.
 	containerRestarts map[string]map[string]*containerRestartState
 
+	// podBackoff tracks crash-loop backoff for whole-pod restarts
+	// (issue #54). Only touched from the single reconcile goroutine.
+	podBackoff map[string]*podRestartBackoff
+
 	// orphanFirstSeen tracks the first time an orphaned podman pod was
 	// observed. Orphans only become eligible for removal once they have
 	// been seen for at least orphanGrace, avoiding a race with
@@ -65,6 +69,7 @@ func NewReconciler(store *state.PodStore, sched *scheduler.Scheduler, exec execu
 		interval:        interval,
 		probeStates:       make(map[string]*probeState),
 		containerRestarts: make(map[string]map[string]*containerRestartState),
+		podBackoff:        make(map[string]*podRestartBackoff),
 		orphanFirstSeen:   make(map[string]time.Time),
 		orphanGrace:       defaultOrphanGrace,
 		now:               time.Now,
@@ -294,6 +299,13 @@ func (r *Reconciler) Run(ctx context.Context) {
 func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	pods := r.store.List("")
 
+	// Drop crash-loop state for pods that no longer exist (deleted via API).
+	for name := range r.podBackoff {
+		if _, ok := r.store.Get(name); !ok {
+			delete(r.podBackoff, name)
+		}
+	}
+
 	for _, pod := range pods {
 		// Re-read current status; a prior iteration may have changed it (e.g. preemption).
 		current, ok := r.store.Get(pod.Spec.Name)
@@ -318,6 +330,11 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 	// Respect exponential backoff between failed attempts.
 	if !r.retryEligible(pod) {
 		slog.Debug("pod retry suppressed by backoff", "pod", pod.Spec.Name, "attempts", pod.StartAttempts)
+		return
+	}
+	// Respect crash-loop backoff after exit-driven restarts (issue #54).
+	// The pending reason already carries the delay, so stay quiet here.
+	if bo := r.podBackoff[pod.Spec.Name]; bo != nil && r.now().Before(bo.notBefore) {
 		return
 	}
 
@@ -479,20 +496,25 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 
 	switch {
 	case policy == "Always":
-		// Service-style: always restart.
+		// Service-style: always restart, with crash-loop backoff (issue #54).
+		delay := r.nextPodBackoff(pod)
 		r.store.IncrementRestarts(pod.Spec.Name)
-		r.updateStatus(pod.Spec.Name, state.StatusPending, "restarting (policy=Always)")
-		slog.Info("pod rescheduled", "pod", pod.Spec.Name, "reason", "restart-always")
+		r.updateStatus(pod.Spec.Name, state.StatusPending,
+			fmt.Sprintf("restarting (policy=Always), crash-loop backoff %s", delay))
+		slog.Info("pod rescheduled", "pod", pod.Spec.Name, "reason", "restart-always", "backoff", delay)
 
 	case policy == "OnFailure" && st.ExitCode != 0 && pod.RetryCount < pod.Spec.BackoffLimit:
-		// Job with retries remaining.
+		// Job with retries remaining, same crash-loop backoff.
+		delay := r.nextPodBackoff(pod)
 		r.store.IncrementRestarts(pod.Spec.Name)
 		r.store.IncrementRetry(pod.Spec.Name)
-		r.updateStatus(pod.Spec.Name, state.StatusPending, "retrying after failure")
-		slog.Info("pod retry scheduled", "pod", pod.Spec.Name, "retry", pod.RetryCount+1, "limit", pod.Spec.BackoffLimit)
+		r.updateStatus(pod.Spec.Name, state.StatusPending,
+			fmt.Sprintf("retrying after failure, crash-loop backoff %s", delay))
+		slog.Info("pod retry scheduled", "pod", pod.Spec.Name, "retry", pod.RetryCount+1, "limit", pod.Spec.BackoffLimit, "backoff", delay)
 
 	default:
 		// Never policy, success, or retries exhausted.
+		delete(r.podBackoff, pod.Spec.Name)
 		if st.ExitCode == 0 {
 			r.updateStatus(pod.Spec.Name, state.StatusCompleted, "exited successfully")
 			slog.Info("pod completed", "pod", pod.Spec.Name)
@@ -501,6 +523,45 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 			slog.Info("pod failed", "pod", pod.Spec.Name, "exitCode", st.ExitCode)
 		}
 	}
+}
+
+// podRestartBackoff tracks the crash-loop schedule for one pod's whole-pod
+// restarts (policy Always / OnFailure recreates).
+type podRestartBackoff struct {
+	count     int
+	notBefore time.Time
+}
+
+const (
+	podBackoffBase       = 10 * time.Second
+	podBackoffMax        = 5 * time.Minute
+	podBackoffResetAfter = 10 * time.Minute
+)
+
+// nextPodBackoff computes the delay before this pod may be recreated, and
+// records it. Delays double from podBackoffBase to podBackoffMax, mirroring
+// Kubernetes CrashLoopBackOff. A pod that ran cleanly for at least
+// podBackoffResetAfter before exiting starts the schedule over.
+func (r *Reconciler) nextPodBackoff(pod state.PodRecord) time.Duration {
+	now := r.now()
+	bo := r.podBackoff[pod.Spec.Name]
+	if bo == nil {
+		bo = &podRestartBackoff{}
+		r.podBackoff[pod.Spec.Name] = bo
+	}
+	if !pod.StartedAt.IsZero() && now.Sub(pod.StartedAt) >= podBackoffResetAfter {
+		bo.count = 0
+	}
+	delay := podBackoffBase
+	for i := 0; i < bo.count && delay < podBackoffMax; i++ {
+		delay *= 2
+	}
+	if delay > podBackoffMax {
+		delay = podBackoffMax
+	}
+	bo.count++
+	bo.notBefore = now.Add(delay)
+	return delay
 }
 
 // containerRestartState tracks the exponential-backoff schedule for

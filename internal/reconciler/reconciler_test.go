@@ -254,6 +254,9 @@ func TestCrashedServicePodGetsRescheduled(t *testing.T) {
 	exec := newStubExecutor()
 	r := NewReconciler(store, sched, exec, time.Second)
 
+	clock := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	r.SetClock(func() time.Time { return clock })
+
 	spec := testPodSpec("svc", "Always", 0)
 	store.Apply(spec)
 
@@ -276,7 +279,8 @@ func TestCrashedServicePodGetsRescheduled(t *testing.T) {
 		t.Fatalf("expected Pending after crash, got %s", rec.Status)
 	}
 
-	// Third tick: re-schedule.
+	// Third tick: re-schedule once the crash-loop backoff (10s) elapses.
+	clock = clock.Add(11 * time.Second)
 	r.reconcileOnce(context.Background())
 
 	rec, _ = store.Get("svc")
@@ -295,6 +299,9 @@ func TestFailedJobWithRetriesGetsRetried(t *testing.T) {
 	sched := newTestScheduler()
 	exec := newStubExecutor()
 	r := NewReconciler(store, sched, exec, time.Second)
+
+	clock := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	r.SetClock(func() time.Time { return clock })
 
 	spec := testPodSpec("job1", "OnFailure", 3)
 	store.Apply(spec)
@@ -319,7 +326,8 @@ func TestFailedJobWithRetriesGetsRetried(t *testing.T) {
 		t.Fatalf("expected RetryCount=1, got %d", rec.RetryCount)
 	}
 
-	// Tick 3: re-schedule after retry.
+	// Tick 3: re-schedule once the crash-loop backoff elapses.
+	clock = clock.Add(11 * time.Second)
 	r.reconcileOnce(context.Background())
 	rec, _ = store.Get("job1")
 	if rec.Status != state.StatusRunning {
@@ -363,6 +371,9 @@ func TestFailedJobWithExhaustedRetriesStaysFailed(t *testing.T) {
 	exec := newStubExecutor()
 	r := NewReconciler(store, sched, exec, time.Second)
 
+	clock := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	r.SetClock(func() time.Time { return clock })
+
 	spec := testPodSpec("job2", "OnFailure", 1)
 	store.Apply(spec)
 
@@ -381,7 +392,8 @@ func TestFailedJobWithExhaustedRetriesStaysFailed(t *testing.T) {
 		t.Fatalf("expected RetryCount=1, got %d", rec.RetryCount)
 	}
 
-	// Tick 3: re-schedule.
+	// Tick 3: re-schedule once the crash-loop backoff elapses.
+	clock = clock.Add(11 * time.Second)
 	r.reconcileOnce(context.Background())
 
 	// Fail again — retries exhausted (retryCount=1 == backoffLimit=1).
@@ -754,10 +766,16 @@ func TestReconcileRunningMultipleRestartsAccumulate(t *testing.T) {
 	exec := newStubExecutor()
 	r := NewReconciler(store, sched, exec, time.Second)
 
+	clock := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	r.SetClock(func() time.Time { return clock })
+
 	spec := testPodSpec("svc-multi", "Always", 0)
 	store.Apply(spec)
 
 	for i := 0; i < 3; i++ {
+		// Advance past the crash-loop backoff so each cycle reschedules.
+		clock = clock.Add(podBackoffMax + time.Second)
+
 		// Schedule and create.
 		r.reconcileOnce(context.Background())
 

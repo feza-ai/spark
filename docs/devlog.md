@@ -14,6 +14,17 @@
 
 **Landmine:** any new recovery/adoption path MUST register scheduler quota, not just `AddPod`. `AddPod` alone makes a pod preemptible but invisible to admission — the worst combination.
 
+## 2026-07-09: Issue #54 crash-loop backoff for whole-pod restarts
+
+**Type:** finding
+**Tags:** reconciler, issue-54, backoff, crash-loop
+
+**Problem:** a pod whose container exited nonzero shortly after start was recreated at a flat ~25s interval — 128 restarts in ~54 minutes, each re-running full startup (package mirrors, external API calls). The existing `backoffDelay`/`retryEligible` machinery only covers CREATE failures (`podman run` errored, `StartAttempts` recorded); a container that starts fine and then crashes hits the restart path with no damping at all.
+
+**Fix:** `nextPodBackoff` on the exit-driven restart transitions (Always, OnFailure-retry): delays double from 10s to a 5m cap, k8s CrashLoopBackOff-style; the pending event carries the delay. `reconcilePending` gates recreation on the deadline. The schedule resets when the pod ran cleanly for ≥10 minutes before exiting (`StartedAt`-based). State is reconciler-memory only (same trade-off as the #46 container backoff) and swept when the pod is deleted or reaches a terminal state.
+
+**Landmine:** there are now TWO backoff systems on purpose — `StartAttempts`/`retryEligible` for create failures (5s→60s) and `podBackoff` for exit crashes (10s→5m). They gate the same `reconcilePending`; collapsing them looks tempting but create-failure attempts are persisted (`RecordStartFailure`) while crash-loop state is not, and their reset semantics differ.
+
 ## 2026-07-09: Issue #46 per-container restarts (crash-looping sidecar no longer cycles siblings)
 
 **Type:** finding
