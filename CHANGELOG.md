@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.2](https://github.com/feza-ai/spark/compare/v1.16.1...v1.16.2) (2026-07-10)
+
+
+### Bug Fixes
+
+* **manifest:** parse flow-style YAML maps instead of dropping them ([66df4af](https://github.com/feza-ai/spark/commit/66df4af7757cf313a3425835eb9a2b37b50368b4)), closes [#66](https://github.com/feza-ai/spark/issues/66)
+
 ## [1.16.1](https://github.com/feza-ai/spark/compare/v1.16.0...v1.16.1) (2026-07-10)
 
 
