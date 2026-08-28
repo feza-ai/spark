@@ -69,19 +69,23 @@ Admission consults live host load, not just accounting, but only for CPU:
    bypass engages. A `CPUOvercommitAdmitted` pod event records the reason
    each time it does.
 
-### Load window and margin: not prescribed by the issue
+### Load window and margin: reviewed and confirmed
 
 Neither the issue nor any prior ADR specifies a formula for converting
-"real load" into an admission decision. The choices here are a considered
-default, not an authoritative answer:
+"real load" into an admission decision, so this was raised explicitly for
+review rather than decided unilaterally (this changes live scheduling
+behavior on a shared production node). Reviewed and confirmed 2026-08-27:
 
 - **5-minute load average**, not 1-minute or 15-minute: 1-minute is noisy
   enough to flap admission on a brief spike (spinning up preemption
   candidates and back down); 15-minute reacts too slowly to genuine
   sustained idle -- the exact case this ADR exists to fix.
-- **1-core (1000m) safety margin**: covers the trailing average's inherent
-  lag (load can rise between samples faster than a 5-minute average
-  reflects it).
+- **15-second sample interval** via `--host-load-sample-interval`.
+- **1-core (1000m) safety margin** via `--cpu-overcommit-margin-millis`,
+  matching the repo's existing `--gpu-max`/`--system-reserve-cores`
+  precedent of exposing scheduling-relevant constants as flags rather than
+  hardcoding them: it covers the trailing average's inherent lag (load can
+  rise between samples faster than a 5-minute average reflects it).
 
 Both are operator-tunable flags, not hardcoded, specifically because they
 are a judgment call rather than something the issue or prior design
