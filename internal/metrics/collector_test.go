@@ -11,12 +11,14 @@ import (
 )
 
 type fakeSchedulerMetrics struct {
-	attempts    int64
-	preemptions int64
+	attempts           int64
+	preemptions        int64
+	overcommitAdmitted int64
 }
 
-func (f *fakeSchedulerMetrics) ScheduleAttempts() int64 { return f.attempts }
-func (f *fakeSchedulerMetrics) PreemptionCount() int64  { return f.preemptions }
+func (f *fakeSchedulerMetrics) ScheduleAttempts() int64        { return f.attempts }
+func (f *fakeSchedulerMetrics) PreemptionCount() int64         { return f.preemptions }
+func (f *fakeSchedulerMetrics) CPUOvercommitAdmissions() int64 { return f.overcommitAdmitted }
 
 type fakeHousekeepingMetrics struct {
 	reaped            map[string]int64
@@ -50,7 +52,7 @@ func TestCollect_PodCounts(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
 		scheduler.Resources{},
-	nil, 0,
+		nil, 0,
 	)
 
 	c := NewCollector(store, tracker, nil)
@@ -87,7 +89,7 @@ func TestCollect_Resources(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
 		scheduler.Resources{CPUMillis: 500, MemoryMB: 1024, GPUMemoryMB: 0},
-	nil, 0,
+		nil, 0,
 	)
 	// Allocate some resources to make available != total.
 	tracker.Allocate("test-pod", manifest.ResourceList{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 4096})
@@ -127,9 +129,9 @@ func TestCollect_SchedulerMetrics(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
-	nil, 0,
+		nil, 0,
 	)
-	sched := &fakeSchedulerMetrics{attempts: 42, preemptions: 7}
+	sched := &fakeSchedulerMetrics{attempts: 42, preemptions: 7, overcommitAdmitted: 3}
 	c := NewCollector(store, tracker, sched)
 	families := c.Collect()
 
@@ -139,6 +141,7 @@ func TestCollect_SchedulerMetrics(t *testing.T) {
 	}{
 		{"spark_scheduling_attempts_total", 42},
 		{"spark_preemptions_total", 7},
+		{"spark_cpu_overcommit_admissions_total", 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -158,7 +161,7 @@ func TestCollect_SchedulerNil(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
-	nil, 0,
+		nil, 0,
 	)
 	c := NewCollector(store, tracker, nil)
 	families := c.Collect()
@@ -208,9 +211,9 @@ func TestCollect_HousekeepingNil(t *testing.T) {
 func TestRender_Format(t *testing.T) {
 	families := []MetricFamily{
 		{
-			Name: "spark_node_cpu_total_millis",
-			Help: "Total allocatable CPU in millicores",
-			Type: "gauge",
+			Name:    "spark_node_cpu_total_millis",
+			Help:    "Total allocatable CPU in millicores",
+			Type:    "gauge",
 			Metrics: []Metric{{Value: 8000}},
 		},
 		{
@@ -297,7 +300,7 @@ func TestCollect_PodRestarts(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
-	nil, 0,
+		nil, 0,
 	)
 	c := NewCollector(store, tracker, nil)
 	families := c.Collect()
@@ -324,7 +327,7 @@ func TestCollect_FamilyTypes(t *testing.T) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
 		scheduler.Resources{},
-	nil, 0,
+		nil, 0,
 	)
 	sched := &fakeSchedulerMetrics{}
 	c := NewCollector(store, tracker, sched)

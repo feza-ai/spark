@@ -10,6 +10,11 @@ import (
 type SchedulerMetrics interface {
 	ScheduleAttempts() int64
 	PreemptionCount() int64
+	// CPUOvercommitAdmissions returns the total number of pods admitted via
+	// utilization-aware CPU overcommit (issue #76) — real host headroom
+	// covering an accounted CPU shortfall. Gives operators direct
+	// visibility into how often the bypass engages.
+	CPUOvercommitAdmissions() int64
 }
 
 // HousekeepingMetrics exposes housekeeper counters for /metrics.
@@ -60,39 +65,39 @@ func (c *Collector) Collect() []MetricFamily {
 	available := c.tracker.Available()
 
 	families = append(families, MetricFamily{
-		Name: "spark_node_cpu_total_millis",
-		Help: "Total allocatable CPU in millicores",
-		Type: "gauge",
+		Name:    "spark_node_cpu_total_millis",
+		Help:    "Total allocatable CPU in millicores",
+		Type:    "gauge",
 		Metrics: []Metric{{Value: float64(allocatable.CPUMillis)}},
 	})
 	families = append(families, MetricFamily{
-		Name: "spark_node_cpu_available_millis",
-		Help: "Available CPU in millicores",
-		Type: "gauge",
+		Name:    "spark_node_cpu_available_millis",
+		Help:    "Available CPU in millicores",
+		Type:    "gauge",
 		Metrics: []Metric{{Value: float64(available.CPUMillis)}},
 	})
 	families = append(families, MetricFamily{
-		Name: "spark_node_memory_total_mb",
-		Help: "Total allocatable memory in MB",
-		Type: "gauge",
+		Name:    "spark_node_memory_total_mb",
+		Help:    "Total allocatable memory in MB",
+		Type:    "gauge",
 		Metrics: []Metric{{Value: float64(allocatable.MemoryMB)}},
 	})
 	families = append(families, MetricFamily{
-		Name: "spark_node_memory_available_mb",
-		Help: "Available memory in MB",
-		Type: "gauge",
+		Name:    "spark_node_memory_available_mb",
+		Help:    "Available memory in MB",
+		Type:    "gauge",
 		Metrics: []Metric{{Value: float64(available.MemoryMB)}},
 	})
 	families = append(families, MetricFamily{
-		Name: "spark_node_gpu_memory_total_mb",
-		Help: "Total allocatable GPU memory in MB",
-		Type: "gauge",
+		Name:    "spark_node_gpu_memory_total_mb",
+		Help:    "Total allocatable GPU memory in MB",
+		Type:    "gauge",
 		Metrics: []Metric{{Value: float64(allocatable.GPUMemoryMB)}},
 	})
 	families = append(families, MetricFamily{
-		Name: "spark_node_gpu_memory_available_mb",
-		Help: "Available GPU memory in MB",
-		Type: "gauge",
+		Name:    "spark_node_gpu_memory_available_mb",
+		Help:    "Available GPU memory in MB",
+		Type:    "gauge",
 		Metrics: []Metric{{Value: float64(available.GPUMemoryMB)}},
 	})
 
@@ -147,16 +152,22 @@ func (c *Collector) Collect() []MetricFamily {
 	// Scheduler metrics (optional).
 	if c.scheduler != nil {
 		families = append(families, MetricFamily{
-			Name: "spark_scheduling_attempts_total",
-			Help: "Total scheduling attempts",
-			Type: "counter",
+			Name:    "spark_scheduling_attempts_total",
+			Help:    "Total scheduling attempts",
+			Type:    "counter",
 			Metrics: []Metric{{Value: float64(c.scheduler.ScheduleAttempts())}},
 		})
 		families = append(families, MetricFamily{
-			Name: "spark_preemptions_total",
-			Help: "Total preemptions",
-			Type: "counter",
+			Name:    "spark_preemptions_total",
+			Help:    "Total preemptions",
+			Type:    "counter",
 			Metrics: []Metric{{Value: float64(c.scheduler.PreemptionCount())}},
+		})
+		families = append(families, MetricFamily{
+			Name:    "spark_cpu_overcommit_admissions_total",
+			Help:    "Total pods admitted via utilization-aware CPU overcommit (accounted CPU short, real host headroom available)",
+			Type:    "counter",
+			Metrics: []Metric{{Value: float64(c.scheduler.CPUOvercommitAdmissions())}},
 		})
 	}
 
