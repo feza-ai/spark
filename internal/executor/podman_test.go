@@ -20,7 +20,7 @@ func TestBuildRunArgs_EnvMapping(t *testing.T) {
 			{Name: "BAZ", Value: "qux"},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 
 	wantPairs := []string{"--env", "FOO=bar", "--env", "BAZ=qux"}
 	for i := 0; i < len(wantPairs); i += 2 {
@@ -44,7 +44,7 @@ func TestBuildRunArgs_VolumeMapping(t *testing.T) {
 		{Name: "data", HostPath: "/host/data"},
 		{Name: "config", HostPath: "/host/config"},
 	}
-	args := buildRunArgs("mypod", container, volumes, "spark-net", true, nil)
+	args := buildRunArgs("mypod", container, volumes, "spark-net", true, nil, nil)
 
 	tests := []struct {
 		name string
@@ -89,7 +89,7 @@ func TestBuildRunArgs_GPUFlag(t *testing.T) {
 					Limits: tt.limits,
 				},
 			}
-			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 			hasGPU := slices.Contains(args, "nvidia.com/gpu=all")
 			if hasGPU != tt.wantGPU {
 				t.Errorf("GPU flag present=%v, want %v; args=%v", hasGPU, tt.wantGPU, args)
@@ -122,7 +122,7 @@ func TestBuildRunArgs_GPUFlag_RequestsOnly(t *testing.T) {
 					Requests: tt.requests,
 				},
 			}
-			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 			hasGPU := slices.Contains(args, "nvidia.com/gpu=all")
 			if hasGPU != tt.wantGPU {
 				t.Errorf("GPU flag present=%v, want %v; args=%v", hasGPU, tt.wantGPU, args)
@@ -151,7 +151,12 @@ func TestFormatDeviceIDs(t *testing.T) {
 	}
 }
 
-func TestInjectGPUDevices(t *testing.T) {
+func TestBuildRunArgs_GPUDevicesEnv(t *testing.T) {
+	// buildRunArgs itself must emit NVIDIA_VISIBLE_DEVICES when specific GPU
+	// device IDs are assigned -- this used to be a separate post-processing
+	// pass (injectGPUDevices) that scanned the finished args for "the
+	// position of the image"; it's now emitted inline alongside the rest of
+	// container.Env, before any positional args exist (issue #85).
 	container := manifest.ContainerSpec{
 		Name:  "app",
 		Image: "myimage:latest",
@@ -159,30 +164,30 @@ func TestInjectGPUDevices(t *testing.T) {
 			Limits: manifest.ResourceList{GPUMemoryMB: 4096},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
-	injected := injectGPUDevices(args, []int{0, 2})
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, []int{0, 2})
 
 	// Should have NVIDIA_VISIBLE_DEVICES env var
 	envVal := "NVIDIA_VISIBLE_DEVICES=0,2"
-	idx := slices.Index(injected, envVal)
-	if idx < 1 || injected[idx-1] != "--env" {
-		t.Errorf("expected --env %s in args, got %v", envVal, injected)
+	idx := slices.Index(args, envVal)
+	if idx < 1 || args[idx-1] != "--env" {
+		t.Errorf("expected --env %s in args, got %v", envVal, args)
 	}
 
 	// Should still have --device nvidia.com/gpu=all
-	if !slices.Contains(injected, "nvidia.com/gpu=all") {
-		t.Errorf("expected --device nvidia.com/gpu=all in args, got %v", injected)
+	if !slices.Contains(args, "nvidia.com/gpu=all") {
+		t.Errorf("expected --device nvidia.com/gpu=all in args, got %v", args)
 	}
 
 	// Image should still be present (normalized, issue #45)
-	if !slices.Contains(injected, "docker.io/library/myimage:latest") {
-		t.Errorf("expected image docker.io/library/myimage:latest in args, got %v", injected)
+	if !slices.Contains(args, "docker.io/library/myimage:latest") {
+		t.Errorf("expected image docker.io/library/myimage:latest in args, got %v", args)
 	}
 }
 
-func TestInjectGPUDevices_NoGPUDevices(t *testing.T) {
-	// When no GPUDevices are set but GPUMemoryMB > 0, buildRunArgs should
-	// still add --device nvidia.com/gpu=all (fallback behavior).
+func TestBuildRunArgs_NoGPUDevices(t *testing.T) {
+	// When no GPU device IDs are assigned but GPUMemoryMB > 0, buildRunArgs
+	// should still add --device nvidia.com/gpu=all (fallback behavior) but
+	// must not emit NVIDIA_VISIBLE_DEVICES.
 	container := manifest.ContainerSpec{
 		Name:  "app",
 		Image: "myimage:latest",
@@ -190,7 +195,7 @@ func TestInjectGPUDevices_NoGPUDevices(t *testing.T) {
 			Limits: manifest.ResourceList{GPUMemoryMB: 4096},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 
 	// Should have --device nvidia.com/gpu=all
 	if !slices.Contains(args, "nvidia.com/gpu=all") {
@@ -205,6 +210,117 @@ func TestInjectGPUDevices_NoGPUDevices(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_GPUDevicesWithEntrypointOverride(t *testing.T) {
+	// Regression test for issue #85: a GPU-assigned pod with a
+	// container.Command override produced `podman run ... --entrypoint
+	// --env NVIDIA_VISIBLE_DEVICES=0 ["sleep","300"] <image>` -- the old
+	// injectGPUDevices post-processing pass didn't recognize --entrypoint as
+	// a flag that takes a value, so it spliced --env in between
+	// --entrypoint and its own value token, corrupting the invocation and
+	// making podman reject the image reference.
+	tests := []struct {
+		name    string
+		command []string
+		wantEP  string
+	}{
+		{"single-token command", []string{"sleep"}, "sleep"},
+		{"multi-token command", []string{"sleep", "300"}, `["sleep","300"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := manifest.ContainerSpec{
+				Name:    "sleeper",
+				Image:   "python:3.12-slim",
+				Command: tt.command,
+				Resources: manifest.ResourceRequirements{
+					Requests: manifest.ResourceList{GPUCount: 1},
+				},
+			}
+			args := buildRunArgs("repro-gpu-leak-test", container, nil, "spark-net", true, nil, []int{0})
+
+			// --entrypoint must be immediately followed by its own value --
+			// not by --env.
+			epIdx := slices.Index(args, "--entrypoint")
+			if epIdx < 0 {
+				t.Fatalf("--entrypoint missing from %v", args)
+			}
+			if args[epIdx+1] != tt.wantEP {
+				t.Errorf("--entrypoint value = %q, want %q (args=%v)", args[epIdx+1], tt.wantEP, args)
+			}
+
+			// NVIDIA_VISIBLE_DEVICES must appear as a normal --env pair,
+			// positioned before --entrypoint (with the rest of the env
+			// vars), not spliced into the entrypoint/image tail.
+			envVal := "NVIDIA_VISIBLE_DEVICES=0"
+			envIdx := slices.Index(args, envVal)
+			if envIdx < 1 || args[envIdx-1] != "--env" {
+				t.Fatalf("expected --env %s in args, got %v", envVal, args)
+			}
+			if envIdx >= epIdx {
+				t.Errorf("--env %s at %d must be before --entrypoint at %d: %v", envVal, envIdx, epIdx, args)
+			}
+
+			// The image reference must be intact and unbroken -- the bug
+			// left a bare "--env" token as the positional arg podman tried
+			// to parse as the image.
+			imgIdx := slices.Index(args, "docker.io/library/python:3.12-slim")
+			if imgIdx < 0 {
+				t.Fatalf("image reference missing or corrupted in %v", args)
+			}
+			if imgIdx != len(args)-1 {
+				t.Errorf("image must be the last arg (no command/args set): %v", args)
+			}
+		})
+	}
+}
+
+func TestBuildRunArgs_GPUDevicesWithOtherFlags(t *testing.T) {
+	// The old injectGPUDevices skip-list also missed --cpuset-cpus, --user,
+	// --cap-add, and --cap-drop -- same bug class as --entrypoint, just not
+	// yet observed live. Building the env var inline (this test) sidesteps
+	// the whole "which flags take a value" class of bug rather than
+	// special-casing each one.
+	container := manifest.ContainerSpec{
+		Name:  "app",
+		Image: "myimage:latest",
+		SecurityContext: &manifest.SecurityContext{
+			RunAsUser: 1000,
+			AddCaps:   []string{"NET_ADMIN"},
+			DropCaps:  []string{"ALL"},
+		},
+		Resources: manifest.ResourceRequirements{
+			Requests: manifest.ResourceList{GPUCount: 1},
+		},
+	}
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, []int{2, 3}, []int{1})
+
+	envVal := "NVIDIA_VISIBLE_DEVICES=1"
+	envIdx := slices.Index(args, envVal)
+	if envIdx < 1 || args[envIdx-1] != "--env" {
+		t.Fatalf("expected --env %s in args, got %v", envVal, args)
+	}
+
+	for _, want := range [][2]string{
+		{"--cpuset-cpus", "2-3"},
+		{"--user", "1000"},
+		{"--cap-add", "NET_ADMIN"},
+		{"--cap-drop", "ALL"},
+	} {
+		idx := slices.Index(args, want[1])
+		if idx < 1 || args[idx-1] != want[0] {
+			t.Errorf("expected %s %s in args, got %v", want[0], want[1], args)
+		}
+	}
+
+	imgIdx := slices.Index(args, "docker.io/library/myimage:latest")
+	if imgIdx < 0 {
+		t.Fatalf("image reference missing or corrupted in %v", args)
+	}
+	if imgIdx != len(args)-1 {
+		t.Errorf("image must be the last arg (no command/args set): %v", args)
+	}
+}
+
 func TestBuildRunArgs_ResourceLimits(t *testing.T) {
 	container := manifest.ContainerSpec{
 		Name:  "app",
@@ -213,7 +329,7 @@ func TestBuildRunArgs_ResourceLimits(t *testing.T) {
 			Limits: manifest.ResourceList{CPUMillis: 2500, MemoryMB: 512},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 
 	memIdx := slices.Index(args, "512m")
 	if memIdx < 1 || args[memIdx-1] != "--memory" {
@@ -278,7 +394,7 @@ func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
 				Command: tt.command,
 				Args:    tt.argv,
 			}
-			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 
 			imgIdx := slices.Index(args, "docker.io/library/myimage:latest")
 			if imgIdx < 0 {
@@ -319,7 +435,7 @@ func TestBuildRunArgs_NsysProfileWrap(t *testing.T) {
 		Command: []string{"nsys", "profile", "-o", "/out/trace", "--stats=true"},
 		Args:    []string{"--config", "/cfg/run.yaml", "--epochs", "5"},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 
 	imgIdx := slices.Index(args, "ghcr.io/feza-ai/wolf-train:latest")
 	if imgIdx < 0 {
@@ -455,7 +571,7 @@ func TestBuildRunArgs_PodAndContainerName(t *testing.T) {
 		Name:  "worker",
 		Image: "myimage:latest",
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 
 	podIdx := slices.Index(args, "--pod")
 	if podIdx < 0 || args[podIdx+1] != "mypod" {
@@ -505,7 +621,7 @@ func TestBuildRunArgs_EmptyDirVolumes(t *testing.T) {
 				Image:        "myimage:latest",
 				VolumeMounts: tt.mounts,
 			}
-			args := buildRunArgs("mypod", container, tt.volumes, "spark-net", true, nil)
+			args := buildRunArgs("mypod", container, tt.volumes, "spark-net", true, nil, nil)
 			idx := slices.Index(args, tt.wantVal)
 			if idx < 1 || args[idx-1] != tt.wantFlag {
 				t.Errorf("expected %s %s in args, got %v", tt.wantFlag, tt.wantVal, args)
@@ -592,7 +708,7 @@ func TestBuildRunArgs_MixedVolumes(t *testing.T) {
 		{Name: "scratch", EmptyDir: true},
 		{Name: "config", HostPath: "/host/config"},
 	}
-	args := buildRunArgs("mypod", container, volumes, "spark-net", true, nil)
+	args := buildRunArgs("mypod", container, volumes, "spark-net", true, nil, nil)
 
 	// hostPath volume for data
 	idx := slices.Index(args, "/host/data:/data")
@@ -839,7 +955,7 @@ func TestBuildRunArgs_NoDetach(t *testing.T) {
 		Name:  "setup",
 		Image: "busybox:latest",
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", false, nil)
+	args := buildRunArgs("mypod", container, nil, "spark-net", false, nil, nil)
 
 	if slices.Contains(args, "-d") {
 		t.Errorf("expected no -d flag when detach=false, got %v", args)
@@ -859,7 +975,7 @@ func TestBuildRunArgs_InitContainerNaming(t *testing.T) {
 		Name:  "init-0-setup",
 		Image: "busybox:latest",
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", false, nil)
+	args := buildRunArgs("mypod", container, nil, "spark-net", false, nil, nil)
 
 	nameIdx := slices.Index(args, "--name")
 	if nameIdx < 0 || args[nameIdx+1] != "mypod-init-0-setup" {
@@ -926,7 +1042,7 @@ func TestBuildRunArgs_SecurityContext(t *testing.T) {
 				Image:           "myimage:latest",
 				SecurityContext: tt.sc,
 			}
-			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 
 			// Check expected flag-value pairs.
 			for i := 0; i < len(tt.wantArgs); i++ {
@@ -998,7 +1114,7 @@ func TestBuildRunArgs_EmitsCpusetCpus(t *testing.T) {
 			Limits: manifest.ResourceList{CPUMillis: 3000},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true, []int{2, 3, 4})
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, []int{2, 3, 4}, nil)
 
 	idx := slices.Index(args, "--cpuset-cpus")
 	if idx < 0 || idx+1 >= len(args) {
@@ -1017,7 +1133,7 @@ func TestBuildRunArgs_OmitsCpusetCpusWhenEmpty(t *testing.T) {
 			Limits: manifest.ResourceList{CPUMillis: 500},
 		},
 	}
-	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
 
 	if slices.Contains(args, "--cpuset-cpus") {
 		t.Errorf("expected no --cpuset-cpus flag when cpusetCores is nil, got %v", args)

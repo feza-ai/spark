@@ -52,7 +52,7 @@ func TestBuildRunArgs_NormalizesImage(t *testing.T) {
 		Name:  "db",
 		Image: "pgvector/pgvector:pg16",
 	}
-	args := buildRunArgs("mypod", spec, nil, "spark-net", true, nil)
+	args := buildRunArgs("mypod", spec, nil, "spark-net", true, nil, nil)
 	found := false
 	for _, a := range args {
 		if a == "docker.io/pgvector/pgvector:pg16" {
