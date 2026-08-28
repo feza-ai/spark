@@ -17,12 +17,13 @@ import (
 
 // stubExecutor implements executor.Executor for testing.
 type stubExecutor struct {
-	mu          sync.Mutex
-	creates     []string
-	stops       []string
-	removes     []string
-	statuses    map[string]executor.Status
-	createErr   error
+	mu           sync.Mutex
+	creates      []string
+	createdSpecs map[string]manifest.PodSpec
+	stops        []string
+	removes      []string
+	statuses     map[string]executor.Status
+	createErr    error
 	statusErr   error
 	listPods    []executor.PodListEntry
 	listErr     error
@@ -50,6 +51,10 @@ func (s *stubExecutor) CreatePod(_ context.Context, spec manifest.PodSpec) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.creates = append(s.creates, spec.Name)
+	if s.createdSpecs == nil {
+		s.createdSpecs = make(map[string]manifest.PodSpec)
+	}
+	s.createdSpecs[spec.Name] = spec
 	if s.createErr != nil {
 		return s.createErr
 	}
@@ -180,6 +185,13 @@ func (s *stubExecutor) getCreates() []string {
 	return cp
 }
 
+func (s *stubExecutor) getCreatedSpec(name string) (manifest.PodSpec, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	spec, ok := s.createdSpecs[name]
+	return spec, ok
+}
+
 func (s *stubExecutor) getStops() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -245,6 +257,47 @@ func TestPendingPodGetsScheduledAndCreated(t *testing.T) {
 	creates := exec.getCreates()
 	if len(creates) != 1 || creates[0] != "web" {
 		t.Fatalf("expected one create for 'web', got %v", creates)
+	}
+}
+
+// TestPendingPodGetsScheduledWithGPUDevices reproduces the executor/
+// scheduler wiring gap behind issue #81: spec.GPUDevices was never
+// populated from the tracker's actual assignment, so a pod that the
+// scheduler believed held a device slot could be created without any
+// device information reaching the executor.
+func TestPendingPodGetsScheduledWithGPUDevices(t *testing.T) {
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 16384},
+		scheduler.Resources{},
+		[]int{0}, 1,
+	)
+	store := state.NewPodStore()
+	sched := scheduler.NewScheduler(tracker)
+	exec := newStubExecutor()
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	spec := testPodSpec("gpu-pod", "Always", 0)
+	spec.Containers[0].Resources.Requests.GPUCount = 1
+	store.Apply(spec)
+
+	r.reconcileOnce(context.Background())
+
+	rec, ok := store.Get("gpu-pod")
+	if !ok || rec.Status != state.StatusRunning {
+		t.Fatalf("expected gpu-pod running, got %+v (ok=%v)", rec, ok)
+	}
+
+	created, ok := exec.getCreatedSpec("gpu-pod")
+	if !ok {
+		t.Fatal("expected CreatePod to have been called for gpu-pod")
+	}
+	if len(created.GPUDevices) != 1 || created.GPUDevices[0] != 0 {
+		t.Errorf("expected spec.GPUDevices=[0] passed to CreatePod, got %v", created.GPUDevices)
+	}
+
+	// The tracker's own ledger must agree with what was handed to the executor.
+	if got := tracker.AssignedGPUs("gpu-pod"); len(got) != 1 || got[0] != 0 {
+		t.Errorf("tracker assigned GPUs = %v, want [0]", got)
 	}
 }
 

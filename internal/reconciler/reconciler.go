@@ -355,6 +355,12 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 		r.updateStatus(pod.Spec.Name, state.StatusScheduled, "scheduled by reconciler")
 
 		pod.Spec.CpusetCores = r.scheduler.Tracker().AssignedCores(pod.Spec.Name)
+		// Carry the scheduler's actual device assignment into the spec the
+		// executor creates from. Without this, spec.GPUDevices always stays
+		// empty and NVIDIA_VISIBLE_DEVICES is never set, decoupling what the
+		// scheduler thinks it handed out from what the container can see
+		// (issue #81).
+		pod.Spec.GPUDevices = r.scheduler.Tracker().AssignedGPUs(pod.Spec.Name)
 
 		if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 			slog.Error("failed to create pod", "pod", pod.Spec.Name, "err", err)
@@ -402,6 +408,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 				pod.Spec.CpusetCores = cores
 				r.store.SetAssignedCores(pod.Spec.Name, cores)
 			}
+			pod.Spec.GPUDevices = r.scheduler.Tracker().AssignedGPUs(pod.Spec.Name)
 			if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 				slog.Error("failed to create pod after preemption", "pod", pod.Spec.Name, "err", err)
 				attempts := r.recordStartFailure(pod.Spec.Name, err)
