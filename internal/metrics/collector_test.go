@@ -18,6 +18,18 @@ type fakeSchedulerMetrics struct {
 func (f *fakeSchedulerMetrics) ScheduleAttempts() int64 { return f.attempts }
 func (f *fakeSchedulerMetrics) PreemptionCount() int64  { return f.preemptions }
 
+type fakeHousekeepingMetrics struct {
+	reaped            map[string]int64
+	imagesPruned      int64
+	gpuSlotsReclaimed int64
+	lastRun           int64
+}
+
+func (f *fakeHousekeepingMetrics) PodsReaped(reason string) int64 { return f.reaped[reason] }
+func (f *fakeHousekeepingMetrics) ImagesPruned() int64            { return f.imagesPruned }
+func (f *fakeHousekeepingMetrics) GPUSlotsReclaimed() int64       { return f.gpuSlotsReclaimed }
+func (f *fakeHousekeepingMetrics) LastRunSeconds() int64          { return f.lastRun }
+
 func findFamily(families []MetricFamily, name string) (MetricFamily, bool) {
 	for _, f := range families {
 		if f.Name == name {
@@ -155,6 +167,41 @@ func TestCollect_SchedulerNil(t *testing.T) {
 		if f.Name == "spark_scheduling_attempts_total" || f.Name == "spark_preemptions_total" {
 			t.Errorf("scheduler metric %s should not be present when scheduler is nil", f.Name)
 		}
+	}
+}
+
+func TestCollect_HousekeepingMetrics(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
+		scheduler.Resources{},
+		nil, 0,
+	)
+	c := NewCollector(store, tracker, nil)
+	c.SetHousekeeping(&fakeHousekeepingMetrics{gpuSlotsReclaimed: 3})
+	families := c.Collect()
+
+	f, ok := findFamily(families, "spark_gpu_slots_reclaimed_total")
+	if !ok {
+		t.Fatal("spark_gpu_slots_reclaimed_total not found")
+	}
+	if f.Metrics[0].Value != 3 {
+		t.Errorf("got %g, want 3", f.Metrics[0].Value)
+	}
+}
+
+func TestCollect_HousekeepingNil(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192},
+		scheduler.Resources{},
+		nil, 0,
+	)
+	c := NewCollector(store, tracker, nil)
+	families := c.Collect()
+
+	if _, ok := findFamily(families, "spark_gpu_slots_reclaimed_total"); ok {
+		t.Error("spark_gpu_slots_reclaimed_total should not be present when housekeeping is nil")
 	}
 }
 
