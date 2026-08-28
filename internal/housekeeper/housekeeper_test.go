@@ -460,6 +460,95 @@ func TestAnnotationTTLParsing(t *testing.T) {
 	}
 }
 
+// fakeGPULedger implements the housekeeper's gpuLedger interface backed
+// by a map, mirroring fakeStore/fakeExec above.
+type fakeGPULedger struct {
+	mu       sync.Mutex
+	holders  map[string][]int
+	released []string
+}
+
+func newFakeGPULedger(holders map[string][]int) *fakeGPULedger {
+	return &fakeGPULedger{holders: holders}
+}
+
+func (f *fakeGPULedger) GPUHolders() map[string][]int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string][]int, len(f.holders))
+	for k, v := range f.holders {
+		out[k] = v
+	}
+	return out
+}
+
+func (f *fakeGPULedger) ReleaseGPU(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.holders, name)
+	f.released = append(f.released, name)
+}
+
+func TestReconcileGPUSlots_ReclaimsPhantomHolder(t *testing.T) {
+	// issue #81: a GPU slot held by a pod name with no store record at
+	// all (the delete path dropped the record without releasing the
+	// scheduler reservation) must be reclaimed.
+	s := newFakeStore()
+	s.put(newRec("live-pod", state.StatusRunning, time.Time{}, nil))
+	e := &fakeExec{}
+	ledger := newFakeGPULedger(map[string][]int{
+		"live-pod":    {0},
+		"ghost-pod":   {1},
+		"other-ghost": {2, 3},
+	})
+
+	h, c := New(s, e, Config{})
+	h.SetGPULedger(ledger)
+
+	h.RunOnce(context.Background())
+
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	if !equalStringSet(ledger.released, []string{"ghost-pod", "other-ghost"}) {
+		t.Errorf("released = %v, want [ghost-pod other-ghost] in any order", ledger.released)
+	}
+	if _, ok := ledger.holders["live-pod"]; !ok {
+		t.Error("live-pod's GPU assignment must not be released")
+	}
+	if _, ok := ledger.holders["ghost-pod"]; ok {
+		t.Error("ghost-pod's GPU assignment should have been released")
+	}
+	if got := c.GPUSlotsReclaimed(); got != 3 {
+		t.Errorf("GPUSlotsReclaimed() = %d, want 3 (1 for ghost-pod + 2 for other-ghost)", got)
+	}
+}
+
+func TestReconcileGPUSlots_NoLedgerIsNoOp(t *testing.T) {
+	s := newFakeStore()
+	e := &fakeExec{}
+	h, c := New(s, e, Config{})
+	// No SetGPULedger call -- must not panic and must not affect counters.
+	h.RunOnce(context.Background())
+	if got := c.GPUSlotsReclaimed(); got != 0 {
+		t.Errorf("GPUSlotsReclaimed() = %d, want 0 with no ledger wired", got)
+	}
+}
+
+func TestReconcileGPUSlots_EmptyLedgerIsNoOp(t *testing.T) {
+	s := newFakeStore()
+	e := &fakeExec{}
+	ledger := newFakeGPULedger(nil)
+	h, c := New(s, e, Config{})
+	h.SetGPULedger(ledger)
+	h.RunOnce(context.Background())
+	if got := c.GPUSlotsReclaimed(); got != 0 {
+		t.Errorf("GPUSlotsReclaimed() = %d, want 0 with an empty ledger", got)
+	}
+	if len(ledger.released) != 0 {
+		t.Errorf("expected no releases, got %v", ledger.released)
+	}
+}
+
 func equalStringSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
