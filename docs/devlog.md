@@ -1,5 +1,23 @@
 # Spark Development Log
 
+## 2026-08-27: Issue #81 GPU device-slot leak (0 GPUs free, device physically idle, 9 days)
+
+**Type:** finding
+**Tags:** scheduler, gpu, reconciler, housekeeper, issue-81, resource-leak
+
+**Problem:** on the single-GPU DGX (`gpu-max 1`), the scheduler reported 0 GPUs free while `nvidia-smi` showed no process on the device and `GET /api/v1/resources` showed `allocated.gpuMemoryMB: 0`. No live pod's `HostConfig.Devices` referenced the GPU. One leaked slot is a total GPU-scheduling outage on a single-GPU host; this one lasted 9 days.
+
+**Root cause:** three independent gaps, not one. (1) `ResourceTracker.Allocate` (`internal/scheduler/resources.go`) replaces a pod's CPU/memory/GPU-count allocation wholesale on every call for that name, but only ever *writes* the separate `gpuAssignments` device-slot map when the new request needs a GPU -- a request needing none left a prior `gpuAssignments[name]` entry untouched, so a pod re-applied under the same name with its GPU request dropped kept the previous incarnation's device slot forever while its CPU/memory looked correctly freed. (2) Scheduler admission sums `Requests.GPUCount`/`GPUMemoryMB` (`PodSpec.TotalRequests`), but the executor's device-attach gate in `buildRunArgs` (`internal/executor/podman.go`) checked `Limits` only -- a manifest with `resources.requests.nvidia.com/gpu` and no `limits` block was billed for a slot the container never received. Separately, `PodSpec.GPUDevices` was documented as scheduler-assigned but never actually populated by the reconciler, so `NVIDIA_VISIBLE_DEVICES` was dead code. (3) Both delete paths (`DELETE /api/v1/pods/{name}` in `internal/api/pods_mutate.go`, and `req.spark.delete` in `internal/bus/handler_delete.go`) skip releasing scheduler resources and dropping the store record whenever `executor.RemovePod` returns an error not recognized as "no such pod" -- but podman can report an unrecognized error (e.g. a network-cleanup warning) after already removing the pod, in which case nothing ever revisits that pod again.
+
+**Fix:** see ADR 014 for full rationale.
+- `Allocate` now clears a stale `gpuAssignments[name]` entry whenever the new request needs no GPU (symmetric with how the rest of the allocation is already replaced wholesale).
+- The executor's device-attach gate checks `Requests` as well as `Limits`; the reconciler now populates `pod.Spec.GPUDevices` from `Scheduler.Tracker().AssignedGPUs(name)` at both `Schedule()` call sites before `CreatePod`.
+- Both delete handlers confirm actual pod state via a fresh `PodStatus` call before treating an unrecognized `RemovePod` error as fatal -- only a confirmed "no such pod" lets the delete proceed; anything else keeps the existing conservative (no release) behavior.
+- The housekeeper gained a fourth periodic pass, `reconcileGPUSlots`, wired via the new `Housekeeper.SetGPULedger`: it releases (via the new, narrowly-scoped `ResourceTracker.ReleaseGPU`, which touches only the GPU device-slot map) any GPU assignment whose pod name has no Spark store record at all. This is the backstop for any trigger not covered by the three fixes above, including an operator bypassing Spark's API entirely.
+- `GET /api/v1/node` gained `gpu_allocations: [{device, pod}]` (from the new `ResourceTracker.GPUHolders()`); `/metrics` gained `spark_gpu_slots_reclaimed_total`.
+
+**Impact:** 8 packages touched (`scheduler`, `executor`, `reconciler`, `api`, `bus`, `housekeeper`, `metrics`, `cmd/spark`). New red→green coverage: `TestAllocate_ReleasesStaleGPUAssignmentWhenGPUDropped`, `TestBuildRunArgs_GPUFlag_RequestsOnly`, `TestPendingPodGetsScheduledWithGPUDevices`, `TestDeletePodRemoveFails_ButPodConfirmedGone` (api + bus), `TestReconcileGPUSlots_ReclaimsPhantomHolder`, `TestHandleNode_IncludesGPUAllocations`. Full suite green: `go test ./... -race -timeout 120s`, `go vet ./...`, `staticcheck ./...` clean. CPU/memory admission logic (issue #76, sibling worktree) intentionally untouched.
+
 ## 2026-07-09: Issue #66 flow-style YAML maps silently dropped (zero-request admission)
 
 **Type:** finding
