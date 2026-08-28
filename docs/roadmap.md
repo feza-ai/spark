@@ -10,7 +10,7 @@
 
 ## Planned
 
-- None queued beyond the above.
+- **#85 — GPU-assigned pods with a `command` override fail to start** (`invalid reference format`). Found live 2026-08-28 while verifying #81's fix on the DGX: `injectGPUDevices`'s flag-skip-list is missing `--entrypoint` (and `--cpuset-cpus`/`--user`/`--cap-add`/`--cap-drop`), so it misreads `--entrypoint`'s own value token as the image position and splices the GPU env var in between. Pre-existing (346319c), unrelated to #76/#81. Any real GPU job that sets `command` hits this on every start attempt. Not yet started.
 
 ## Blocked
 
