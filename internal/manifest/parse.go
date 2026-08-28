@@ -40,7 +40,15 @@ func Parse(data []byte, priorityClasses map[string]int) (ParseResult, error) {
 			return ParseResult{}, fmt.Errorf("parsing YAML: %w", err)
 		}
 		if len(root) == 0 {
-			continue
+			// splitDocuments already strips whitespace/comment-only chunks
+			// before a document reaches ParseYAML, so a document with real
+			// content that still parses to zero fields is always a parser
+			// defect or an unsupported top-level shape (e.g. a bare list
+			// instead of a map) -- never a legitimate no-op. Silently
+			// skipping it here previously let such a document vanish with
+			// no error, the same "silent-default in the input path" defect
+			// class as issue #66 (docs/devlog.md, 2026-07-09).
+			return ParseResult{}, fmt.Errorf("manifest document produced no fields; check structure and indentation")
 		}
 
 		if err := parseDocument(root, priorityClasses, &result); err != nil {

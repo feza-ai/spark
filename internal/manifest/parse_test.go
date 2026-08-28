@@ -814,3 +814,22 @@ func TestParse_EmptyResultDocumentIsError(t *testing.T) {
 		t.Fatal("expected error for empty JSON document, got nil")
 	}
 }
+
+// TestParse_YAMLEmptyResultDocumentIsError covers the same defect class as
+// TestParse_EmptyResultDocumentIsError, but on the YAML path: a top-level
+// document that is not a map (e.g. a bare list) parses into an empty root
+// map with no error, which Parse used to silently skip ("continue") instead
+// of reporting -- the same "silent-default in the input path" pattern
+// called out in docs/devlog.md's 2026-07-09 issue #66 lesson ("every
+// silent-default in the input path eventually admitted something
+// dangerous. Any new parser branch must reject what it does not
+// understand."). splitDocuments already strips whitespace/comment-only
+// chunks before a document reaches this point, so a real-content document
+// that yields zero fields is always a parser defect or an unsupported
+// shape -- never a legitimate no-op.
+func TestParse_YAMLEmptyResultDocumentIsError(t *testing.T) {
+	_, err := Parse([]byte("- foo\n"), nil)
+	if err == nil {
+		t.Fatal("expected error for a document that parses to zero fields, got nil")
+	}
+}
