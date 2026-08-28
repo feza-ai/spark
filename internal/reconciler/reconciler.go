@@ -373,7 +373,10 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 			slog.Error("failed to create pod", "pod", pod.Spec.Name, "err", err)
 			attempts := r.recordStartFailure(pod.Spec.Name, err)
 			r.scheduler.RemovePod(pod.Spec.Name)
-			if pod.Spec.BackoffLimit > 0 && attempts > pod.Spec.BackoffLimit {
+			// BackoffLimit 0 means "no retries" (issue #75): attempts (1)
+			// already exceeds it, so drop straight to terminal Failed
+			// instead of the guard below skipping the check entirely.
+			if attempts > pod.Spec.BackoffLimit {
 				r.terminateAfterStartFailure(ctx, pod.Spec.Name, err.Error())
 				return
 			}
@@ -423,7 +426,9 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 				slog.Error("failed to create pod after preemption", "pod", pod.Spec.Name, "err", err)
 				attempts := r.recordStartFailure(pod.Spec.Name, err)
 				r.scheduler.RemovePod(pod.Spec.Name)
-				if pod.Spec.BackoffLimit > 0 && attempts > pod.Spec.BackoffLimit {
+				// BackoffLimit 0 means "no retries" (issue #75); see the
+				// matching comment above in the Scheduled branch.
+				if attempts > pod.Spec.BackoffLimit {
 					r.terminateAfterStartFailure(ctx, pod.Spec.Name, err.Error())
 					return
 				}
