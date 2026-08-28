@@ -19,12 +19,14 @@ import (
 )
 
 type stubExecutor struct {
-	mu        sync.Mutex
-	creates   []string
-	stops     []string
-	removes   []string
-	stopErr   error
-	removeErr error
+	mu           sync.Mutex
+	creates      []string
+	stops        []string
+	removes      []string
+	stopErr      error
+	removeErr    error
+	podStatus    executor.Status
+	podStatusErr error
 }
 
 func (e *stubExecutor) CreatePod(_ context.Context, spec manifest.PodSpec) error {
@@ -44,7 +46,9 @@ func (e *stubExecutor) StopPod(_ context.Context, name string, _ int) error {
 }
 
 func (e *stubExecutor) PodStatus(_ context.Context, _ string) (executor.Status, error) {
-	return executor.Status{}, nil
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.podStatus, e.podStatusErr
 }
 
 func (e *stubExecutor) RemovePod(_ context.Context, name string) error {
@@ -507,6 +511,59 @@ func TestDeletePodRemoveFails(t *testing.T) {
 	sched.mu.Lock()
 	if len(sched.removed) != 0 {
 		t.Errorf("scheduler resources must not be released when remove fails, got %v", sched.removed)
+	}
+	sched.mu.Unlock()
+}
+
+// TestDeletePodRemoveFails_ButPodConfirmedGone reproduces issue #81: podman
+// pod rm can report an error (e.g. a network cleanup warning) whose text
+// doesn't match "no such pod" even though it already removed the pod. A
+// follow-up PodStatus check confirming "no such pod" must let the delete
+// proceed -- releasing the scheduler reservation and dropping the store
+// record -- instead of leaking the reservation (including any GPU device
+// slot) forever.
+func TestDeletePodRemoveFails_ButPodConfirmedGone(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
+		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+		nil, 0,
+	)
+	exec := &stubExecutor{
+		removeErr:    errors.New("Error: unable to clean up network for pod: network not found"),
+		podStatusErr: errors.New("Error: no such pod stuck-pod"),
+	}
+	sched := &stubScheduler{}
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil, "test")
+
+	store.Apply(manifest.PodSpec{Name: "stuck-pod"})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/pods/stuck-pod", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Name    string `json:"name"`
+		Deleted bool   `json:"deleted"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if !body.Deleted {
+		t.Error("expected deleted=true once the pod is confirmed gone")
+	}
+
+	if _, ok := store.Get("stuck-pod"); ok {
+		t.Error("store record should be removed once the pod is confirmed gone")
+	}
+
+	sched.mu.Lock()
+	if len(sched.removed) != 1 || sched.removed[0] != "stuck-pod" {
+		t.Errorf("expected scheduler.RemovePod(stuck-pod) once, got %v", sched.removed)
 	}
 	sched.mu.Unlock()
 }

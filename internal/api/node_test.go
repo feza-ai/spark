@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/feza-ai/spark/internal/gpu"
+	"github.com/feza-ai/spark/internal/manifest"
 	"github.com/feza-ai/spark/internal/scheduler"
 	"github.com/feza-ai/spark/internal/state"
 )
@@ -179,6 +180,60 @@ func TestHandleNode_IncludesCoreFields(t *testing.T) {
 		if resp.CPUAllocatableCores[i] != c {
 			t.Errorf("cpu_allocatable_cores[%d]: got %d, want %d", i, resp.CPUAllocatableCores[i], c)
 		}
+	}
+}
+
+func TestHandleNode_IncludesGPUAllocations(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 16384},
+		scheduler.Resources{},
+		[]int{0, 1}, 2,
+	)
+	if err := tracker.Allocate("gpu-pod", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil, "test")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/node", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	var resp NodeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(resp.GPUAllocations) != 1 {
+		t.Fatalf("gpu_allocations: got %v, want 1 entry", resp.GPUAllocations)
+	}
+	got := resp.GPUAllocations[0]
+	if got.Device != 0 || got.Pod != "gpu-pod" {
+		t.Errorf("gpu_allocations[0]: got %+v, want {Device:0 Pod:gpu-pod}", got)
+	}
+}
+
+func TestHandleNode_NoGPUAllocationsIsEmptyNotNull(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/node", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	var raw map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	allocations, ok := raw["gpu_allocations"]
+	if !ok {
+		t.Fatal("gpu_allocations field missing from response")
+	}
+	if allocations == nil {
+		t.Error("gpu_allocations should be an empty array, not null")
 	}
 }
 

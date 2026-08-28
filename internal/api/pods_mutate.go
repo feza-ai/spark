@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -16,6 +18,18 @@ func isNoSuchPod(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "no such pod")
+}
+
+// podConfirmedGone reports whether a pod is confirmed absent from podman,
+// used to distinguish a spurious RemovePod error (the pod was actually
+// removed despite the error) from a genuine failure that left it alive.
+// Only "no such pod" from a fresh status check counts as confirmation;
+// any other outcome -- the pod still reports a status, or the status
+// check itself errors some other way -- is treated conservatively as
+// "still there", preserving the existing safe (no release) behavior.
+func (s *Server) podConfirmedGone(ctx context.Context, name string) bool {
+	_, err := s.executor.PodStatus(ctx, name)
+	return err != nil && isNoSuchPod(err)
 }
 
 func (s *Server) registerPodMutateRoutes() {
@@ -121,14 +135,28 @@ func (s *Server) handleDeletePod(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.executor.RemovePod(r.Context(), name); err != nil && !isNoSuchPod(err) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"name":    name,
-			"deleted": false,
-			"error":   "remove pod: " + err.Error(),
-		})
-		return
+		// podman occasionally reports a non-fatal error (e.g. a network or
+		// cgroup cleanup warning) after it has already removed the pod --
+		// the message doesn't match "no such pod" so it isn't caught above.
+		// Trusting the error at face value here left the store record and
+		// the scheduler's resource reservation (including any GPU device
+		// slot) intact for a pod that no longer existed, leaking that
+		// reservation forever since nothing ever revisits a deleted-but-
+		// not-really pod again (issue #81). Confirm against actual state
+		// before deciding: only keep the record and reservation when the
+		// pod is confirmed to still exist.
+		if !s.podConfirmedGone(r.Context(), name) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"name":    name,
+				"deleted": false,
+				"error":   "remove pod: " + err.Error(),
+			})
+			return
+		}
+		slog.Warn("podman pod rm reported an error but the pod is confirmed gone; releasing reservation anyway",
+			"pod", name, "err", err)
 	}
 
 	if s.scheduler != nil {
