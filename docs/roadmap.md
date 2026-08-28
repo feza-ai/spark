@@ -8,7 +8,23 @@
 
 ## In flight (PRs open)
 
-- None.
+Wave 1 dispatched via `/apply --pool` 2026-08-28 (loop). 10 dispatch units,
+each in an isolated worktree, claims held via `refs/claims/*`. Kazi lane
+(default, no `lane: agent` marker) unless noted.
+
+- T1.6 — live-verify CPU overcommit bypass (issue #76). Owner: pool wave 1.
+- T2.2-T2.3 — issue #73 (quoted-scalar `command` mangling). Owner: pool wave 1.
+- T2.4-T2.5 — issue #77 (silent instant-complete). Owner: pool wave 1. `lane: agent`.
+- T2.9 — issue #88 (DELETE/stop hang). Owner: pool wave 1. `lane: agent`.
+- T3.1-T3.5 — issue #74 (JSON POST ingestion gap). Owner: pool wave 1.
+- T4.1-T4.2 — issue #71 (DELETE phantom record on cgroup race). Owner: pool wave 1.
+- T4.3-T4.4 — issue #75 (`backoffLimit: 0` not reaching Failed). Owner: pool wave 1.
+- T4.5-T4.6 — issue #78 (pending-vs-lost status). Owner: pool wave 1.
+- T4.7-T4.8 — issue #80 quick win 1 (`GET /pods/{name}/manifest`). Owner: pool wave 1.
+- T5.1-T5.4 — issue #79 (preemption anti-thrash starvation). Owner: pool wave 1. `lane: agent` for T5.2.
+
+Deferred to next pool run (not claimed, no blocking dependents this wave):
+T2.6 (flag-skip-list regression coverage), T4.9 (#80 signedness bug).
 
 ## Discovered, not yet fixed
 
