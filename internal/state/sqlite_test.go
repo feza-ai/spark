@@ -144,6 +144,54 @@ func TestSaveEvent(t *testing.T) {
 	}
 }
 
+// TestSavePod_DoesNotWipeExistingEvents is a regression test for the real
+// root cause behind issue #76's "events for pods that never get scheduled
+// are garbage collected quickly": SavePod used "INSERT OR REPLACE", which
+// SQLite resolves by deleting the pre-existing row before re-inserting it.
+// With foreign_keys=ON, that delete cascaded through events.pod_name's ON
+// DELETE CASCADE, silently wiping every event ever saved for a pod on its
+// very next status change -- and SavePod runs on every status change, so a
+// still-pending pod's persisted event history was being reset roughly
+// every reconcile interval. A pod that stays pending across several
+// reconcile ticks (each one calling SavePod again) must keep every event
+// saved across all of them.
+func TestSavePod_DoesNotWipeExistingEvents(t *testing.T) {
+	store, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer store.Close()
+
+	rec := &PodRecord{Spec: manifest.PodSpec{Name: "pending-pod"}, Status: StatusPending}
+	if err := store.SavePod(rec); err != nil {
+		t.Fatalf("SavePod (initial): %v", err)
+	}
+
+	// Simulate several reconcile ticks: each appends a PendingWatchdog
+	// event, then re-saves the (unchanged) pod record, exactly as
+	// reconcilePending + the OnEvent/onStatusChange hooks do in main.go.
+	for i := 0; i < 3; i++ {
+		if err := store.SaveEvent("pending-pod", PodEvent{
+			Time:    time.Now(),
+			Type:    "PendingWatchdog",
+			Message: "awaiting-resources: shortfall",
+		}); err != nil {
+			t.Fatalf("SaveEvent (tick %d): %v", i, err)
+		}
+		if err := store.SavePod(rec); err != nil {
+			t.Fatalf("SavePod (tick %d): %v", i, err)
+		}
+	}
+
+	events, err := store.ListEvents("pending-pod", time.Time{})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected all 3 events to survive repeated SavePod calls, got %d: %+v", len(events), events)
+	}
+}
+
 func TestListEvents(t *testing.T) {
 	store, err := OpenSQLite(":memory:")
 	if err != nil {
