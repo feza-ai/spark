@@ -18,7 +18,7 @@ func newPodQueryTestServer(t *testing.T) (*Server, *state.PodStore) {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
 		scheduler.Resources{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 0},
-	nil, 0,
+		nil, 0,
 	)
 	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil, "test")
 	return srv, store
@@ -149,6 +149,42 @@ func TestGetPod_ExposesStartAttemptsAndReason(t *testing.T) {
 	}
 	if body.Reason != "mount volume: not found" {
 		t.Errorf("expected reason to round-trip, got %q", body.Reason)
+	}
+}
+
+// TestGetPod_ExposesRequestedResources covers issue #76 option 3: an
+// operator investigating a pending pod needs to see what it asked for
+// alongside the node's accounting, without cross-referencing the manifest.
+func TestGetPod_ExposesRequestedResources(t *testing.T) {
+	srv, store := newPodQueryTestServer(t)
+
+	store.Apply(manifest.PodSpec{
+		Name:     "ci-job",
+		Priority: 1000,
+		Containers: []manifest.ContainerSpec{
+			{
+				Name: "main",
+				Resources: manifest.ResourceRequirements{
+					Requests: manifest.ResourceList{CPUMillis: 6000, MemoryMB: 2048, GPUCount: 1, GPUMemoryMB: 4096},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods/ci-job", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body getPodResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	want := requestedResources{CPUMillis: 6000, MemoryMB: 2048, GPUCount: 1, GPUMemoryMB: 4096}
+	if body.Requested != want {
+		t.Errorf("expected requested resources %+v, got %+v", want, body.Requested)
 	}
 }
 

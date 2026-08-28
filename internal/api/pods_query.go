@@ -42,6 +42,18 @@ type containerResponse struct {
 	Ports []containerPortResponse `json:"ports,omitempty"`
 }
 
+// requestedResources mirrors manifest.ResourceList for the HTTP response.
+// Surfaced on GET /api/v1/pods/{name} (issue #76) so an operator
+// investigating a pending pod can see what it asked for next to the
+// node's accounting (GET /api/v1/resources) without cross-referencing the
+// original manifest.
+type requestedResources struct {
+	CPUMillis   int `json:"cpuMillis"`
+	MemoryMB    int `json:"memoryMB"`
+	GPUCount    int `json:"gpuCount,omitempty"`
+	GPUMemoryMB int `json:"gpuMemoryMB,omitempty"`
+}
+
 type getPodResponse struct {
 	Name          string              `json:"name"`
 	Status        string              `json:"status"`
@@ -51,6 +63,7 @@ type getPodResponse struct {
 	Restarts      int                 `json:"restarts"`
 	StartAttempts int                 `json:"startAttempts,omitempty"`
 	Reason        string              `json:"reason,omitempty"`
+	Requested     requestedResources  `json:"requested"`
 	Containers    []containerResponse `json:"containers,omitempty"`
 	Events        []podEvent          `json:"events"`
 }
@@ -107,6 +120,8 @@ func (s *Server) handleGetPod(w http.ResponseWriter, r *http.Request) {
 		containers = append(containers, cr)
 	}
 
+	requested := rec.Spec.TotalRequests()
+
 	resp := getPodResponse{
 		Name:          rec.Spec.Name,
 		Status:        string(rec.Status),
@@ -116,8 +131,14 @@ func (s *Server) handleGetPod(w http.ResponseWriter, r *http.Request) {
 		Restarts:      rec.Restarts,
 		StartAttempts: rec.StartAttempts,
 		Reason:        rec.Reason,
-		Containers:    containers,
-		Events:        events,
+		Requested: requestedResources{
+			CPUMillis:   requested.CPUMillis,
+			MemoryMB:    requested.MemoryMB,
+			GPUCount:    requested.GPUCount,
+			GPUMemoryMB: requested.GPUMemoryMB,
+		},
+		Containers: containers,
+		Events:     events,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
