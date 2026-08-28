@@ -142,7 +142,11 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 	for i, ic := range spec.InitContainers {
 		icCopy := ic
 		icCopy.Name = fmt.Sprintf("init-%d-%s", i, ic.Name)
-		runArgs := buildRunArgs(spec.Name, icCopy, spec.Volumes, p.network, false, spec.CpusetCores)
+		// Init containers never received NVIDIA_VISIBLE_DEVICES even when
+		// the pod has assigned GPU devices (they run to completion before
+		// the main containers start, and typically don't need the GPU) --
+		// preserve that by passing no devices here.
+		runArgs := buildRunArgs(spec.Name, icCopy, spec.Volumes, p.network, false, spec.CpusetCores, nil)
 		slog.Info("running init container", "cmd", "podman", "args", runArgs)
 		out, err := exec.CommandContext(ctx, "podman", runArgs...).CombinedOutput()
 		if err != nil {
@@ -152,11 +156,7 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 
 	// Start each main container in the pod (detached).
 	for _, c := range spec.Containers {
-		runArgs := buildRunArgs(spec.Name, c, spec.Volumes, p.network, true, spec.CpusetCores)
-		// Inject NVIDIA_VISIBLE_DEVICES if specific GPU devices are assigned.
-		if len(spec.GPUDevices) > 0 {
-			runArgs = injectGPUDevices(runArgs, spec.GPUDevices)
-		}
+		runArgs := buildRunArgs(spec.Name, c, spec.Volumes, p.network, true, spec.CpusetCores, spec.GPUDevices)
 		slog.Info("starting container", "cmd", "podman", "args", runArgs)
 		out, err := exec.CommandContext(ctx, "podman", runArgs...).CombinedOutput()
 		if err != nil {
@@ -181,8 +181,10 @@ func formatPublish(p manifest.ContainerPort) string {
 // buildRunArgs constructs the arguments for a podman run command.
 // If detach is true, the container runs in the background (-d flag).
 // If cpusetCores is non-empty, emits --cpuset-cpus to pin the container
-// to those host CPU cores (see ADR-012).
-func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []manifest.VolumeSpec, network string, detach bool, cpusetCores []int) []string {
+// to those host CPU cores (see ADR-012). If gpuDevices is non-empty, emits
+// an NVIDIA_VISIBLE_DEVICES env var scoping the container to those specific
+// device IDs.
+func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []manifest.VolumeSpec, network string, detach bool, cpusetCores []int, gpuDevices []int) []string {
 	args := []string{"run"}
 	if detach {
 		args = append(args, "-d")
@@ -191,6 +193,16 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 
 	for _, e := range container.Env {
 		args = append(args, "--env", e.Name+"="+e.Value)
+	}
+	// NVIDIA_VISIBLE_DEVICES belongs in the same family as the rest of
+	// container.Env above -- emitted once, here, before any positional args
+	// (image, entrypoint, command) exist for a later pass to get confused
+	// with (issue #85: a previous post-processing pass that spliced this in
+	// by scanning for "the position of the image" mis-scanned past
+	// --entrypoint's own value token whenever container.Command was set,
+	// corrupting the podman invocation).
+	if len(gpuDevices) > 0 {
+		args = append(args, "--env", "NVIDIA_VISIBLE_DEVICES="+formatDeviceIDs(gpuDevices))
 	}
 
 	// Build a lookup from volume name to VolumeSpec.
@@ -321,37 +333,6 @@ func formatCPURange(cores []int) string {
 		parts[i] = strconv.Itoa(c)
 	}
 	return strings.Join(parts, ",")
-}
-
-// injectGPUDevices inserts an NVIDIA_VISIBLE_DEVICES env var into run args.
-// It inserts the --env flag before the image argument (first arg after all flags).
-func injectGPUDevices(args []string, devices []int) []string {
-	envArg := "NVIDIA_VISIBLE_DEVICES=" + formatDeviceIDs(devices)
-	// Find the position of the image name to insert before it.
-	// The image is the first positional arg after all --flag pairs.
-	insertIdx := len(args)
-	for i := 1; i < len(args); i++ {
-		if args[i-1] == "--env" || args[i-1] == "--pod" || args[i-1] == "--name" ||
-			args[i-1] == "--volume" || args[i-1] == "--mount" ||
-			args[i-1] == "--memory" || args[i-1] == "--cpus" ||
-			args[i-1] == "--device" {
-			continue
-		}
-		if !strings.HasPrefix(args[i], "-") && !strings.HasPrefix(args[i-1], "-") {
-			// This is a positional arg (image or command) — but we want the image.
-			// The image is the first non-flag arg.
-			continue
-		}
-		if !strings.HasPrefix(args[i], "-") {
-			insertIdx = i
-			break
-		}
-	}
-	result := make([]string, 0, len(args)+2)
-	result = append(result, args[:insertIdx]...)
-	result = append(result, "--env", envArg)
-	result = append(result, args[insertIdx:]...)
-	return result
 }
 
 // buildStopArgs constructs the arguments for a podman pod stop command.
