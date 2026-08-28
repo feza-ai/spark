@@ -15,10 +15,12 @@ import (
 
 // stubExecutor implements executor.Executor for testing.
 type stubExecutor struct {
-	stopErr   error
-	removeErr error
-	stopped   []string
-	removed   []string
+	stopErr      error
+	removeErr    error
+	stopped      []string
+	removed      []string
+	podStatus    executor.Status
+	podStatusErr error
 }
 
 func (e *stubExecutor) CreatePod(_ context.Context, _ manifest.PodSpec) error {
@@ -33,7 +35,7 @@ func (e *stubExecutor) StopPod(_ context.Context, name string, _ int) error {
 }
 
 func (e *stubExecutor) PodStatus(_ context.Context, _ string) (executor.Status, error) {
-	return executor.Status{}, nil
+	return e.podStatus, e.podStatusErr
 }
 
 func (e *stubExecutor) RemovePod(_ context.Context, name string) error {
@@ -97,6 +99,7 @@ func TestDeleteHandler(t *testing.T) {
 		podExists       bool
 		stopErr         error
 		removeErr       error
+		podStatusErr    error
 		scheduler       PodRemover
 		wantDeleted     bool
 		wantError       bool
@@ -140,13 +143,27 @@ func TestDeleteHandler(t *testing.T) {
 			scheduler: &stubPodRemover{},
 			wantError: true,
 		},
+		{
+			// issue #81: podman can report an error on removal that isn't
+			// "no such pod" even though it already removed the pod. A
+			// follow-up status check confirming "no such pod" must let the
+			// delete succeed rather than leaking the scheduler reservation.
+			name:            "remove error but pod confirmed gone",
+			podName:         "ghost-pod",
+			podExists:       true,
+			removeErr:       fmt.Errorf("Error: unable to clean up network for pod: network not found"),
+			podStatusErr:    fmt.Errorf("Error: no such pod ghost-pod"),
+			scheduler:       &stubPodRemover{},
+			wantDeleted:     true,
+			wantSchedulerRM: []string{"ghost-pod"},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b := NewStubBus()
 			store := state.NewPodStore()
-			exec := &stubExecutor{stopErr: tc.stopErr, removeErr: tc.removeErr}
+			exec := &stubExecutor{stopErr: tc.stopErr, removeErr: tc.removeErr, podStatusErr: tc.podStatusErr}
 
 			if tc.podExists {
 				store.Apply(manifest.PodSpec{
