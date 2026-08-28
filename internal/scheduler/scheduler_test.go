@@ -393,3 +393,98 @@ func TestPreemptionCount(t *testing.T) {
 		})
 	}
 }
+
+// fakeHostLoad is a test double for HostLoadSource with a fixed reading.
+type fakeHostLoad struct {
+	millis int
+	ok     bool
+}
+
+func (f fakeHostLoad) AvailableCPUMillis() (int, bool) { return f.millis, f.ok }
+
+// TestSchedule_UtilizationAwareAdmission_AdmitsOnRealHeadroom reproduces
+// the issue #76 incident: a node whose accounting shows almost no CPU
+// free (idle reservations, e.g. mostly-idle CI runner pods) but whose real
+// load average shows ample headroom. Without a HostLoadSource, this
+// request is rejected (Pending) purely on phantom accounting; with one
+// reporting real headroom, it must be admitted despite the accounted
+// shortfall, and no priority-based preemption should be attempted.
+func TestSchedule_UtilizationAwareAdmission_AdmitsOnRealHeadroom(t *testing.T) {
+	// 20-core node accounted at 17150m/18000m allocated (matches the real
+	// incident numbers from issue #76), same priority so nothing is a
+	// preemption candidate.
+	tracker := newTracker(18000, 65536, 0)
+	if err := tracker.Allocate("ci-runner-holder", manifest.ResourceList{CPUMillis: 17150, MemoryMB: 4096}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := NewScheduler(tracker)
+	s.AddPod(PodInfo{Name: "ci-runner-holder", Priority: 1000, Resources: manifest.ResourceList{CPUMillis: 17150, MemoryMB: 4096}, StartTime: time.Now()})
+
+	req := podSpec("ci-job", 1000, 6000, 2048, 0) // cpu: 6 like the real incident
+
+	// Without utilization awareness (today's behavior): rejected, even
+	// though the host is nearly idle in reality.
+	before := s.Schedule(req)
+	if before.Action != Pending {
+		t.Fatalf("expected Pending without a HostLoadSource (phantom accounting ceiling), got %d: %s", before.Action, before.Reason)
+	}
+
+	// With a HostLoadSource reporting ample real CPU headroom (load
+	// average near 0 on a 20-core box): must admit.
+	s.SetHostLoad(fakeHostLoad{millis: 19000, ok: true})
+	result := s.Schedule(req)
+	if result.Action != Scheduled {
+		t.Fatalf("expected Scheduled once real headroom is available, got %d: %s", result.Action, result.Reason)
+	}
+	if len(result.Victims) != 0 {
+		t.Fatalf("expected no preemption when real headroom covers the request, got victims %v", result.Victims)
+	}
+	if result.Reason == "" {
+		t.Fatal("expected a non-empty Reason explaining the utilization-aware admission")
+	}
+	if got := s.CPUOvercommitAdmissions(); got != 1 {
+		t.Fatalf("expected CPUOvercommitAdmissions to be 1, got %d", got)
+	}
+
+	avail := tracker.Available()
+	if avail.CPUMillis >= 0 {
+		t.Errorf("expected accounted CPU to go negative reflecting the overcommit, got %d", avail.CPUMillis)
+	}
+}
+
+// TestSchedule_UtilizationAwareAdmission_NeverBypassesMemory covers the
+// hard requirement from issue #76: even with abundant reported CPU
+// headroom, a request that doesn't fit memory must never be admitted.
+func TestSchedule_UtilizationAwareAdmission_NeverBypassesMemory(t *testing.T) {
+	tracker := newTracker(4000, 1024, 0)
+	if err := tracker.Allocate("holder", manifest.ResourceList{CPUMillis: 3500, MemoryMB: 900}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := NewScheduler(tracker)
+	s.AddPod(PodInfo{Name: "holder", Priority: 1000, Resources: manifest.ResourceList{CPUMillis: 3500, MemoryMB: 900}, StartTime: time.Now()})
+	s.SetHostLoad(fakeHostLoad{millis: 10000, ok: true})
+
+	// Fits CPU via overcommit, but memory does not fit (only 124MB free).
+	result := s.Schedule(podSpec("memory-heavy", 1000, 1000, 500, 0))
+	if result.Action == Scheduled {
+		t.Fatalf("expected memory shortfall to block admission despite CPU headroom, got Scheduled: %s", result.Reason)
+	}
+}
+
+// TestSchedule_UtilizationAwareAdmission_NoSampleFallsBackToPending covers
+// the "ok=false" case: when the HostLoadSource has no sample yet, the
+// scheduler must not admit and must fall back to today's behavior.
+func TestSchedule_UtilizationAwareAdmission_NoSampleFallsBackToPending(t *testing.T) {
+	tracker := newTracker(4000, 8192, 0)
+	if err := tracker.Allocate("holder", manifest.ResourceList{CPUMillis: 3500, MemoryMB: 512}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := NewScheduler(tracker)
+	s.AddPod(PodInfo{Name: "holder", Priority: 1000, Resources: manifest.ResourceList{CPUMillis: 3500, MemoryMB: 512}, StartTime: time.Now()})
+	s.SetHostLoad(fakeHostLoad{millis: 0, ok: false})
+
+	result := s.Schedule(podSpec("job", 1000, 1000, 512, 0))
+	if result.Action != Pending {
+		t.Fatalf("expected Pending when HostLoadSource has no sample yet, got %d", result.Action)
+	}
+}

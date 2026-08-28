@@ -936,3 +936,110 @@ func TestGPUCountBackwardsCompatWithGPUMemory(t *testing.T) {
 		t.Fatal("expected error when all GPU slots consumed")
 	}
 }
+
+// TestCanFitIgnoringCPU_SkipsOnlyCPUAccounting covers issue #76: a request
+// that exceeds accounted CPU headroom, but fits every other dimension,
+// must report fitting via CanFitIgnoringCPU while CanFit still rejects it.
+func TestCanFitIgnoringCPU_SkipsOnlyCPUAccounting(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 0},
+		Resources{},
+		nil, 0,
+	)
+	// Exhaust accounted CPU but leave memory free.
+	if err := rt.Allocate("holder", manifest.ResourceList{CPUMillis: 3500, MemoryMB: 512}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	req := manifest.ResourceList{CPUMillis: 1000, MemoryMB: 512}
+	if rt.CanFit(req) {
+		t.Fatal("expected CanFit to reject a request that exceeds accounted CPU headroom")
+	}
+	if !rt.CanFitIgnoringCPU(req) {
+		t.Fatal("expected CanFitIgnoringCPU to fit: only CPU accounting is short")
+	}
+}
+
+// TestCanFitIgnoringCPU_StillEnforcesMemory covers the strictness
+// requirement from issue #76: memory accounting must never be bypassed,
+// even by the CPU-only utilization-aware check.
+func TestCanFitIgnoringCPU_StillEnforcesMemory(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 1024},
+		Resources{},
+		nil, 0,
+	)
+	if err := rt.Allocate("holder", manifest.ResourceList{CPUMillis: 500, MemoryMB: 900}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	req := manifest.ResourceList{CPUMillis: 100, MemoryMB: 500}
+	if rt.CanFitIgnoringCPU(req) {
+		t.Fatal("expected CanFitIgnoringCPU to reject: memory accounting must stay strict")
+	}
+}
+
+// TestCanFitIgnoringCPU_StillEnforcesCpusetCores covers issue #76's
+// requirement that the cpuset whole-core-block check is never bypassed: a
+// pinned core is a physical exclusivity guarantee, not an accounting
+// fiction, so it isn't "soft" the way plain CPUMillis accounting is.
+func TestCanFitIgnoringCPU_StillEnforcesCpusetCores(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 2000, MemoryMB: 8192, Cores: []int{0, 1}},
+		Resources{},
+		nil, 0,
+	)
+	if err := rt.Allocate("holder", manifest.ResourceList{CPUMillis: 2000, MemoryMB: 512}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both cores are pinned to "holder"; a new whole-core request must
+	// still be rejected even though this is the CPU-ignoring check.
+	req := manifest.ResourceList{CPUMillis: 1000, MemoryMB: 512}
+	if rt.CanFitIgnoringCPU(req) {
+		t.Fatal("expected CanFitIgnoringCPU to reject: no unassigned pinned core available")
+	}
+}
+
+// TestAllocateOverCommittingCPU_AllowsCPUOvercommit covers issue #76: the
+// bypass allocation path must succeed despite exceeding accounted CPU, and
+// the resulting Available().CPUMillis should reflect the overcommit
+// honestly (going negative) rather than silently clamping.
+func TestAllocateOverCommittingCPU_AllowsCPUOvercommit(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192},
+		Resources{},
+		nil, 0,
+	)
+	if err := rt.Allocate("holder", manifest.ResourceList{CPUMillis: 3500, MemoryMB: 512}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	req := manifest.ResourceList{CPUMillis: 1000, MemoryMB: 512}
+	if err := rt.AllocateOverCommittingCPU("overcommitted", req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	avail := rt.Available()
+	if avail.CPUMillis != -500 {
+		t.Errorf("expected available CPU millis to go negative (-500) reflecting the overcommit, got %d", avail.CPUMillis)
+	}
+	if _, ok := rt.AllocatedBy("overcommitted"); !ok {
+		t.Fatal("expected overcommitted pod to be recorded in the allocation ledger")
+	}
+}
+
+// TestAllocateOverCommittingCPU_StillEnforcesMemory covers issue #76:
+// AllocateOverCommittingCPU must reject a request whose memory exceeds
+// available memory, exactly like Allocate.
+func TestAllocateOverCommittingCPU_StillEnforcesMemory(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 1024},
+		Resources{},
+		nil, 0,
+	)
+	req := manifest.ResourceList{CPUMillis: 100, MemoryMB: 2048}
+	if err := rt.AllocateOverCommittingCPU("pod", req); err == nil {
+		t.Fatal("expected error: memory accounting must stay strict even for the overcommit path")
+	}
+}

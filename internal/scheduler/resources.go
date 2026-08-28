@@ -87,12 +87,31 @@ func (rt *ResourceTracker) ReservedCores() []int {
 
 // Allocate reserves resources for a pod. Returns error if insufficient.
 func (rt *ResourceTracker) Allocate(name string, req manifest.ResourceList) error {
+	return rt.allocate(name, req, false)
+}
+
+// AllocateOverCommittingCPU behaves like Allocate but skips the accounted
+// CPU-capacity check (memory, GPU, GPU memory, and cpuset core-block checks
+// are unchanged and remain strict). It exists for utilization-aware
+// admission (issue #76): the caller (Scheduler) has already confirmed real
+// host CPU headroom via a HostLoadSource before calling this, so accounted
+// CPU reservations are allowed to exceed allocatable — CPU contention is a
+// soft, recoverable failure mode on this hardware. Memory exhaustion is
+// not, which is why memory accounting has no equivalent bypass.
+func (rt *ResourceTracker) AllocateOverCommittingCPU(name string, req manifest.ResourceList) error {
+	return rt.allocate(name, req, true)
+}
+
+// allocate is the shared implementation behind Allocate and
+// AllocateOverCommittingCPU. skipCPUCheck disables only the accounted
+// CPUMillis capacity check; every other dimension is checked identically.
+func (rt *ResourceTracker) allocate(name string, req manifest.ResourceList, skipCPUCheck bool) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
 	avail := rt.availableLocked()
 
-	if req.CPUMillis > avail.CPUMillis {
+	if !skipCPUCheck && req.CPUMillis > avail.CPUMillis {
 		return fmt.Errorf("insufficient CPU: requested %d m, available %d m", req.CPUMillis, avail.CPUMillis)
 	}
 	if req.MemoryMB > avail.MemoryMB {
@@ -376,9 +395,28 @@ func (rt *ResourceTracker) Available() Resources {
 func (rt *ResourceTracker) CanFit(req manifest.ResourceList) bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	return rt.canFitLocked(req, false)
+}
 
+// CanFitIgnoringCPU reports whether req fits every dimension except the
+// accounted CPUMillis check — memory, GPU count, GPU memory, and the
+// cpuset whole-core-block check are all still enforced exactly as CanFit
+// would. Used by utilization-aware admission (issue #76) to confirm that
+// accounted CPU is the *only* blocking dimension before consulting live
+// host load; the cpuset check stays strict even here because a pinned
+// core is a physical exclusivity guarantee, not an accounting fiction.
+func (rt *ResourceTracker) CanFitIgnoringCPU(req manifest.ResourceList) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.canFitLocked(req, true)
+}
+
+func (rt *ResourceTracker) canFitLocked(req manifest.ResourceList, skipCPU bool) bool {
 	avail := rt.availableLocked()
-	if req.CPUMillis > avail.CPUMillis || req.MemoryMB > avail.MemoryMB || req.GPUMemoryMB > avail.GPUMemoryMB {
+	if !skipCPU && req.CPUMillis > avail.CPUMillis {
+		return false
+	}
+	if req.MemoryMB > avail.MemoryMB || req.GPUMemoryMB > avail.GPUMemoryMB {
 		return false
 	}
 	if req.GPUCount > 0 && len(rt.gpuDevices) > 0 {

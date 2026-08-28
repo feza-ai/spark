@@ -44,6 +44,17 @@ func describeShortfall(req manifest.ResourceList, avail Resources, cpusetEnabled
 	return strings.Join(parts, ", ")
 }
 
+// HostLoadSource reports live host CPU headroom, independent of resource
+// accounting, for utilization-aware admission (issue #76). Implementations
+// sample real load (e.g. /proc/loadavg) on their own schedule; Schedule
+// only reads the latest sample and never blocks on it. ok is false when no
+// sample is available yet (e.g. during startup), in which case
+// utilization-aware admission is skipped for that call and behavior falls
+// back to pure accounting.
+type HostLoadSource interface {
+	AvailableCPUMillis() (millis int, ok bool)
+}
+
 // ScheduleAction represents the outcome type of a scheduling attempt.
 type ScheduleAction int
 
@@ -84,9 +95,11 @@ type Scheduler struct {
 	pods        map[string]PodInfo
 	preemptions map[string]*preemptionRecord
 	now         func() time.Time // injectable clock for testing
+	hostLoad    HostLoadSource   // optional; nil disables utilization-aware admission (issue #76)
 
-	scheduleAttempts int64 // atomic counter for Schedule() calls
-	preemptionCount  int64 // atomic counter for executed preemptions
+	scheduleAttempts        int64 // atomic counter for Schedule() calls
+	preemptionCount         int64 // atomic counter for executed preemptions
+	cpuOvercommitAdmissions int64 // atomic counter for utilization-aware CPU admissions (issue #76)
 }
 
 // NewScheduler creates a scheduler backed by a resource tracker.
@@ -105,6 +118,16 @@ func (s *Scheduler) AssignedCores(name string) []int {
 	return s.tracker.AssignedCores(name)
 }
 
+// SetHostLoad wires a live CPU-headroom source for utilization-aware
+// admission (issue #76). Pass nil (the default) to disable the feature:
+// Schedule then behaves exactly as it did before this existed, admitting
+// purely on requested-resource accounting.
+func (s *Scheduler) SetHostLoad(src HostLoadSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hostLoad = src
+}
+
 // Schedule attempts to schedule a pod. Returns Scheduled if resources fit,
 // Preempting with victim list if preemption is possible, or Pending otherwise.
 func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
@@ -119,6 +142,25 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 	if s.tracker.CanFit(req) {
 		s.tracker.Allocate(spec.Name, req)
 		return ScheduleResult{Action: Scheduled}
+	}
+
+	// Step 1b: utilization-aware CPU admission (issue #76). Accounted CPU
+	// reservations can starve scheduling even when the host is mostly
+	// idle (idle-but-reserved CI runners, etc.). When every other
+	// dimension fits by strict accounting and live host load shows real
+	// CPU headroom, admit despite the phantom CPU ceiling. This never
+	// applies to memory, GPU count/memory, or cpuset core blocks — those
+	// stay exactly as strict as the Step 1 check above.
+	if s.hostLoad != nil && s.tracker.CanFitIgnoringCPU(req) {
+		if freeMillis, ok := s.hostLoad.AvailableCPUMillis(); ok && freeMillis >= req.CPUMillis {
+			if err := s.tracker.AllocateOverCommittingCPU(spec.Name, req); err == nil {
+				atomic.AddInt64(&s.cpuOvercommitAdmissions, 1)
+				return ScheduleResult{
+					Action: Scheduled,
+					Reason: fmt.Sprintf("admitted via utilization-aware CPU overcommit: accounted CPU short but %dm real headroom available", freeMillis),
+				}
+			}
+		}
 	}
 
 	// Step 2: find preemption candidates — pods with strictly lower priority
@@ -269,6 +311,14 @@ func (s *Scheduler) ScheduleAttempts() int64 {
 // PreemptionCount returns the total number of executed preemptions.
 func (s *Scheduler) PreemptionCount() int64 {
 	return atomic.LoadInt64(&s.preemptionCount)
+}
+
+// CPUOvercommitAdmissions returns the total number of pods admitted via
+// utilization-aware CPU overcommit (issue #76) — i.e. admitted despite
+// exceeding accounted CPU headroom because live host load showed real
+// headroom. Always 0 when no HostLoadSource is set.
+func (s *Scheduler) CPUOvercommitAdmissions() int64 {
+	return atomic.LoadInt64(&s.cpuOvercommitAdmissions)
 }
 
 // recordPreemption records a preemption event for anti-thrash tracking.
