@@ -133,7 +133,15 @@ curl -X POST http://localhost:8080/api/v1/pods \
   -d @pod.yaml
 ```
 
-Accepts a Kubernetes manifest (YAML) in the request body. Supports Pod, Job, CronJob, Deployment, and StatefulSet kinds.
+JSON is also accepted for the same endpoint and kinds:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/pods \
+  -H "Content-Type: application/json" \
+  -d @pod.json
+```
+
+Accepts a Kubernetes manifest (YAML or JSON) in the request body. Supports Pod, Job, CronJob, Deployment, and StatefulSet kinds. A document that parses to nothing usable (empty, or missing a `kind`) is a `400 Bad Request`, never a silent `201` that creates nothing.
 
 Both block-style and flow-style YAML collections are supported (`limits: { cpu: "1", memory: 512Mi }`, `env: [{ name: FOO, value: bar }]`). A malformed flow collection is a `400 Bad Request`, never a silently ignored value.
 
