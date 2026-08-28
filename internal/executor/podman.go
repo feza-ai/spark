@@ -245,7 +245,15 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 	if len(cpusetCores) > 0 {
 		args = append(args, "--cpuset-cpus", formatCPURange(cpusetCores))
 	}
-	if limits.GPUMemoryMB > 0 || limits.GPUCount > 0 {
+	// The scheduler admits and accounts GPU pods against Requests (see
+	// manifest.PodSpec.TotalRequests), not Limits. Gating device attachment
+	// on Limits alone let a manifest that sets only requests.nvidia.com/gpu
+	// (a valid, common shape -- no limits block at all) hold a reserved
+	// device slot while the container never actually received a device
+	// (issue #81). Check both so a pod is only ever admitted when this
+	// same condition will also attach a device, and vice versa.
+	requests := container.Resources.Requests
+	if requests.GPUMemoryMB > 0 || requests.GPUCount > 0 || limits.GPUMemoryMB > 0 || limits.GPUCount > 0 {
 		args = append(args, "--device", "nvidia.com/gpu=all")
 	}
 
