@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.18.0](https://github.com/feza-ai/spark/compare/v1.17.0...v1.18.0) (2026-08-28)
+
+
+### Features
+
+* **api:** expose requested resources on GET /api/v1/pods/{name} ([c833020](https://github.com/feza-ai/spark/commit/c83302025823d038624f06cfe856a2ab5c69c60c))
+* **cmd/spark:** wire utilization-aware CPU admission and host load sampling ([0a4fdff](https://github.com/feza-ai/spark/commit/0a4fdff3c6b93e3f1a5f02f06e624bce45e174f6))
+* **metrics:** expose spark_cpu_overcommit_admissions_total ([38a06d8](https://github.com/feza-ai/spark/commit/38a06d806d6b473e6c421376c3801598d3ab833e))
+* **reconciler:** record CPUOvercommitAdmitted events ([8336cf4](https://github.com/feza-ai/spark/commit/8336cf46940de2793200f2547f727a0f2ebcbcb9))
+
+
+### Bug Fixes
+
+* **executor:** build GPU env var inline instead of post-processing run args ([d9268e4](https://github.com/feza-ai/spark/commit/d9268e47e3c23572d4a00b4ef480ebf95ac36234)), closes [#85](https://github.com/feza-ai/spark/issues/85)
+* **scheduler:** utilization-aware CPU overcommit admission ([441a4b5](https://github.com/feza-ai/spark/commit/441a4b5ca5297dcc04535a083606cf6e3ad0ed51))
+* **state:** stop SavePod from silently wiping a pod's event history ([8c6fb9c](https://github.com/feza-ai/spark/commit/8c6fb9c9dfb95d37956ca83b290d8056deafb53d))
+
 ## [1.17.0](https://github.com/feza-ai/spark/compare/v1.16.2...v1.17.0) (2026-08-28)
 
 
