@@ -88,6 +88,30 @@ type preemptionRecord struct {
 	times []time.Time
 }
 
+// antiThrashMaxPreemptions and antiThrashWindow bound how many times a
+// single pending pod may preempt the same victim within a rolling window
+// before that (victim, requester) pair is excluded from further preemption
+// (issue #79, ADR 005's thrash mitigation). The cap is scoped per requester
+// pod, not per victim globally: it exists to stop ONE pod that keeps
+// failing and re-triggering from flip-flopping with the SAME victim
+// (ADR 005's "high-priority pod preempts, fails, low-priority restarts,
+// gets preempted again"). It must not also block a different, unrelated
+// pending pod from preempting that victim just because some other pod's
+// retries already used up the count — that starves the node's entire
+// small victim pool for every future high-priority pod, not just the one
+// that caused the thrashing.
+const (
+	antiThrashMaxPreemptions = 3
+	antiThrashWindow         = 5 * time.Minute
+)
+
+// preemptionKey identifies a single (victim, requester) pair for anti-thrash
+// tracking. Composed rather than nested-mapped for a simpler zero value and
+// lookup.
+func preemptionKey(victim, requester string) string {
+	return victim + "\x00" + requester
+}
+
 // Scheduler makes scheduling and preemption decisions.
 type Scheduler struct {
 	mu          sync.Mutex
@@ -167,11 +191,13 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 	// (higher numeric value means lower priority).
 	now := s.now()
 	var candidates []PodInfo
+	thrashExcluded := 0
 	for _, pod := range s.pods {
 		if pod.Priority <= spec.Priority {
 			continue // equal or higher priority — skip
 		}
-		if s.isAntiThrashed(pod.Name, now) {
+		if s.isAntiThrashed(pod.Name, spec.Name, now) {
+			thrashExcluded++
 			continue
 		}
 		candidates = append(candidates, pod)
@@ -182,10 +208,13 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 	shortfall := describeShortfall(req, s.tracker.Available(), cpusetOn, freeCores)
 
 	if len(candidates) == 0 {
-		return ScheduleResult{
-			Action: Pending,
-			Reason: "no preemption candidates (lower-priority, non-thrashed pods); shortfall: " + shortfall,
+		reason := "no preemption candidates (lower-priority pods); shortfall: " + shortfall
+		if thrashExcluded > 0 {
+			reason = fmt.Sprintf(
+				"no preemption candidates: %d lower-priority pod(s) excluded by the anti-thrash cap (already preempted by this pod %d+ times in the last %s); shortfall: %s",
+				thrashExcluded, antiThrashMaxPreemptions, antiThrashWindow, shortfall)
 		}
+		return ScheduleResult{Action: Pending, Reason: reason}
 	}
 
 	// Step 3: sort candidates by StartTime descending (most recent first)
@@ -226,21 +255,23 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 		freed.GPUMemoryMB >= req.GPUMemoryMB {
 		// Record preemption events for anti-thrash tracking.
 		for _, v := range victims {
-			s.recordPreemption(v, now)
+			s.recordPreemption(v, spec.Name, now)
 		}
 		return ScheduleResult{Action: Preempting, Victims: victims}
 	}
 
-	return ScheduleResult{
-		Action: Pending,
-		Reason: fmt.Sprintf("preemption insufficient: even after evicting %d candidate(s), shortfall remains: %s",
-			len(candidates), describeShortfall(req, Resources{
-				CPUMillis:   freed.CPUMillis,
-				MemoryMB:    freed.MemoryMB,
-				GPUCount:    freed.GPUCount,
-				GPUMemoryMB: freed.GPUMemoryMB,
-			}, cpusetOn, freeCores)),
+	reason := fmt.Sprintf("preemption insufficient: even after evicting %d candidate(s), shortfall remains: %s",
+		len(candidates), describeShortfall(req, Resources{
+			CPUMillis:   freed.CPUMillis,
+			MemoryMB:    freed.MemoryMB,
+			GPUCount:    freed.GPUCount,
+			GPUMemoryMB: freed.GPUMemoryMB,
+		}, cpusetOn, freeCores))
+	if thrashExcluded > 0 {
+		reason = fmt.Sprintf("%s (%d additional lower-priority pod(s) excluded by the anti-thrash cap for this pod, not by availability)",
+			reason, thrashExcluded)
 	}
+	return ScheduleResult{Action: Pending, Reason: reason}
 }
 
 // AddPod registers a running pod for preemption candidacy.
@@ -279,21 +310,24 @@ func (s *Scheduler) RemovePod(name string) {
 	delete(s.pods, name)
 }
 
-// isAntiThrashed returns true if a pod has been preempted more than 3 times
-// in the last 5 minutes.
-func (s *Scheduler) isAntiThrashed(name string, now time.Time) bool {
-	rec, ok := s.preemptions[name]
+// isAntiThrashed returns true if requester has preempted victim more than
+// antiThrashMaxPreemptions times in the last antiThrashWindow. Scoped to the
+// (victim, requester) pair rather than the victim alone: a victim already
+// thrashed by one requester stays eligible for a different requester that
+// has not itself contributed to that thrashing (issue #79).
+func (s *Scheduler) isAntiThrashed(victim, requester string, now time.Time) bool {
+	rec, ok := s.preemptions[preemptionKey(victim, requester)]
 	if !ok {
 		return false
 	}
-	cutoff := now.Add(-5 * time.Minute)
+	cutoff := now.Add(-antiThrashWindow)
 	count := 0
 	for _, t := range rec.times {
 		if !t.Before(cutoff) {
 			count++
 		}
 	}
-	return count > 3
+	return count > antiThrashMaxPreemptions
 }
 
 // Tracker returns the underlying ResourceTracker. Callers outside the
@@ -321,17 +355,19 @@ func (s *Scheduler) CPUOvercommitAdmissions() int64 {
 	return atomic.LoadInt64(&s.cpuOvercommitAdmissions)
 }
 
-// recordPreemption records a preemption event for anti-thrash tracking.
-func (s *Scheduler) recordPreemption(name string, now time.Time) {
-	rec, ok := s.preemptions[name]
+// recordPreemption records a preemption event for anti-thrash tracking,
+// scoped to the (victim, requester) pair — see isAntiThrashed.
+func (s *Scheduler) recordPreemption(victim, requester string, now time.Time) {
+	key := preemptionKey(victim, requester)
+	rec, ok := s.preemptions[key]
 	if !ok {
 		rec = &preemptionRecord{}
-		s.preemptions[name] = rec
+		s.preemptions[key] = rec
 	}
 	rec.times = append(rec.times, now)
 
-	// Prune old entries beyond 5 minutes.
-	cutoff := now.Add(-5 * time.Minute)
+	// Prune old entries beyond the anti-thrash window.
+	cutoff := now.Add(-antiThrashWindow)
 	kept := rec.times[:0]
 	for _, t := range rec.times {
 		if !t.Before(cutoff) {

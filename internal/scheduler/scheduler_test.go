@@ -229,9 +229,12 @@ func TestSchedule_AntiThrash(t *testing.T) {
 		StartTime: now.Add(-10 * time.Minute),
 	})
 
-	// Simulate 4 preemptions within 5 minutes by recording them directly.
+	// Simulate 4 preemptions within 5 minutes by recording them directly,
+	// all attributed to the SAME requester ("pod-urgent") repeatedly
+	// re-preempting the same victim — the flip-flop scenario ADR 005's
+	// anti-thrash mitigation targets.
 	for i := 0; i < 4; i++ {
-		s.recordPreemption("pod-low", now.Add(-time.Duration(4-i)*time.Minute))
+		s.recordPreemption("pod-low", "pod-urgent", now.Add(-time.Duration(4-i)*time.Minute))
 	}
 
 	// Release and re-add to simulate it being rescheduled each time.
@@ -246,13 +249,71 @@ func TestSchedule_AntiThrash(t *testing.T) {
 		t.Fatalf("expected Pending due to anti-thrash, got %d", result.Action)
 	}
 
-	// Advance time beyond 5 minutes — anti-thrash should expire.
+	// Advance time beyond 5 minutes — anti-thrash should expire. Reuse the
+	// SAME requester name ("pod-urgent") so this asserts window expiry,
+	// not the (victim, requester) pair-scoping added for issue #79.
 	s.now = func() time.Time { return now.Add(6 * time.Minute) }
 
-	result = s.Schedule(podSpec("pod-urgent2", 0, 2000, 4096, 8000))
+	result = s.Schedule(podSpec("pod-urgent", 0, 2000, 4096, 8000))
 
 	if result.Action != Preempting {
 		t.Fatalf("expected Preempting after anti-thrash expiry, got %d", result.Action)
+	}
+}
+
+// TestSchedule_AntiThrashStarvesUnrelatedRequester reproduces issue #79: a
+// small pool of lower-priority victims that some EARLIER, unrelated
+// high-priority pod already cycled through the anti-thrash cap (>3
+// preemptions in 5 minutes each) becomes permanently ineligible for ANY
+// preemption, even by a brand-new high-priority pod that has never preempted
+// anyone. On a resource-constrained single-GPU node with few low-priority
+// pods, a burst of legitimate preemption activity from a stream of
+// DIFFERENT pending pods exhausts each victim's shared budget, after which
+// every subsequent high-priority pod is silently starved for up to the
+// anti-thrash window — even though evicting the very same victims again
+// would satisfy it. ADR 005's anti-thrash mitigation is about a SINGLE pod
+// repeatedly flip-flopping with the SAME victim (TestSchedule_AntiThrash
+// covers that); it was never meant to block unrelated pods that have not
+// caused any thrash themselves.
+func TestSchedule_AntiThrashStarvesUnrelatedRequester(t *testing.T) {
+	tracker := newTracker(4000, 8192, 16000)
+	s := NewScheduler(tracker)
+
+	now := time.Now()
+	s.now = func() time.Time { return now }
+
+	// 4 lower-priority victims — more than the "3" in the anti-thrash
+	// threshold — each already preempted 4 times within the last 5
+	// minutes by an earlier, unrelated high-priority pod's retry loop.
+	victims := []string{"victim-a", "victim-b", "victim-c", "victim-d"}
+	for i, name := range victims {
+		s.AddPod(PodInfo{
+			Name:      name,
+			Priority:  10,
+			Resources: manifest.ResourceList{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 4000},
+			StartTime: now.Add(-time.Duration(10-i) * time.Minute),
+		})
+		for j := 0; j < 4; j++ {
+			s.recordPreemption(name, "pod-old-requester", now.Add(-time.Duration(4-j)*time.Minute))
+		}
+	}
+	// Victims fully occupy the node.
+	for _, name := range victims {
+		if err := tracker.Allocate(name, manifest.ResourceList{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 4000}); err != nil {
+			t.Fatalf("allocate %s: %v", name, err)
+		}
+	}
+
+	// A brand-new high-priority pod, unrelated to whatever caused the
+	// victims' thrash history, needs exactly the resources all 4 victims
+	// hold.
+	result := s.Schedule(podSpec("pod-urgent-new", 0, 4000, 8192, 16000))
+
+	if result.Action != Preempting {
+		t.Fatalf("expected a fresh requester to preempt thrashed victims it never preempted itself, got action=%d reason=%q", result.Action, result.Reason)
+	}
+	if len(result.Victims) != 4 {
+		t.Fatalf("expected all 4 victims, got %v", result.Victims)
 	}
 }
 
