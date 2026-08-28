@@ -34,13 +34,13 @@ internal/
 
 ## Key Invariants
 
-- Resource accounting: allocated = sum of running pod requests. Available = allocatable - allocated.
+- Resource accounting: allocated = sum of running pod requests. Available = allocatable - allocated. CPU only: when accounted CPU is short but a live `HostLoadSource` (sampled /proc/loadavg) reports real headroom, admission bypasses the accounted ceiling and available CPU may go negative to reflect the resulting overcommit honestly. Memory, GPU count, GPU memory, and cpuset core blocks are never bypassed this way. See docs/adr/013-utilization-aware-admission.md.
 - Preemption: only lower-priority pods are evictable. Equal priority never preempts. Anti-thrash: 3 preemptions in 5 minutes skips the victim.
 - Reconciler never stops service pods on spark shutdown. Service pods persist in podman across restarts.
 - All pods join `spark-net` for name-based pod-to-pod communication.
 - CronJob concurrency policies: Allow (always create), Forbid (skip if active), Replace (delete active, create new).
 - GPU device isolation: scheduler assigns specific device IDs via `NVIDIA_VISIBLE_DEVICES`; `--gpu-max` limits concurrent GPU pods.
-- Metrics: Prometheus text exposition via /metrics. Pod-level: spark_pod_cpu_throttled_seconds (cgroup v2). Host-level: spark_host_loadavg (1m/5m/15m), spark_host_softirq_seconds (per-type). Scrape orchestration wired in a follow-up; parsers/renderers/setters are in place.
+- Metrics: Prometheus text exposition via /metrics. Pod-level: spark_pod_cpu_throttled_seconds (cgroup v2). Host-level: spark_host_loadavg (1m/5m/15m, sampled every --host-load-sample-interval), spark_host_softirq_seconds (per-type, not yet wired to a live sampler). Scheduler: spark_scheduling_attempts_total, spark_preemptions_total, spark_cpu_overcommit_admissions_total.
 - Init containers run sequentially to completion before main containers start. Any init failure aborts the pod.
 - Container ports declared in manifests are mapped via `podman pod create --publish`.
 - SecurityContext: runAsUser, privileged, capabilities (add/drop) are forwarded to podman container args.
@@ -55,6 +55,8 @@ internal/
 - Healthz: GET /healthz returns status and version (injected by GoReleaser ldflags).
 - Reconciler treats `no such pod` from `podman pod inspect` on a `StatusScheduled` record as authoritative (pod is missing). After `scheduledStaleness` (10s) the record transitions back to `StatusPending`, respecting `BackoffLimit`. Transient inspect errors leave the record alone.
 - CPU isolation: scheduler assigns specific core IDs per pod for integer CPU limits; executor passes `--cpuset-cpus` so container threads cannot land on reserved cores. `--system-reserve-cores` defines the host's dedicated core set (sshd, ksoftirqd, Spark itself). See docs/adr/012-cpu-pinning-cpuset.md.
+- Pod requested resources: GET /api/v1/pods/{name} returns `requested` (cpuMillis, memoryMB, gpuCount, gpuMemoryMB) alongside status and events.
+- Event persistence: every event appended via `PodStore.AddEvent` or `UpdateStatus` reaches SQLite through the `OnEvent` hook (mirrors `OnDelete`), not just the most recent one at status-change time. `SavePod` is a true `ON CONFLICT DO UPDATE` upsert -- never `INSERT OR REPLACE`, which would delete-then-insert and cascade-delete a pod's events through `ON DELETE CASCADE`.
 
 ## Interfaces
 
@@ -77,3 +79,5 @@ See docs/adr/ for rationale:
 - ADR-009: HTTP API design (net/http.ServeMux, Go 1.22+ patterns)
 - ADR-010: Prometheus metrics via stdlib (text exposition format, no client_golang)
 - ADR-011: HTTP bearer token authentication (file-based token, exempt /healthz and /metrics)
+- ADR-012: CPU pinning via cpuset partitioning
+- ADR-013: Utilization-aware CPU admission (accounting alone can starve scheduling; consult live host load)

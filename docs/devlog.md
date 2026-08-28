@@ -18,6 +18,29 @@
 
 **Impact:** 8 packages touched (`scheduler`, `executor`, `reconciler`, `api`, `bus`, `housekeeper`, `metrics`, `cmd/spark`). New red→green coverage: `TestAllocate_ReleasesStaleGPUAssignmentWhenGPUDropped`, `TestBuildRunArgs_GPUFlag_RequestsOnly`, `TestPendingPodGetsScheduledWithGPUDevices`, `TestDeletePodRemoveFails_ButPodConfirmedGone` (api + bus), `TestReconcileGPUSlots_ReclaimsPhantomHolder`, `TestHandleNode_IncludesGPUAllocations`. Full suite green: `go test ./... -race -timeout 120s`, `go vet ./...`, `staticcheck ./...` clean. CPU/memory admission logic (issue #76, sibling worktree) intentionally untouched.
 
+## 2026-08-27: Issue #76 utilization-aware CPU overcommit, and events silently wiped on every SavePod
+
+**Type:** finding
+**Tags:** scheduler, resources, metrics, api, state, sqlite, issue-76
+
+**Problem:** admission was accounting-only for CPU, with no distinction between reserved and used. A 20-core node accounting `cpuMillis: {allocated: 17150, allocatable: 18000}` (95%) sat at real load average under 1.0 the whole time (~20 idle GitHub Actions runner pods, all `priority: 1000` so none could preempt another). A `cpu: 6` CI pod stayed Pending for ~2 days; the only workaround was understating its request.
+
+**Root cause:** `Scheduler.Schedule` only ever compared requests against `ResourceTracker.Available()` (allocatable − allocated), never against reality. `internal/metrics` already had `ReadLoadavg`/`SetHostLoadavg` for `spark_host_loadavg`, but nothing in `cmd/spark/main.go` ever called them — dead wiring (docs/design.md flagged this as a follow-up).
+
+**Fix:**
+1. `ResourceTracker.CanFitIgnoringCPU` / `AllocateOverCommittingCPU` (resources.go): the existing `CanFit`/`Allocate` logic factored to take a `skipCPU` flag, so every other dimension (memory, GPU count/memory, cpuset core blocks) is checked exactly as strictly as today. Memory accounting has no bypass — CPU contention is soft and recoverable on this hardware, memory exhaustion is not.
+2. `Scheduler.HostLoadSource` interface + `SetHostLoad` (scheduler.go): `Schedule` consults it between the direct-fit check and preemption candidate search, admitting on real headroom when accounted CPU alone is short. `cmd/spark/hostload.go` implements it by sampling `/proc/loadavg`'s 5-minute average every `--host-load-sample-interval` (default 15s), converting to free millis against `sysInfo.CPUMillis` minus `--cpu-overcommit-margin-millis` (default 1000, one core, covering the trailing average's lag). Same sample now also feeds `spark_host_loadavg`, activating the dead wiring. Accounted CPU is allowed to go negative once overcommitted — surfaced honestly on `/api/v1/resources`, `/metrics` (`spark_cpu_overcommit_admissions_total`), and as a `CPUOvercommitAdmitted` pod event, rather than hidden.
+3. `GET /api/v1/pods/{name}` now returns `requested` (cpuMillis/memoryMB/gpuCount/gpuMemoryMB) so an operator can see what a pending pod asked for without cross-referencing the manifest.
+4. Diagnostic-gap fix, two bugs, one much worse than expected:
+   - `PodStore.OnEvent` hook (mirrors the existing `OnDelete`): every `AddEvent`/`UpdateStatus` event now reaches a persistence callback. Before, `onStatusChange` in main.go only ever persisted the *last* array element at status-change time — so `AddEvent`-sourced events (`PendingWatchdog`, `lost`, `container-restarted`, ...) were never written to SQLite at all, only living in memory until the next restart wiped them.
+   - Far more severe, found while verifying the above: `SavePod` used `INSERT OR REPLACE`, which SQLite resolves via delete-then-insert. With `foreign_keys=ON`, that delete cascaded through `events.pod_name`'s `ON DELETE CASCADE` — **every** `SavePod` call wiped **every** previously-saved event for that pod, and `SavePod` runs on every status change. A still-pending pod's persisted event history was being reset roughly every reconcile tick, not eventually GC'd. Fixed with a true `ON CONFLICT(name) DO UPDATE` upsert (no delete, no cascade). Verified empirically: a throwaway test round-tripping SavePod→SaveEvent→SavePod showed 0 of 1 events survived before the fix, all 3 of 3 after.
+
+**Verified:** `go test ./... -race -timeout 120s` green (14 packages), `go vet ./...` and `staticcheck ./...` clean, `gofmt -l` clean. Key regression tests: `TestSchedule_UtilizationAwareAdmission_AdmitsOnRealHeadroom` (red without `SetHostLoad`/`CanFitIgnoringCPU`, green with), `TestSavePod_DoesNotWipeExistingEvents` (red against `INSERT OR REPLACE`, green against the upsert).
+
+**Landmine:** `INSERT OR REPLACE` on any table with a child `ON DELETE CASCADE` foreign key is a silent data-loss trap under `foreign_keys=ON` — it deletes before it inserts. Grep for other `INSERT OR REPLACE` uses before adding a new cascading FK anywhere in `internal/state`.
+
+**Deferred:** the NATS `req.spark.apply` path (`internal/bus/handler_apply.go`) still doesn't eagerly `SavePod` after `store.Apply`, unlike the HTTP and filesystem-watch ingestion paths. `OnEvent` defensively `SavePod`s before every `SaveEvent` to close the resulting FK-ordering gap, but the underlying inconsistency across ingestion paths is still there — worth a follow-up issue to align all three.
+
 ## 2026-07-09: Issue #66 flow-style YAML maps silently dropped (zero-request admission)
 
 **Type:** finding
