@@ -800,6 +800,106 @@ func TestRestoreAssignment_InitializesNilMap(t *testing.T) {
 	}
 }
 
+func TestAllocate_ReleasesStaleGPUAssignmentWhenGPUDropped(t *testing.T) {
+	// Reproduces issue #81: a pod re-applied under the same name with its
+	// GPU request dropped must not keep holding the previous incarnation's
+	// device slot forever.
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0}, 1,
+	)
+
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gpus := rt.AssignedGPUs("pod-a"); len(gpus) != 1 {
+		t.Fatalf("expected 1 GPU assigned, got %v", gpus)
+	}
+
+	// Re-Allocate the same name without an intervening Release, this time
+	// with no GPU request (simulating a pod re-applied without ever going
+	// through Release, e.g. after a delete that silently failed to
+	// release scheduler resources).
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 200, MemoryMB: 200}); err != nil {
+		t.Fatalf("unexpected error re-allocating without GPU: %v", err)
+	}
+
+	if gpus := rt.AssignedGPUs("pod-a"); gpus != nil {
+		t.Errorf("expected GPU assignment cleared once request drops the GPU, got %v", gpus)
+	}
+
+	// The device slot must be available to a new pod.
+	if err := rt.Allocate("pod-b", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1}); err != nil {
+		t.Fatalf("expected freed device slot to be allocatable, got error: %v", err)
+	}
+}
+
+func TestGPUHolders(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0, 1}, 2,
+	)
+
+	if got := rt.GPUHolders(); got != nil {
+		t.Fatalf("expected nil holders on empty tracker, got %v", got)
+	}
+
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	holders := rt.GPUHolders()
+	if len(holders) != 1 {
+		t.Fatalf("expected 1 holder, got %v", holders)
+	}
+	devs, ok := holders["pod-a"]
+	if !ok || len(devs) != 1 || devs[0] != 0 {
+		t.Errorf("expected pod-a holding device 0, got %v", holders)
+	}
+
+	// Mutating the returned map/slice must not affect the tracker.
+	devs[0] = 99
+	if got := rt.AssignedGPUs("pod-a"); len(got) != 1 || got[0] != 0 {
+		t.Errorf("GPUHolders result must be a copy, tracker state changed to %v", got)
+	}
+}
+
+func TestReleaseGPU(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0}, 1,
+	)
+
+	if err := rt.Allocate("pod-a", manifest.ResourceList{CPUMillis: 500, MemoryMB: 1000, GPUCount: 1}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// ReleaseGPU is idempotent and safe on names never assigned a GPU.
+	rt.ReleaseGPU("nonexistent")
+
+	rt.ReleaseGPU("pod-a")
+
+	if gpus := rt.AssignedGPUs("pod-a"); gpus != nil {
+		t.Errorf("expected GPU released, got %v", gpus)
+	}
+
+	// CPU/memory allocation for the same name must be untouched.
+	got, ok := rt.AllocatedBy("pod-a")
+	if !ok {
+		t.Fatal("expected pod-a CPU/memory allocation to remain after ReleaseGPU")
+	}
+	if got.CPUMillis != 500 || got.MemoryMB != 1000 {
+		t.Errorf("expected CPU/memory allocation untouched, got %+v", got)
+	}
+
+	// The device slot is available again.
+	if err := rt.Allocate("pod-b", manifest.ResourceList{CPUMillis: 100, MemoryMB: 100, GPUCount: 1}); err != nil {
+		t.Fatalf("expected freed device slot to be allocatable, got error: %v", err)
+	}
+}
 
 func TestGPUCountBackwardsCompatWithGPUMemory(t *testing.T) {
 	// GPUMemoryMB without GPUCount should still get 1 device slot (backwards compat).
