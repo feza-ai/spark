@@ -57,6 +57,8 @@ func main() {
 	failedPodTTL := flag.Duration("failed-pod-ttl", 24*time.Hour, "TTL after which Failed pods are reaped (0 disables)")
 	orphanReapTTL := flag.Duration("orphan-reap-ttl", time.Hour, "TTL after which terminal-state orphan podman pods are reaped (0 disables)")
 	imagePruneInterval := flag.Duration("image-prune-interval", 24*time.Hour, "interval between 'podman image prune -f' runs (0 disables)")
+	hostLoadSampleInterval := flag.Duration("host-load-sample-interval", 15*time.Second, "interval between /proc/loadavg samples used for utilization-aware CPU admission (issue #76)")
+	cpuOvercommitMarginMillis := flag.Int("cpu-overcommit-margin-millis", 1000, "CPU millicores subtracted from the live headroom estimate before utilization-aware admission (issue #76) will admit a pod over the accounted ceiling; covers the trailing load average's lag")
 	flag.Parse()
 
 	reserveCores, err := scheduler.ParseCoreRange(*systemReserveCoresStr, runtime.NumCPU())
@@ -154,6 +156,30 @@ func main() {
 		}
 	}
 
+	// Persist every event as it's appended (both UpdateStatus and AddEvent
+	// fire this), not just the last one at status-change time. Before this,
+	// AddEvent-sourced events (PendingWatchdog, lost, container-restarted,
+	// ...) were never written to SQLite and vanished on the next restart --
+	// the admission-failure diagnostic gap from issue #76.
+	store.OnEvent = func(name string, event state.PodEvent) {
+		// Ensure the pod row exists before saving its event: events.pod_name
+		// has a foreign key against pods(name), and not every ingestion path
+		// eagerly persists a pod to SQLite before its first status change
+		// (the NATS apply handler notably doesn't, unlike the HTTP and
+		// filesystem-watch paths). Without this, a pod's very first event
+		// would fail the FK constraint and be silently dropped. SavePod is a
+		// cheap idempotent upsert, so this redundant call is harmless when
+		// the row already exists.
+		if podRec, ok := store.Get(name); ok {
+			if err := sqlStore.SavePod(&podRec); err != nil {
+				slog.Error("failed to persist pod state before event", "pod", name, "error", err)
+			}
+		}
+		if err := sqlStore.SaveEvent(name, event); err != nil {
+			slog.Error("failed to persist event", "pod", name, "type", event.Type, "error", err)
+		}
+	}
+
 	// 5. Create resource tracker and scheduler.
 	gpuMemMB := gpuInfo.MemoryTotalMB
 
@@ -174,6 +200,13 @@ func main() {
 	}
 	tracker := scheduler.NewResourceTracker(total, reserve, gpuInfo.DeviceIDs, *gpuMax)
 	sched := scheduler.NewScheduler(tracker)
+
+	// Utilization-aware CPU admission (issue #76): consult live host load,
+	// not just accounting, before letting a pod stay Pending on a phantom
+	// CPU ceiling. Memory/GPU accounting is untouched -- see
+	// docs/adr/013-utilization-aware-admission.md.
+	hostLoad := newHostLoadAdapter(sysInfo.CPUMillis, *cpuOvercommitMarginMillis)
+	sched.SetHostLoad(hostLoad)
 
 	// Rehydrate per-pod core assignments so recovered pods keep the same
 	// cpuset across Spark restarts. Must run before any Allocate to avoid
@@ -220,16 +253,12 @@ func main() {
 		if err := eventPub.Publish(podName, status, message); err != nil {
 			slog.Error("failed to publish lifecycle event", "pod", podName, "status", status, "error", err)
 		}
-		// Persist state change to SQLite.
+		// Persist pod state to SQLite. The status-change event itself is
+		// persisted separately via store.OnEvent (wired above), which
+		// fires for every appended event rather than just the last one.
 		if podRec, ok := store.Get(podName); ok {
 			if err := sqlStore.SavePod(&podRec); err != nil {
 				slog.Error("failed to persist pod state", "pod", podName, "error", err)
-			}
-			if len(podRec.Events) > 0 {
-				lastEvent := podRec.Events[len(podRec.Events)-1]
-				if err := sqlStore.SaveEvent(podName, lastEvent); err != nil {
-					slog.Error("failed to persist event", "pod", podName, "error", err)
-				}
 			}
 		}
 	})
@@ -271,6 +300,11 @@ func main() {
 
 	// 12a. Create metrics collector.
 	metricsCollector := metrics.NewCollector(store, tracker, sched)
+
+	// 12a-1. Start host load sampling: feeds both the utilization-aware
+	// admission path (hostLoad, wired above) and the spark_host_loadavg
+	// metric (issue #76).
+	runHostLoadSampling(ctx, *hostLoadSampleInterval, hostLoad, metricsCollector)
 
 	// 12b. Start housekeeper (TTL pod reap, orphan reap, image prune).
 	hk, hkCounters := housekeeper.New(store, exec, housekeeper.Config{
