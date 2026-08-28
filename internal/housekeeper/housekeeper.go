@@ -2,7 +2,7 @@
 // orphaned podman containers, and unused images. It runs as a single
 // background goroutine alongside the reconciler.
 //
-// The housekeeper has three independent responsibilities:
+// The housekeeper has four independent responsibilities:
 //
 //  1. TTL-based pod reaping. Pods that have been in the Completed or
 //     Failed state for longer than their configured TTL are removed
@@ -19,7 +19,20 @@
 //  3. Image pruning. Periodically runs `podman image prune -f` to free
 //     space taken by dangling images.
 //
-// Each cleanup type is disabled by setting its TTL/interval to zero.
+//  4. GPU device-slot reconciliation. Releases any GPU device-slot
+//     assignment held by a pod name with no corresponding Spark store
+//     record. A slot is reserved the moment a pod is scheduled, before
+//     its container exists, and normally released through the
+//     reconciler's exit paths — but a handler that drops a pod's store
+//     record without also releasing the scheduler's reservation (e.g. a
+//     delete request that errors right after the podman-side removal
+//     already succeeded) can leave the ledger holding a name nothing
+//     references any more (issue #81). This check only ever clears a GPU
+//     assignment, never CPU/memory/cores, so it cannot disturb
+//     accounting for a different, legitimately-live pod.
+//
+// Each cleanup type is disabled by setting its TTL/interval to zero (GPU
+// reconciliation runs whenever a ledger is wired in via SetGPULedger).
 package housekeeper
 
 import (
@@ -54,6 +67,19 @@ type reaper interface {
 	PruneImages(ctx context.Context) (int, error)
 }
 
+// gpuLedger is the subset of *scheduler.ResourceTracker the housekeeper
+// needs to reconcile GPU device-slot accounting against live pod state
+// (issue #81). Defined locally, like store and reaper above, so tests
+// stay independent of the scheduler package.
+type gpuLedger interface {
+	// GPUHolders returns pod name -> assigned device IDs for every
+	// currently-held GPU slot.
+	GPUHolders() map[string][]int
+	// ReleaseGPU releases only the GPU device-slot assignment for a pod
+	// name, leaving any CPU/memory/core allocation untouched.
+	ReleaseGPU(name string)
+}
+
 // Config controls the housekeeping intervals and TTLs. A zero value for
 // any TTL or interval disables that cleanup. Interval defaults to one
 // minute when zero.
@@ -83,11 +109,12 @@ type Config struct {
 // Counters collects monotonic counters and the last-run timestamp for
 // /metrics. All accessors are safe for concurrent reads.
 type Counters struct {
-	ttlCompleted    atomic.Int64
-	ttlFailed       atomic.Int64
-	orphan          atomic.Int64
-	imagesPruned    atomic.Int64
-	lastRunUnixSecs atomic.Int64
+	ttlCompleted      atomic.Int64
+	ttlFailed         atomic.Int64
+	orphan            atomic.Int64
+	imagesPruned      atomic.Int64
+	gpuSlotsReclaimed atomic.Int64
+	lastRunUnixSecs   atomic.Int64
 }
 
 // PodsReaped returns the count of pods reaped for the given reason
@@ -109,6 +136,10 @@ func (c *Counters) PodsReaped(reason string) int64 {
 // ImagesPruned returns the cumulative number of images reclaimed.
 func (c *Counters) ImagesPruned() int64 { return c.imagesPruned.Load() }
 
+// GPUSlotsReclaimed returns the cumulative number of GPU device slots
+// released because their holder had no corresponding live pod record.
+func (c *Counters) GPUSlotsReclaimed() int64 { return c.gpuSlotsReclaimed.Load() }
+
 // LastRunSeconds returns the wall-clock unix seconds at which the last
 // housekeeping pass completed. Zero if it has not yet run.
 func (c *Counters) LastRunSeconds() int64 { return c.lastRunUnixSecs.Load() }
@@ -119,6 +150,11 @@ type Housekeeper struct {
 	executor reaper
 	cfg      Config
 	counters *Counters
+
+	// gpu is the scheduler's resource tracker, wired in via SetGPULedger.
+	// Nil disables GPU device-slot reconciliation (e.g. hosts with no GPU,
+	// or tests that don't need it).
+	gpu gpuLedger
 
 	// nowFunc returns the current time. Tests inject a fake clock.
 	nowFunc func() time.Time
@@ -152,6 +188,12 @@ func New(s store, e reaper, cfg Config) (*Housekeeper, *Counters) {
 // SetClock overrides the time source for tests.
 func (h *Housekeeper) SetClock(f func() time.Time) { h.nowFunc = f }
 
+// SetGPULedger wires the scheduler's resource tracker into the
+// housekeeper so RunOnce reconciles GPU device-slot accounting against
+// live pod state (issue #81). Optional: a housekeeper with no ledger set
+// simply skips that check.
+func (h *Housekeeper) SetGPULedger(l gpuLedger) { h.gpu = l }
+
 // Run blocks running the housekeeping loop until ctx is cancelled.
 func (h *Housekeeper) Run(ctx context.Context) {
 	ticker := time.NewTicker(h.cfg.Interval)
@@ -172,6 +214,7 @@ func (h *Housekeeper) Run(ctx context.Context) {
 func (h *Housekeeper) RunOnce(ctx context.Context) {
 	h.reapTTL(ctx)
 	h.reapOrphans(ctx)
+	h.reconcileGPUSlots()
 	h.maybePruneImages(ctx)
 	h.counters.lastRunUnixSecs.Store(h.nowFunc().Unix())
 }
@@ -280,6 +323,37 @@ func (h *Housekeeper) reapOrphans(ctx context.Context) {
 		if _, still := currentOrphans[name]; !still {
 			delete(h.orphanFirstSeen, name)
 		}
+	}
+}
+
+// reconcileGPUSlots releases GPU device-slot reservations held by pod
+// names with no corresponding Spark store record at all. It is
+// deliberately narrower than a full scheduler.RemovePod: a name that
+// still has a store record -- even one whose GPU request has since
+// changed -- is left alone here, since the pod's own lifecycle (or the
+// scheduler's own Allocate self-heal) is the correct place to reconcile
+// that. This pass exists for the case nothing else can reach: a slot
+// whose name matches no live pod at all (issue #81).
+func (h *Housekeeper) reconcileGPUSlots() {
+	if h.gpu == nil {
+		return
+	}
+	holders := h.gpu.GPUHolders()
+	if len(holders) == 0 {
+		return
+	}
+	known := make(map[string]struct{})
+	for _, rec := range h.store.List("") {
+		known[rec.Spec.Name] = struct{}{}
+	}
+	for name, devices := range holders {
+		if _, ok := known[name]; ok {
+			continue
+		}
+		h.gpu.ReleaseGPU(name)
+		h.counters.gpuSlotsReclaimed.Add(int64(len(devices)))
+		slog.Warn("housekeeper reclaimed leaked GPU device slot",
+			"pod", name, "devices", devices)
 	}
 }
 
