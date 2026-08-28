@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.17.0](https://github.com/feza-ai/spark/compare/v1.16.2...v1.17.0) (2026-08-28)
+
+
+### Features
+
+* **housekeeper:** reconcile GPU device slots against live pod state ([9538128](https://github.com/feza-ai/spark/commit/95381281b630f9c1bc1179ddb72b78896af7903c))
+* **metrics:** expose spark_gpu_slots_reclaimed_total ([c2557ab](https://github.com/feza-ai/spark/commit/c2557ab60969040736dd9357fb80c3475a8ea261))
+
+
+### Bug Fixes
+
+* **api:** confirm actual pod state before skipping resource release on delete ([93948e7](https://github.com/feza-ai/spark/commit/93948e7ef5c33740fca9147f121cd936386b65e8))
+* **bus:** apply the same confirm-before-give-up delete fix as the HTTP path ([b1ca95d](https://github.com/feza-ai/spark/commit/b1ca95d86b93b5cea13ce15af417f33da9e2ee51))
+* **executor:** attach a GPU device when only Requests specify one ([6e686cb](https://github.com/feza-ai/spark/commit/6e686cb7533665d50d1820c1b748919bdf08abec))
+* **reconciler:** wire the scheduler's GPU device assignment into CreatePod ([f8f16b0](https://github.com/feza-ai/spark/commit/f8f16b044eec1164d62bf0c954a6163a74a08f22))
+* **scheduler:** release stale GPU device slot when a re-Allocate drops the GPU request ([6529a9e](https://github.com/feza-ai/spark/commit/6529a9e7d975604a566d82e37eb3c0fb9058b404))
+
 ## [1.16.2](https://github.com/feza-ai/spark/compare/v1.16.1...v1.16.2) (2026-07-10)
 
 
