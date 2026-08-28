@@ -98,6 +98,39 @@ func TestBuildRunArgs_GPUFlag(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_GPUFlag_RequestsOnly(t *testing.T) {
+	// issue #81: a manifest that sets only resources.requests.nvidia.com/gpu
+	// (no limits block at all) is exactly what the scheduler admits and
+	// accounts against (TotalRequests sums Requests, not Limits). The
+	// container must still receive a device in that case -- previously it
+	// never did, because this gate checked Limits exclusively.
+	tests := []struct {
+		name     string
+		requests manifest.ResourceList
+		wantGPU  bool
+	}{
+		{"no GPU", manifest.ResourceList{}, false},
+		{"requests-only GPU count", manifest.ResourceList{GPUCount: 1}, true},
+		{"requests-only GPU memory", manifest.ResourceList{GPUMemoryMB: 4096}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := manifest.ContainerSpec{
+				Name:  "app",
+				Image: "myimage:latest",
+				Resources: manifest.ResourceRequirements{
+					Requests: tt.requests,
+				},
+			}
+			args := buildRunArgs("mypod", container, nil, "spark-net", true, nil)
+			hasGPU := slices.Contains(args, "nvidia.com/gpu=all")
+			if hasGPU != tt.wantGPU {
+				t.Errorf("GPU flag present=%v, want %v; args=%v", hasGPU, tt.wantGPU, args)
+			}
+		})
+	}
+}
+
 func TestFormatDeviceIDs(t *testing.T) {
 	tests := []struct {
 		name string
