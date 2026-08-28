@@ -317,6 +317,91 @@ func TestSchedule_AntiThrashStarvesUnrelatedRequester(t *testing.T) {
 	}
 }
 
+// TestSchedule_PreemptionFairness_Issue79ExactScenario walks the exact
+// issue #79 shape end to end: a "high" priority pod (priorityClassName:
+// high) repeatedly preempts a pool of 4 "normal" priority pods (more than
+// the anti-thrash cap of 3) that restart immediately each time, exactly as
+// ADR 005 describes it and as the reconciler's Schedule/Preempt/AddPod loop
+// drives it in production. It asserts two things T5.2 must both hold:
+//  1. The SAME pod retrying against the SAME victims a 5th time is still
+//     correctly capped (ADR 005's flip-flop protection is not weakened),
+//     and the Pending reason names the anti-thrash cap explicitly instead
+//     of a generic "no preemption candidates" or "evicting N candidates".
+//  2. A DIFFERENT, brand-new high-priority pod queued moments later is not
+//     starved by the first pod's exhausted budget against the same victims
+//     -- issue #79's reported defect.
+func TestSchedule_PreemptionFairness_Issue79ExactScenario(t *testing.T) {
+	tracker := newTracker(4000, 8192, 16000)
+	s := NewScheduler(tracker)
+
+	now := time.Now()
+	s.now = func() time.Time { return now }
+
+	const highPriority = 100    // priorityClassName: high
+	const normalPriority = 1000 // priorityClassName: normal (default)
+
+	victims := []string{"ci-runner-a", "ci-runner-b", "ci-runner-c", "ci-runner-d"}
+	addAndAllocateVictims := func(startOffset time.Duration) {
+		for i, name := range victims {
+			s.AddPod(PodInfo{
+				Name:      name,
+				Priority:  normalPriority,
+				Resources: manifest.ResourceList{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 4000},
+				StartTime: now.Add(startOffset + time.Duration(i)*time.Second),
+			})
+			if err := tracker.Allocate(name, manifest.ResourceList{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 4000}); err != nil {
+				t.Fatalf("allocate %s: %v", name, err)
+			}
+		}
+	}
+	addAndAllocateVictims(-10 * time.Minute)
+
+	highSpec := podSpec("ltx-render", highPriority, 4000, 8192, 16000)
+
+	// This same render job legitimately preempts the same 4-pod pool 4
+	// times in a row -- the "max 3 preemptions per pod" ceiling from the
+	// issue's ltx-render.yaml comment. The 4th preemption tips each
+	// victim's count to "more than 3".
+	for round := 0; round < 4; round++ {
+		result := s.Schedule(highSpec)
+		if result.Action != Preempting {
+			t.Fatalf("round %d: expected Preempting, got %d reason=%q", round, result.Action, result.Reason)
+		}
+		if len(result.Victims) != 4 {
+			t.Fatalf("round %d: expected all 4 victims, got %v", round, result.Victims)
+		}
+		for _, v := range result.Victims {
+			s.RemovePod(v)
+		}
+		// The CI runners restart immediately, as issue #79 describes
+		// (all resident pods were genuinely busy and kept getting
+		// rescheduled).
+		addAndAllocateVictims(time.Duration(round) * time.Second)
+	}
+
+	// 5th attempt by the SAME render job: correctly still capped -- this
+	// is the flip-flop scenario ADR 005's anti-thrash cap exists for, not
+	// the bug. The event message must name the cap, not just say
+	// "no preemption candidates" as if nothing were available.
+	result := s.Schedule(highSpec)
+	if result.Action != Pending {
+		t.Fatalf("expected the 5th same-pod retry to stay capped, got %d", result.Action)
+	}
+	if !strings.Contains(result.Reason, "anti-thrash cap") {
+		t.Fatalf("expected Reason to name the anti-thrash cap, got %q", result.Reason)
+	}
+
+	// A DIFFERENT, brand-new high-priority pod queued moments later (a
+	// second, unrelated render job) must schedule despite ltx-render's
+	// exhausted budget against the same victims -- issue #79's actual
+	// starvation defect.
+	otherHighSpec := podSpec("ltx-render-2", highPriority, 4000, 8192, 16000)
+	result = s.Schedule(otherHighSpec)
+	if result.Action != Preempting {
+		t.Fatalf("expected an unrelated high-priority pod to preempt despite ltx-render's exhausted budget, got %d reason=%q", result.Action, result.Reason)
+	}
+}
+
 func TestRemovePod_ReleasesResources(t *testing.T) {
 	tracker := newTracker(2000, 4096, 8000)
 	s := NewScheduler(tracker)
