@@ -755,3 +755,62 @@ metadata:
 		t.Fatal("expected error for missing kind")
 	}
 }
+
+// TestParse_ValidJSONPod covers issue #74: a JSON-encoded Pod manifest (the
+// body shape produced by `kubectl ... -o json` and by JSON API clients)
+// must parse the same way an equivalent YAML document does, rather than
+// silently producing zero pods.
+func TestParse_ValidJSONPod(t *testing.T) {
+	jsonDoc := `{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "json-pod",
+    "labels": {"app": "training"}
+  },
+  "spec": {
+    "restartPolicy": "Never",
+    "containers": [
+      {
+        "name": "trainer",
+        "image": "nvidia/cuda:12.0",
+        "resources": {
+          "requests": {"cpu": "1", "memory": "1Gi"}
+        }
+      }
+    ]
+  }
+}`
+	result, err := Parse([]byte(jsonDoc), DefaultPriorityClasses())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Pods) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(result.Pods))
+	}
+	pod := result.Pods[0]
+	if pod.Name != "json-pod" {
+		t.Errorf("name = %q, want %q", pod.Name, "json-pod")
+	}
+	if pod.SourceKind != "Pod" {
+		t.Errorf("sourceKind = %q, want %q", pod.SourceKind, "Pod")
+	}
+	if pod.Labels["app"] != "training" {
+		t.Errorf("labels[app] = %q, want %q", pod.Labels["app"], "training")
+	}
+	if len(pod.Containers) != 1 || pod.Containers[0].Name != "trainer" {
+		t.Fatalf("unexpected containers: %+v", pod.Containers)
+	}
+}
+
+// TestParse_EmptyResultDocumentIsError covers issue #74: an empty JSON
+// document ("{}") used to parse "successfully" into a ParseResult with no
+// pods and no cron jobs, which the HTTP handler reported back as
+// 201 {"pods":null} -- indistinguishable from a real request that legitimately
+// created nothing. An empty document is a caller mistake and must error.
+func TestParse_EmptyResultDocumentIsError(t *testing.T) {
+	_, err := Parse([]byte(`{}`), DefaultPriorityClasses())
+	if err == nil {
+		t.Fatal("expected error for empty JSON document, got nil")
+	}
+}

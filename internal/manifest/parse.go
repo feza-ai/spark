@@ -1,6 +1,8 @@
 package manifest
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -12,10 +14,23 @@ type ParseResult struct {
 	CronJobs []CronJobSpec
 }
 
-// Parse parses K8s-compatible YAML manifest bytes and returns pod specs and cron job specs.
-// Supports kinds: Pod, Job. Other kinds (Deployment, StatefulSet, CronJob) return
-// an unsupported error for now; they will be added by kind-specific parsers.
+// Parse parses K8s-compatible manifest bytes and returns pod specs and cron
+// job specs. Accepts either YAML (the historical format, including
+// "---"-separated multi-document streams) or JSON. Supports kinds: Pod,
+// Job. Other kinds (Deployment, StatefulSet, CronJob) return an unsupported
+// error for now; they will be added by kind-specific parsers.
+//
+// JSON is detected up front rather than fed through the YAML parser: the
+// YAML parser is line-based and expects one "key: value" pair per line, so
+// pretty-printed JSON (opening brace on its own line, nested braces) either
+// silently produced an empty document or mis-parsed -- a POST with a JSON
+// body returned 201 {"pods":null} and created nothing (issue #74).
 func Parse(data []byte, priorityClasses map[string]int) (ParseResult, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		return parseJSONManifest(trimmed, priorityClasses)
+	}
+
 	docs := splitDocuments(data)
 
 	var result ParseResult
@@ -28,45 +43,89 @@ func Parse(data []byte, priorityClasses map[string]int) (ParseResult, error) {
 			continue
 		}
 
-		kind := getString(root, "kind")
-		switch kind {
-		case "Pod":
-			pod, err := parsePod(root, priorityClasses)
-			if err != nil {
-				return ParseResult{}, fmt.Errorf("parsing Pod: %w", err)
-			}
-			result.Pods = append(result.Pods, pod)
-		case "Job":
-			pods, err := parseJob(root, priorityClasses)
-			if err != nil {
-				return ParseResult{}, fmt.Errorf("parsing Job: %w", err)
-			}
-			result.Pods = append(result.Pods, pods...)
-		case "Deployment":
-			pods, err := parseDeployment(root, priorityClasses)
-			if err != nil {
-				return ParseResult{}, fmt.Errorf("parsing Deployment: %w", err)
-			}
-			result.Pods = append(result.Pods, pods...)
-		case "StatefulSet":
-			pods, err := parseStatefulSet(root, priorityClasses)
-			if err != nil {
-				return ParseResult{}, fmt.Errorf("parsing StatefulSet: %w", err)
-			}
-			result.Pods = append(result.Pods, pods...)
-		case "CronJob":
-			cj, err := parseCronJob(root, priorityClasses)
-			if err != nil {
-				return ParseResult{}, fmt.Errorf("parsing CronJob: %w", err)
-			}
-			result.CronJobs = append(result.CronJobs, cj)
-		case "":
-			return ParseResult{}, fmt.Errorf("missing kind field")
-		default:
-			slog.Warn("ignoring unknown kind", "kind", kind)
+		if err := parseDocument(root, priorityClasses, &result); err != nil {
+			return ParseResult{}, err
 		}
 	}
 	return result, nil
+}
+
+// parseJSONManifest parses a single JSON document (object) or an array of
+// JSON documents into a ParseResult. Unlike the YAML path, an empty or
+// kind-less document is always an error: JSON bodies arrive as a single
+// explicit request, so a document that resolves to nothing is a caller
+// mistake, not incidental whitespace between "---" separators.
+func parseJSONManifest(data []byte, priorityClasses map[string]int) (ParseResult, error) {
+	var docs []map[string]interface{}
+	if data[0] == '[' {
+		if err := json.Unmarshal(data, &docs); err != nil {
+			return ParseResult{}, fmt.Errorf("parsing JSON: %w", err)
+		}
+	} else {
+		var doc map[string]interface{}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return ParseResult{}, fmt.Errorf("parsing JSON: %w", err)
+		}
+		docs = []map[string]interface{}{doc}
+	}
+
+	var result ParseResult
+	for _, root := range docs {
+		if len(root) == 0 {
+			return ParseResult{}, fmt.Errorf("empty document")
+		}
+		if err := parseDocument(root, priorityClasses, &result); err != nil {
+			return ParseResult{}, err
+		}
+	}
+
+	if len(result.Pods) == 0 && len(result.CronJobs) == 0 {
+		return ParseResult{}, fmt.Errorf("empty document: no pods or cron jobs produced")
+	}
+	return result, nil
+}
+
+// parseDocument dispatches a single parsed document (from either the YAML
+// or JSON path) by its "kind" field, appending to result.
+func parseDocument(root map[string]interface{}, priorityClasses map[string]int, result *ParseResult) error {
+	kind := getString(root, "kind")
+	switch kind {
+	case "Pod":
+		pod, err := parsePod(root, priorityClasses)
+		if err != nil {
+			return fmt.Errorf("parsing Pod: %w", err)
+		}
+		result.Pods = append(result.Pods, pod)
+	case "Job":
+		pods, err := parseJob(root, priorityClasses)
+		if err != nil {
+			return fmt.Errorf("parsing Job: %w", err)
+		}
+		result.Pods = append(result.Pods, pods...)
+	case "Deployment":
+		pods, err := parseDeployment(root, priorityClasses)
+		if err != nil {
+			return fmt.Errorf("parsing Deployment: %w", err)
+		}
+		result.Pods = append(result.Pods, pods...)
+	case "StatefulSet":
+		pods, err := parseStatefulSet(root, priorityClasses)
+		if err != nil {
+			return fmt.Errorf("parsing StatefulSet: %w", err)
+		}
+		result.Pods = append(result.Pods, pods...)
+	case "CronJob":
+		cj, err := parseCronJob(root, priorityClasses)
+		if err != nil {
+			return fmt.Errorf("parsing CronJob: %w", err)
+		}
+		result.CronJobs = append(result.CronJobs, cj)
+	case "":
+		return fmt.Errorf("missing kind field")
+	default:
+		slog.Warn("ignoring unknown kind", "kind", kind)
+	}
+	return nil
 }
 
 // splitDocuments splits multi-document YAML on "---" separators.
