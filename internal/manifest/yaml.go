@@ -93,7 +93,22 @@ func parseYAMLLines(lines []string, start, baseIndent int, m map[string]interfac
 			nextTrimmed := strings.TrimSpace(nextLine)
 			nextIndent := countIndent(nextLine)
 
-			if nextIndent <= baseIndent {
+			if nextIndent == baseIndent && strings.HasPrefix(nextTrimmed, "- ") {
+				// Block sequence markers at the SAME indentation as their
+				// parent key -- e.g. `containers:` immediately followed by
+				// `- name: ...` with no extra indent -- are valid, common
+				// YAML/K8s style (the "-" does not need to be nested deeper
+				// than its key). The nextIndent <= baseIndent case below
+				// previously caught this too, treating it as "key has no
+				// value" and silently discarding the whole list -- every
+				// container in the pod, in the observed case (issue #77).
+				list, newIdx, err := parseYAMLList(lines, nextIdx, nextIndent)
+				if err != nil {
+					return 0, err
+				}
+				m[key] = list
+				i = newIdx
+			} else if nextIndent <= baseIndent {
 				m[key] = ""
 				i++
 			} else if strings.HasPrefix(nextTrimmed, "- ") {

@@ -188,3 +188,65 @@ func TestParseYAML_BlockListRegression(t *testing.T) {
 		t.Errorf("items = %v, want %v", got["items"], want)
 	}
 }
+
+// TestParseYAML_SameIndentBlockList covers a block sequence whose "-"
+// markers sit at the SAME indentation as their parent key, rather than
+// nested one level deeper (the style TestParseYAML_BlockListRegression
+// covers). Both are valid YAML; K8s manifests commonly use the same-indent
+// style for `containers:`. Before the fix, a key whose next line was at
+// nextIndent == baseIndent was always treated as "key has no value",
+// silently dropping the entire list (issue #77).
+func TestParseYAML_SameIndentBlockList(t *testing.T) {
+	doc := `items:
+- foo
+- bar
+- baz
+sibling: ok
+`
+	got, err := ParseYAML([]byte(doc))
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	want := []interface{}{"foo", "bar", "baz"}
+	if !reflect.DeepEqual(got["items"], want) {
+		t.Errorf("items = %v, want %v", got["items"], want)
+	}
+	if got["sibling"] != "ok" {
+		t.Errorf("sibling = %v, want %q (parser must resume at the correct line after the list)", got["sibling"], "ok")
+	}
+}
+
+// TestParseYAML_SameIndentBlockList_Nested covers the exact shape from
+// issue #77: a nested map key ("spec") whose own child key ("containers")
+// has a same-indent block sequence, with map-valued items (not bare
+// scalars) so the item's own sub-fields must also parse correctly.
+func TestParseYAML_SameIndentBlockList_Nested(t *testing.T) {
+	doc := `spec:
+  restartPolicy: Always
+  containers:
+  - name: runner
+    image: alpine:latest
+`
+	got, err := ParseYAML([]byte(doc))
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	spec, ok := got["spec"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("spec = %v (%T), want map[string]interface{}", got["spec"], got["spec"])
+	}
+	if spec["restartPolicy"] != "Always" {
+		t.Errorf("spec.restartPolicy = %v, want %q", spec["restartPolicy"], "Always")
+	}
+	containers, ok := spec["containers"].([]interface{})
+	if !ok || len(containers) != 1 {
+		t.Fatalf("spec.containers = %v (%T), want a 1-element list", spec["containers"], spec["containers"])
+	}
+	item, ok := containers[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("containers[0] = %v (%T), want map[string]interface{}", containers[0], containers[0])
+	}
+	if item["name"] != "runner" || item["image"] != "alpine:latest" {
+		t.Errorf("containers[0] = %v, want name=runner image=alpine:latest", item)
+	}
+}
