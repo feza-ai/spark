@@ -1,5 +1,20 @@
 # Spark Development Log
 
+## 2026-08-27: Issue #88 -- DELETE on a GPU-attached pod hung host-wide for ~7 minutes, self-resolved
+
+**Type:** finding (unresolved -- incident writeup, root cause not yet found)
+**Tags:** executor, gpu, podman, issue-88, incident
+
+**What happened:** immediately after confirming issue #85's fix live (a throwaway GPU-attached pod, `verify-85-fix`, started correctly with the device attached), `DELETE /api/v1/pods/verify-85-fix` hung -- the HTTP request itself returned nothing for 15+ seconds, retried, still nothing. `journalctl -u spark` showed `podman pod stop --time 10 verify-85-fix` logged three times (21:37:04, 21:37:23, 21:37:38 PDT), i.e. Spark retrying a stop that was not completing. The rest of the API (`/healthz`, `/api/v1/resources`) kept responding throughout -- the hang was scoped to this pod's stop/delete path, not the whole process.
+
+**Investigation:** `ps -eo pid,ppid,stat,etime,cmd` on the DGX found a zombie process, `2525724 2476433 Zl <defunct> [podman]`, parented directly by Spark's own main PID (`2476433`, confirmed via `systemctl status spark`) -- a `podman` child had already exited but was never reaped by Spark's Go code. Ruled out an expired sudo timestamp (`sudo -n true` confirmed cached). `sudo podman --version` returned instantly, but a completely unfiltered `sudo podman pod ps` (no pod name, nothing scoped to this incident) also hung host-wide (`timeout 8 sudo podman pod ps` -> exit 124), proving whatever lock this was stuck on blocks pod-enumeration operations generally, not just this one pod's inspection path.
+
+**Resolution:** self-resolved without any intervention. Re-checked ~7 minutes later: `GET /api/v1/pods/verify-85-fix` showed `status: "completed"`, `finishedAt: 21:44:22` -- and `spark.service` had been running continuously the whole time (`Main PID 2476433` unchanged, no restart). A fresh unfiltered `sudo podman pod ps` returned in under a second. The GPU slot was fully released (`/api/v1/resources` showed `gpuMemoryMB` allocated back to 0). So: a real, reproducible ~7-minute stall that also blocks other podman pod-enumeration commands host-wide during its window, but not a permanent wedge.
+
+**Root cause:** not yet found. Read `internal/executor/podman.go`'s `StopPod`, `PodStatus`, `ContainerStatuses`, `parseContainerPS`, `derivePodStatus`, `RemovePod` (lines 381-517) looking for an obvious pipe/goroutine leak in the `exec.CommandContext(...).CombinedOutput()` calls -- found nothing conclusive; `CombinedOutput()` manages its own pipes and calls `Wait()` internally, so a genuinely wedged podman invocation (blocked inside podman's own locking, e.g. a netavark/CDI/storage-level lock with no timeout) is the more likely explanation than a bug in Spark's own process-management code. Tracked as `docs/plan.md` T2.9 and github.com/feza-ai/spark/issues/88; suggested next steps (bound `StopPod`/`RemovePod`'s own context with a timeout separate from the caller's, reproduce with a non-GPU pod on the same timing to isolate whether CDI/GPU teardown is the trigger) are in the issue.
+
+**Impact:** none observed beyond the ~7-minute window -- no other workload's DELETE/apply calls were confirmed stuck during the incident, but this was not exhaustively checked at the time (the API's other endpoints stayed responsive, which was the check performed).
+
 ## 2026-08-27: Issue #85 GPU pod + command override -> invalid reference format
 
 **Type:** finding

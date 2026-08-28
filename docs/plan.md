@@ -1,6 +1,6 @@
 # Spark: Triage and Resolve Unplanned, Untriaged GitHub Issues
 
-## Status: Active. E1 and E2.T1 in progress (agents dispatched this session). E3-E5 ready to dispatch. E6-E7 are outline epics pending investigation/design.
+## Status: Active. E1 shipped except the live-verify task (T1.6). E2's #85 slice shipped; #73/#77 and the newly discovered #88 remain. E3-E5 ready to dispatch. E6-E7 are outline epics pending investigation/design.
 
 ## Context
 
@@ -158,11 +158,11 @@ fidelity: executable
 
 - [x] T1.1 Utilization-aware CPU admission implemented (`Scheduler.HostLoadSource`, `CanFitIgnoringCPU`, `AllocateOverCommittingCPU`), `--cpu-overcommit-margin-millis`/`--host-load-sample-interval` flags, `requested` field on `GET /api/v1/pods/{name}`, `spark_cpu_overcommit_admissions_total` metric, `SavePod` upsert fix (was silently wiping event history via `INSERT OR REPLACE` cascade-delete). Owner: spark-fix-76  Est: -  verifies: [UC-112]  (completed 2026 08 28)
 - [x] T1.2 Judgment call (load window / safety margin) reviewed and confirmed; recorded in docs/adr/013-utilization-aware-admission.md. Owner: this session  Est: -  verifies: [UC-112]  (completed 2026 08 28)
-- [ ] T1.3 Rebase `fix/76-utilization-aware-overcommit` onto post-#81 main; resolve conflicts in `cmd/spark/main.go`, `docs/devlog.md`, `internal/metrics/collector.go`, `internal/metrics/collector_test.go`, `internal/reconciler/reconciler.go`, `internal/scheduler/resources.go`, `internal/scheduler/resources_test.go` -- both sides' changes must survive; the GPU stale-assignment clear from #81 must end up inside the new shared `allocate(name, req, skipCPUCheck)` helper. Owner: spark-fix-76  Est: 45m  verifies: [UC-112, infrastructure]  acc: [gh pr view 83 reports mergeable=MERGEABLE and go test ./... -race -timeout 120s -count=1 is green on the rebased branch]  kind: agent
-- [ ] T1.4 Re-verify full suite after rebase (build/vet/staticcheck/test), confirm CI green on PR #83, merge (rebase, not squash). Owner: TBD  Est: 15m  verifies: [infrastructure]  acc: [gh pr view 83 --json state shows MERGED]
-- [ ] T1.5 Merge the resulting release-please PR; watch the tag-triggered Release workflow to completion; trigger the DGX auto-upgrade timer; confirm `/healthz` reports the new version. Owner: TBD  Est: 15m  verifies: [infrastructure]  acc: [curl http://192.168.86.250:8080/healthz reports the version tagged by this release]
-- [ ] T1.6 Live verify: with the node CPU-saturated by idle reservations, submit a pod whose request exceeds accounted headroom but fits real load; confirm it schedules via the overcommit path and `spark_cpu_overcommit_admissions_total` increments. Owner: TBD  Est: 20m  verifies: [UC-112]  acc: [a pod submitted under phantom CPU saturation reaches status=running and CPUOvercommitAdmissions()>0 is observable via /metrics]
-- [ ] T1.7 Update docs/roadmap.md (move E1 from In flight to Shipped); close issue #76. Owner: TBD  Est: 10m  delivers: [docs/roadmap.md updated, issue #76 closed]
+- [x] T1.3 Rebase `fix/76-utilization-aware-overcommit` onto post-#81 main; resolve conflicts in `cmd/spark/main.go`, `docs/devlog.md`, `internal/metrics/collector.go`, `internal/metrics/collector_test.go`, `internal/reconciler/reconciler.go`, `internal/scheduler/resources.go`, `internal/scheduler/resources_test.go` -- both sides' changes must survive; the GPU stale-assignment clear from #81 must end up inside the new shared `allocate(name, req, skipCPUCheck)` helper. Owner: spark-fix-76  Est: 45m  verifies: [UC-112, infrastructure]  acc: [gh pr view 83 reports mergeable=MERGEABLE and go test ./... -race -timeout 120s -count=1 is green on the rebased branch]  kind: agent  (completed 2026 08 28 -- verified independently by reading the merged `allocate` helper directly)
+- [x] T1.4 Re-verify full suite after rebase (build/vet/staticcheck/test), confirm CI green on PR #83, merge (rebase, not squash). Owner: this session  Est: 15m  verifies: [infrastructure]  acc: [gh pr view 83 --json state shows MERGED]  (completed 2026 08 28 -- PR #83 MERGED)
+- [x] T1.5 Merge the resulting release-please PR; watch the tag-triggered Release workflow to completion; trigger the DGX auto-upgrade timer; confirm `/healthz` reports the new version. Owner: this session  Est: 15m  verifies: [infrastructure]  acc: [curl http://192.168.86.250:8080/healthz reports the version tagged by this release]  (completed 2026 08 28 -- /healthz reports {"status":"ok","version":"1.18.0"})
+- [ ] T1.6 Live verify: with the node CPU-saturated by idle reservations, submit a pod whose request exceeds accounted headroom but fits real load; confirm it schedules via the overcommit path and `spark_cpu_overcommit_admissions_total` increments. Owner: TBD  Est: 20m  verifies: [UC-112]  acc: [a pod submitted under phantom CPU saturation reaches status=running and CPUOvercommitAdmissions()>0 is observable via /metrics]  (not yet performed -- v1.18.0 is deployed but the overcommit bypass itself has not been live-triggered and observed)
+- [x] T1.7 Update docs/roadmap.md (move E1 from In flight to Shipped); close issue #76. Owner: this session  Est: 10m  delivers: [docs/roadmap.md updated, issue #76 closed]  (completed 2026 08 28 -- issue #76 auto-closed by PR #83)
 
 ### E2: Executor command/entrypoint fragility (issues #85, #73, #77)
 
@@ -172,11 +172,11 @@ quotes reaches the container unmangled; #77's silent-drop failure is
 either fixed or root-caused into its own scoped follow-up.
 fidelity: executable
 
-- [ ] T2.1 (issue #85) Rebuild GPU env-injection inline in `buildRunArgs` instead of the `injectGPUDevices` positional-scan post-pass; remove the flag-skip-list class of bug entirely. Owner: spark-fix-85 (already dispatched)  Est: -  verifies: [UC-103]  acc: [a pod requesting nvidia.com/gpu with a multi-token command starts successfully and podman receives an intact image reference]
-  - Note: already in progress as of this plan; do not re-dispatch. Track to PR merge under T2.1a-c below.
-- [ ] T2.1a Review and independently verify #85's PR (build/vet/staticcheck/test, read the diff, confirm live if the agent didn't already). Owner: TBD  Est: 20m  verifies: [UC-103]  acc: [go test ./... -race -timeout 120s -count=1 green on the PR branch, confirmed independently not just via the agent's self-report]
-- [ ] T2.1b Merge PR (rebase), merge the release-please PR, deploy, confirm live on DGX. Owner: TBD  Est: 20m  verifies: [infrastructure]  acc: [curl http://192.168.86.250:8080/healthz reports the new version]
-- [ ] T2.1c Close issue #85. Owner: TBD  Est: 5m  delivers: [issue #85 closed]
+- [x] T2.1 (issue #85) Rebuild GPU env-injection inline in `buildRunArgs` instead of the `injectGPUDevices` positional-scan post-pass; remove the flag-skip-list class of bug entirely. Owner: spark-fix-85  Est: -  verifies: [UC-103]  acc: [a pod requesting nvidia.com/gpu with a multi-token command starts successfully and podman receives an intact image reference]  (completed 2026 08 28)
+- [x] T2.1a Review and independently verify #85's PR (build/vet/staticcheck/test, read the diff, confirm live if the agent didn't already). Owner: this session  Est: 20m  verifies: [UC-103]  acc: [go test ./... -race -timeout 120s -count=1 green on the PR branch, confirmed independently not just via the agent's self-report]  (completed 2026 08 28 -- rebased onto post-#83 main by this session after a docs/roadmap.md conflict, full suite re-run green)
+- [x] T2.1b Merge PR (rebase), merge the release-please PR, deploy, confirm live on DGX. Owner: this session  Est: 20m  verifies: [infrastructure]  acc: [curl http://192.168.86.250:8080/healthz reports the new version]  (completed 2026 08 28 -- PR #86 MERGED, /healthz reports 1.18.0, live repro manifest that previously failed with "invalid reference format" now starts successfully with the GPU device attached)
+- [x] T2.1c Close issue #85. Owner: this session  Est: 5m  delivers: [issue #85 closed]  (completed 2026 08 28 -- auto-closed by PR #86)
+- [ ] T2.9 (issue #88, newly discovered 2026 08 28) `DELETE /api/v1/pods/{name}` on a GPU-attached pod hung for ~7 minutes during T2.1b's live verification -- `podman pod stop` was retried three times, a `podman` child process parented by spark's own PID became a zombie (exited but never reaped), and an unrelated, unfiltered `sudo podman pod ps` also hung host-wide for the same window. Self-resolved without a `spark.service` restart; not yet root-caused. Investigate `StopPod`/`RemovePod`/`StreamPodLogs` in `internal/executor/podman.go` for a wedged-context or lock-contention path with no timeout of its own. Owner: TBD  Est: 60m  verifies: [UC-105]  acc: [a targeted test or repro demonstrates the specific lock/timeout gap, and a fix bounds the stop/delete path's own wait so it cannot block host-wide podman pod-enumeration commands]  lane: agent
 - [ ] T2.2 (issue #73) Reproduce with the exact manifest from the issue (a ~900-char `command[2]` with nested double quotes); trace where the argument is lost between `state.db`'s stored `spec_json` (already confirmed correct) and the actual podman invocation -- likely the same JSON-array `--entrypoint` encoding path #2.1 touches. Write a failing test first. Owner: TBD  Est: 45m  verifies: [UC-103]  acc: [the exact repro command from issue #73 reaches the container as a single intact argv element, verified via a test that execs a real echo/printf and checks output]  blocked-by: [T2.1b]
 - [ ] T2.3 (issue #73) Fix and add regression test using the exact reported script content (nested quotes, ~900 chars). Owner: TBD  Est: 30m  verifies: [UC-103]  acc: [go test ./internal/executor/... -race passes a new test built from the #73 repro manifest]  deps: [T2.2]
 - [ ] T2.4 (issue #77) Investigate: reproduce the "pod completes instantly, zero container startup" sequence with the exact manifest from the issue (2-element `command`+`args`, `restartPolicy: Always`); determine whether it shares root cause with #73/#85 (same buildRunArgs path) or is a distinct intermittent failure (the issue notes the identical manifest shape worked once earlier in the same session, suggesting non-determinism, not a hard parse bug). Owner: TBD  Est: 60m  verifies: [UC-103]  acc: [either a reliable repro is found and asserted in a test, or the investigation produces a written root-cause hypothesis with specific next steps in docs/devlog.md]  blocked-by: [T2.1b]  lane: agent
@@ -385,6 +385,18 @@ No Claude/Anthropic attribution anywhere.
   were made; #79's and #47's design questions are deliberately deferred
   to execution time). `docs/roadmap.md`'s Planned section updated to
   reference this plan.
+- 2026 08 28 (later same day): E1 (#76) fully shipped except T1.6's live
+  overcommit trigger, which remains outstanding -- PR #83 merged, v1.18.0
+  released and confirmed live (`/healthz` -> 1.18.0), issue #76 closed.
+  E2's #85 slice fully shipped -- PR #86 merged (rebased once more, onto
+  post-#83 main, to resolve a docs/roadmap.md-only conflict), same
+  v1.18.0 release, live-verified with the exact repro manifest from the
+  issue. While live-verifying #85, discovered and filed issue #88 (a
+  ~7-minute DELETE hang plus a host-wide `podman pod ps` stall, self
+  resolved, root cause not yet found) -- added as T2.9, blocking nothing
+  else in E2 since #73/#77 do not touch the stop/delete path. Both merged
+  worktrees (`spark-wt-issue76`, `spark-wt-issue85`) and their branches
+  removed.
 
 ## Hand-off Notes
 
