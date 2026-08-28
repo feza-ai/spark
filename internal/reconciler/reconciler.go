@@ -63,10 +63,10 @@ const defaultOrphanGrace = 30 * time.Second
 // NewReconciler creates a reconciler that ticks at the given interval.
 func NewReconciler(store *state.PodStore, sched *scheduler.Scheduler, exec executor.Executor, interval time.Duration) *Reconciler {
 	return &Reconciler{
-		store:           store,
-		scheduler:       sched,
-		executor:        exec,
-		interval:        interval,
+		store:             store,
+		scheduler:         sched,
+		executor:          exec,
+		interval:          interval,
 		probeStates:       make(map[string]*probeState),
 		containerRestarts: make(map[string]map[string]*containerRestartState),
 		podBackoff:        make(map[string]*podRestartBackoff),
@@ -352,6 +352,13 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 		if cores := r.scheduler.AssignedCores(pod.Spec.Name); len(cores) > 0 {
 			r.store.SetAssignedCores(pod.Spec.Name, cores)
 		}
+		// A non-empty Reason on a Scheduled result means utilization-aware
+		// CPU overcommit admitted this pod despite an accounted CPU
+		// shortfall (issue #76). Record it as an event so operators can
+		// see why the pod's presence pushed accounted CPU negative.
+		if result.Reason != "" {
+			r.store.AddEvent(pod.Spec.Name, "CPUOvercommitAdmitted", result.Reason)
+		}
 		r.updateStatus(pod.Spec.Name, state.StatusScheduled, "scheduled by reconciler")
 
 		pod.Spec.CpusetCores = r.scheduler.Tracker().AssignedCores(pod.Spec.Name)
@@ -409,6 +416,9 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 				r.store.SetAssignedCores(pod.Spec.Name, cores)
 			}
 			pod.Spec.GPUDevices = r.scheduler.Tracker().AssignedGPUs(pod.Spec.Name)
+			if retry.Reason != "" {
+				r.store.AddEvent(pod.Spec.Name, "CPUOvercommitAdmitted", retry.Reason)
+			}
 			if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
 				slog.Error("failed to create pod after preemption", "pod", pod.Spec.Name, "err", err)
 				attempts := r.recordStartFailure(pod.Spec.Name, err)
