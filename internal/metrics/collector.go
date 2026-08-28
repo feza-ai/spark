@@ -17,6 +17,7 @@ type SchedulerMetrics interface {
 type HousekeepingMetrics interface {
 	PodsReaped(reason string) int64
 	ImagesPruned() int64
+	GPUSlotsReclaimed() int64
 	LastRunSeconds() int64
 }
 
@@ -180,6 +181,12 @@ func (c *Collector) Collect() []MetricFamily {
 			Help:    "Total images reclaimed by housekeeping",
 			Type:    "counter",
 			Metrics: []Metric{{Value: float64(c.housekeeping.ImagesPruned())}},
+		})
+		families = append(families, MetricFamily{
+			Name:    "spark_gpu_slots_reclaimed_total",
+			Help:    "Total GPU device slots reclaimed by housekeeping from pod names with no live store record",
+			Type:    "counter",
+			Metrics: []Metric{{Value: float64(c.housekeeping.GPUSlotsReclaimed())}},
 		})
 		families = append(families, MetricFamily{
 			Name:    "spark_housekeeping_last_run_seconds",
