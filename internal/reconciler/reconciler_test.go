@@ -506,7 +506,14 @@ func TestCreatePodErrorReverts(t *testing.T) {
 	exec.createErr = errors.New("podman create failed")
 	r := NewReconciler(store, sched, exec, time.Second)
 
-	spec := testPodSpec("fail-create", "Always", 0)
+	// BackoffLimit=3 (not 0): this test is about a single create error
+	// reverting scheduler state to Pending for a later retry, not about
+	// backoffLimit exhaustion -- that's covered by
+	// TestCreatePodFailureTerminalAfterBackoffLimit and
+	// TestCreatePodFailureTerminalAtBackoffLimitZero. With BackoffLimit=0
+	// ("no retries", issue #75) a single failure now correctly goes
+	// terminal instead of reverting to Pending.
+	spec := testPodSpec("fail-create", "Always", 3)
 	store.Apply(spec)
 
 	r.reconcileOnce(context.Background())
@@ -1710,6 +1717,62 @@ func TestCreatePodFailureTerminalAfterBackoffLimit(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected RemovePod(\"doomed\") to be called; removes=%v", gotRemoves)
+	}
+
+	// Subsequent ticks must not attempt CreatePod again — pod is terminal.
+	createsBefore := len(exec.getCreates())
+	current = current.Add(5 * time.Minute)
+	r.reconcileOnce(context.Background())
+	r.reconcileOnce(context.Background())
+	if got := len(exec.getCreates()); got != createsBefore {
+		t.Fatalf("expected no further CreatePod calls after terminal Failed, got %d new", got-createsBefore)
+	}
+}
+
+// TestCreatePodFailureTerminalAtBackoffLimitZero verifies that a pod with
+// BackoffLimit=0 ("no retries", see internal/manifest/parse.go) transitions
+// straight to Failed on its very first CreatePod failure instead of looping
+// in Pending forever. Before issue #75 was fixed, the terminal check in
+// reconcilePending was guarded by "BackoffLimit > 0 &&", which skipped the
+// check entirely for BackoffLimit=0 and made attempts > BackoffLimit
+// unreachable.
+func TestCreatePodFailureTerminalAtBackoffLimitZero(t *testing.T) {
+	store := state.NewPodStore()
+	sched := newTestScheduler()
+	exec := newStubExecutor()
+	exec.createErr = errors.New("boom")
+	r := NewReconciler(store, sched, exec, time.Second)
+
+	current := time.Unix(0, 0)
+	r.SetClock(func() time.Time { return current })
+
+	spec := testPodSpec("no-retries", "Never", 0)
+	spec.BackoffLimit = 0
+	store.Apply(spec)
+
+	// Attempt 1: fails. attempts (1) already exceeds BackoffLimit (0), so
+	// the pod must go terminal immediately rather than retry-pending.
+	r.reconcileOnce(context.Background())
+	rec, _ := store.Get("no-retries")
+	if rec.Status != state.StatusFailed {
+		t.Fatalf("after attempt 1: expected Failed, got %s", rec.Status)
+	}
+	if rec.Reason == "" {
+		t.Fatal("expected Reason set on terminal failure")
+	}
+
+	exec.mu.Lock()
+	gotRemoves := append([]string(nil), exec.removes...)
+	exec.mu.Unlock()
+	found := false
+	for _, n := range gotRemoves {
+		if n == "no-retries" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected RemovePod(\"no-retries\") to be called; removes=%v", gotRemoves)
 	}
 
 	// Subsequent ticks must not attempt CreatePod again — pod is terminal.
