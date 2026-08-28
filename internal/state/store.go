@@ -51,6 +51,12 @@ type PodStore struct {
 	mu       sync.RWMutex
 	pods     map[string]*PodRecord
 	OnDelete func(name string)
+	// OnEvent fires for every event appended to a pod's history, by both
+	// UpdateStatus and AddEvent. Wired by main() to persist events to
+	// SQLite so admission-failure history (e.g. PendingWatchdog) survives
+	// a Spark restart instead of living only in this in-memory store
+	// (issue #76 diagnostic gap). nil disables persistence.
+	OnEvent  func(name string, event PodEvent)
 	readOnly atomic.Bool
 }
 
@@ -146,20 +152,21 @@ func (s *PodStore) List(status PodStatus) []PodRecord {
 // UpdateStatus sets a pod's status and appends an event. Returns false if not found.
 func (s *PodStore) UpdateStatus(name string, status PodStatus, message string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	rec, ok := s.pods[name]
 	if !ok {
+		s.mu.Unlock()
 		return false
 	}
 
 	rec.Status = status
 	now := time.Now()
-	rec.Events = append(rec.Events, PodEvent{
+	event := PodEvent{
 		Time:    now,
 		Type:    string(status),
 		Message: message,
-	})
+	}
+	rec.Events = append(rec.Events, event)
 
 	switch status {
 	case StatusRunning:
@@ -168,24 +175,38 @@ func (s *PodStore) UpdateStatus(name string, status PodStatus, message string) b
 		rec.FinishedAt = now
 	}
 
+	onEvent := s.OnEvent
+	s.mu.Unlock()
+
+	if onEvent != nil {
+		onEvent(name, event)
+	}
 	return true
 }
 
 // AddEvent appends a lifecycle event to a pod. Returns false if not found.
 func (s *PodStore) AddEvent(name string, eventType string, message string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	rec, ok := s.pods[name]
 	if !ok {
+		s.mu.Unlock()
 		return false
 	}
 
-	rec.Events = append(rec.Events, PodEvent{
+	event := PodEvent{
 		Time:    time.Now(),
 		Type:    eventType,
 		Message: message,
-	})
+	}
+	rec.Events = append(rec.Events, event)
+
+	onEvent := s.OnEvent
+	s.mu.Unlock()
+
+	if onEvent != nil {
+		onEvent(name, event)
+	}
 	return true
 }
 

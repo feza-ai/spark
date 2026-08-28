@@ -198,6 +198,74 @@ func TestAddEventMissing(t *testing.T) {
 	}
 }
 
+// TestAddEvent_FiresOnEvent covers issue #76's diagnostic gap: every event
+// AddEvent appends (e.g. PendingWatchdog for a still-pending pod) must be
+// observable via OnEvent so a persistence layer can save it. Before this
+// fix, only UpdateStatus's own event reached any hook; AddEvent-sourced
+// events (PendingWatchdog, lost, container-restarted, ...) were never
+// persisted and vanished on the next process restart.
+func TestAddEvent_FiresOnEvent(t *testing.T) {
+	s := NewPodStore()
+	s.Apply(podSpec("pod-a"))
+
+	var gotName string
+	var gotEvent PodEvent
+	calls := 0
+	s.OnEvent = func(name string, event PodEvent) {
+		calls++
+		gotName = name
+		gotEvent = event
+	}
+
+	if !s.AddEvent("pod-a", "PendingWatchdog", "awaiting-resources: cpu 6000m > -500m free") {
+		t.Fatal("expected AddEvent to return true")
+	}
+	if calls != 1 {
+		t.Fatalf("expected OnEvent to fire once, got %d calls", calls)
+	}
+	if gotName != "pod-a" {
+		t.Errorf("expected OnEvent name %q, got %q", "pod-a", gotName)
+	}
+	if gotEvent.Type != "PendingWatchdog" || gotEvent.Message != "awaiting-resources: cpu 6000m > -500m free" {
+		t.Errorf("unexpected event passed to OnEvent: %+v", gotEvent)
+	}
+}
+
+// TestUpdateStatus_FiresOnEvent covers the UpdateStatus side of the same
+// hook, so a persistence layer wired once via OnEvent captures every event
+// regardless of which method appended it.
+func TestUpdateStatus_FiresOnEvent(t *testing.T) {
+	s := NewPodStore()
+	s.Apply(podSpec("pod-a"))
+
+	calls := 0
+	s.OnEvent = func(name string, event PodEvent) {
+		calls++
+		if event.Type != string(StatusRunning) {
+			t.Errorf("expected event type %q, got %q", StatusRunning, event.Type)
+		}
+	}
+
+	s.UpdateStatus("pod-a", StatusRunning, "started")
+	if calls != 1 {
+		t.Fatalf("expected OnEvent to fire once, got %d calls", calls)
+	}
+}
+
+// TestAddEvent_MissingPodDoesNotFireOnEvent ensures the hook only fires
+// for pods that actually exist, mirroring AddEvent's own return-false
+// behavior for a missing pod.
+func TestAddEvent_MissingPodDoesNotFireOnEvent(t *testing.T) {
+	s := NewPodStore()
+	calls := 0
+	s.OnEvent = func(name string, event PodEvent) { calls++ }
+
+	s.AddEvent("nonexistent", "restarted", "msg")
+	if calls != 0 {
+		t.Fatalf("expected OnEvent not to fire for a missing pod, got %d calls", calls)
+	}
+}
+
 func TestNames(t *testing.T) {
 	s := NewPodStore()
 	s.Apply(podSpec("pod-a"))
@@ -489,4 +557,3 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
-

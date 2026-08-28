@@ -174,9 +174,30 @@ func (s *SQLiteStore) SavePod(rec *PodRecord) error {
 		lastAttemptAt = &v
 	}
 
+	// A true UPSERT (ON CONFLICT DO UPDATE), not "INSERT OR REPLACE": REPLACE
+	// resolves the PRIMARY KEY conflict by deleting the existing row before
+	// re-inserting it, and with foreign_keys=ON that delete cascades through
+	// events.pod_name's ON DELETE CASCADE -- silently wiping every event
+	// ever saved for this pod on every single status change (issue #76's
+	// "events are garbage collected quickly" diagnostic gap; SavePod runs
+	// on every reconcile tick that touches a pod, so persisted history for
+	// a still-pending pod was being reset roughly every reconcile interval).
+	// DO UPDATE modifies the row in place instead, so it never deletes.
 	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at, assigned_cores)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at, assigned_cores)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET
+		   spec_json = excluded.spec_json,
+		   status = excluded.status,
+		   started_at = excluded.started_at,
+		   finished_at = excluded.finished_at,
+		   restarts = excluded.restarts,
+		   retry_count = excluded.retry_count,
+		   source_path = excluded.source_path,
+		   reason = excluded.reason,
+		   start_attempts = excluded.start_attempts,
+		   last_attempt_at = excluded.last_attempt_at,
+		   assigned_cores = excluded.assigned_cores`,
 		rec.Spec.Name, string(specJSON), string(rec.Status),
 		startedAt, finishedAt, rec.Restarts, rec.RetryCount, rec.SourcePath,
 		rec.Reason, rec.StartAttempts, lastAttemptAt, encodeCores(rec.AssignedCores),
