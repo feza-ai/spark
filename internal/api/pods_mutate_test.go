@@ -270,6 +270,76 @@ func TestApplyPod(t *testing.T) {
 	}
 }
 
+// TestApplyPod_JSON covers issue #74: POSTing a JSON-encoded Pod manifest
+// must create the pod, not silently return 201 {"pods":null}.
+func TestApplyPod_JSON(t *testing.T) {
+	srv, store, _ := newMutateTestServer(t)
+
+	jsonDoc := `{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {"name": "json-test-pod"},
+  "spec": {
+    "restartPolicy": "Never",
+    "containers": [
+      {"name": "trainer", "image": "nvidia/cuda:12.0"}
+    ]
+  }
+}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pods", strings.NewReader(jsonDoc))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Pods []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"pods"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(body.Pods) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(body.Pods))
+	}
+	if body.Pods[0].Name != "json-test-pod" {
+		t.Errorf("expected pod name json-test-pod, got %q", body.Pods[0].Name)
+	}
+
+	if _, ok := store.Get("json-test-pod"); !ok {
+		t.Error("pod not found in store after apply")
+	}
+}
+
+// TestApplyPod_MalformedJSON covers issue #74: a malformed or empty JSON
+// body must be rejected with 400, not accepted as a no-op success.
+func TestApplyPod_MalformedJSON(t *testing.T) {
+	srv, _, _ := newMutateTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pods", strings.NewReader(`{"kind": "Pod",`))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body.Error == "" {
+		t.Error("expected non-empty error message")
+	}
+}
+
 func TestApplyInvalidYAML(t *testing.T) {
 	srv, _, _ := newMutateTestServer(t)
 
