@@ -124,6 +124,16 @@ func (rt *ResourceTracker) Allocate(name string, req manifest.ResourceList) erro
 			return fmt.Errorf("no GPU device available")
 		}
 		rt.gpuAssignments[name] = devs
+	} else if len(rt.gpuDevices) > 0 {
+		// This request needs no GPU. Release any device-slot assignment
+		// this pod name already holds from a prior incarnation -- without
+		// this, gpuAssignments[name] survives forever once a pod is
+		// re-applied under the same name with the GPU request dropped,
+		// even though the allocations[name] entry set below correctly
+		// reflects the new (GPU-less) request. That asymmetry is what let
+		// a GPU device slot leak permanently while CPU/memory accounting
+		// looked correct (issue #81).
+		delete(rt.gpuAssignments, name)
 	}
 
 	// Core-set assignment: only integer-CPU pods get a contiguous core range.
@@ -174,6 +184,43 @@ func (rt *ResourceTracker) AssignedGPUs(name string) []int {
 		return nil
 	}
 	return rt.gpuAssignments[name]
+}
+
+// GPUHolders returns a snapshot of every currently-held GPU device-slot
+// assignment, keyed by pod name. Returns nil when GPU slot tracking is
+// disabled or nothing currently holds a slot. Used to expose slot
+// ownership over the API (issue #81) and by the housekeeper to reconcile
+// the device-slot ledger against live pod state.
+func (rt *ResourceTracker) GPUHolders() map[string][]int {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if len(rt.gpuAssignments) == 0 {
+		return nil
+	}
+	out := make(map[string][]int, len(rt.gpuAssignments))
+	for name, devs := range rt.gpuAssignments {
+		cp := make([]int, len(devs))
+		copy(cp, devs)
+		out[name] = cp
+	}
+	return out
+}
+
+// ReleaseGPU releases only the GPU device-slot assignment held by a pod
+// name, leaving any CPU/memory/core allocation for that name untouched.
+// Unlike Release, this is safe to call for a name that may have been
+// re-applied to a different (still-live) pod in the meantime: it can
+// only ever free a device slot, never another pod's CPU or memory.
+// Used by the housekeeper to reclaim a slot held by a name with no
+// corresponding live pod record (issue #81).
+func (rt *ResourceTracker) ReleaseGPU(name string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if rt.gpuAssignments != nil {
+		delete(rt.gpuAssignments, name)
+	}
 }
 
 // AssignedCores returns the CPU core IDs assigned to a pod, or nil if none.
