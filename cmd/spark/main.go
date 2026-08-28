@@ -281,6 +281,7 @@ func main() {
 		ImagePruneInterval: *imagePruneInterval,
 	})
 	metricsCollector.SetHousekeeping(hkCounters)
+	hk.SetGPULedger(tracker)
 	go hk.Run(ctx)
 	slog.Info("housekeeper started",
 		"interval", *housekeepingInterval,
