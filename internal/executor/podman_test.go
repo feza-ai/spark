@@ -5,6 +5,7 @@ import (
 	"io"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -424,6 +425,89 @@ func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
 				t.Errorf("tail after image = %v, want %v", tail, tt.wantTail)
 			}
 		})
+	}
+}
+
+// TestBuildRunArgs_Issue73Repro is the regression test for issue #73: a Pod
+// manifest with container.Command = ["/bin/bash", "-c", "<script with nested
+// double quotes>"] and container.Args left empty crash-loops in production
+// with "/bin/bash: -c: option requires an argument" -- confirmed live
+// against the real DGX host (v1.18.0, real podman, real HTTP POST,
+// 2026-08-29): the pod failed within ~8s with that exact log line.
+// buildRunArgs currently JSON-encodes the WHOLE Command array into a single
+// --entrypoint value whenever Args is empty; this test proves the fix
+// instead splits Command[0] into a plain-string --entrypoint and
+// Command[1:] into the CMD tail (the function's own doc comment already
+// promised this and never implemented it).
+//
+// DO NOT weaken this test to make it pass -- it must fail against the
+// current JSON-array-entrypoint code and pass only once the split above is
+// implemented. It deliberately does NOT accept "the JSON blob round-trips"
+// as sufficient (that was already true before any fix and never caught the
+// real bug); it requires the script to appear as its own literal,
+// unescaped argv element, and proves that with a real child-process exec.
+func TestBuildRunArgs_Issue73Repro(t *testing.T) {
+	// Exact repro script from issue #73's body -- do not alter, pad, or
+	// retype this by hand; it is a raw string literal so every character
+	// (including the embedded backslash-quote pairs) is preserved exactly
+	// as filed.
+	const script = `set -e; T=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" https://example.com | grep -o "\"token\": *\"[^\"]*\"" | cut -d "\"" -f4); echo $T`
+	if len(script) != 145 {
+		t.Fatalf("test setup: script is %d chars, want 145 (exact issue #73 repro) -- something altered the literal", len(script))
+	}
+
+	command := []string{"/bin/bash", "-c", script}
+	container := manifest.ContainerSpec{
+		Name:    "app",
+		Image:   "myimage:latest",
+		Command: command,
+	}
+
+	args := buildRunArgs("mypod", container, nil, "spark-net", true, nil, nil)
+
+	// REQUIREMENT 1: the script must appear as its own standalone argv
+	// element -- byte-for-byte, NOT wrapped/escaped inside a JSON blob.
+	// This is false today: today the script only appears JSON-escaped
+	// (embedded \" instead of ") inside a single --entrypoint value
+	// alongside "/bin/bash" and "-c".
+	if !slices.Contains(args, script) {
+		t.Fatalf("script does not appear as a standalone argv element in %v -- it is still embedded inside a JSON-encoded --entrypoint blob rather than delivered as its own CMD-tail argv element (issue #73)", args)
+	}
+
+	// REQUIREMENT 2: --entrypoint, if present at all, must be the PLAIN
+	// single string "/bin/bash" -- never a JSON array. A JSON-array
+	// --entrypoint value is exactly the encoding this fix removes.
+	epIdx := slices.Index(args, "--entrypoint")
+	if epIdx < 0 {
+		t.Fatalf("--entrypoint missing from args: %v", args)
+	}
+	if got := args[epIdx+1]; got != "/bin/bash" {
+		t.Fatalf("--entrypoint value = %q, want the plain string %q (a JSON-array entrypoint is the bug this fix removes)", got, "/bin/bash")
+	}
+
+	// REQUIREMENT 3: "-c" and the script must both appear, in order, as
+	// literal CMD-tail argv elements after the image -- exactly like
+	// container.Args already does, per the function's own doc comment.
+	imgIdx := slices.Index(args, "docker.io/library/myimage:latest")
+	if imgIdx < 0 {
+		t.Fatalf("image not found in args: %v", args)
+	}
+	wantTail := []string{"-c", script}
+	if tail := args[imgIdx+1:]; !slices.Equal(tail, wantTail) {
+		t.Fatalf("CMD tail after image = %v, want %v", tail, wantTail)
+	}
+
+	// REQUIREMENT 4: prove the OS itself hands the script to a real child
+	// process intact -- not just that our own Go slice looks right -- by
+	// exec'ing a real `echo` with it directly (no shell involved, exactly
+	// how exec.CommandContext invokes podman in production) and checking
+	// what the child process actually received.
+	out, err := exec.Command("/bin/echo", script).Output()
+	if err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	if got := strings.TrimSuffix(string(out), "\n"); got != script {
+		t.Fatalf("script mangled crossing a real exec boundary:\ngot  (%d chars): %s\nwant (%d chars): %s", len(got), got, len(script), script)
 	}
 }
 
