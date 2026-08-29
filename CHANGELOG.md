@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.19.0](https://github.com/feza-ai/spark/compare/v1.18.0...v1.19.0) (2026-08-29)
+
+
+### Features
+
+* **api:** add GET /api/v1/pods/{name}/manifest endpoint ([7888fed](https://github.com/feza-ai/spark/commit/7888fede28751d737a4d60f98b3a403bec3b0069))
+* **api:** capture raw manifest bytes on POST /api/v1/pods ([f140697](https://github.com/feza-ai/spark/commit/f140697881ea13d5aeae03b68ea4a2dfcfe4256f))
+* **bus:** capture raw manifest bytes on req.spark.apply ([aee494c](https://github.com/feza-ai/spark/commit/aee494c018a162f1fc34dd8ae7f8a8f82caf1b84))
+* **cmd/spark:** add --pending-log-timeout flag ([509a2a7](https://github.com/feza-ai/spark/commit/509a2a76beca67239f5e72ffd606955a2441b1b2))
+* **cmd/spark:** capture raw manifest bytes from the directory watcher ([a802151](https://github.com/feza-ai/spark/commit/a802151bfce6b9ce3c67cd01599b05db8e02600e))
+* **manifest:** parse JSON manifest documents (issue [#74](https://github.com/feza-ai/spark/issues/74)) ([ccf1d43](https://github.com/feza-ai/spark/commit/ccf1d43360b8fb41d4b8eb5bc5c0dcb5ebae8785))
+* **state:** track raw manifest bytes per pod ([7c9444d](https://github.com/feza-ai/spark/commit/7c9444d92958842b327ee944cfb207f5fa13393f))
+
+
+### Bug Fixes
+
+* **api:** distinguish a pending-for-resources pod from a lost one in /logs ([9df399f](https://github.com/feza-ai/spark/commit/9df399f8d78b14fabe72fecb17b4f56c66e36956))
+* **api:** treat podman cgroup-cleanup race as pod-already-gone ([3aa3822](https://github.com/feza-ai/spark/commit/3aa38227e8ddf51c82942f0227c239315fc747eb)), closes [#71](https://github.com/feza-ai/spark/issues/71)
+* **bus:** treat podman cgroup-cleanup race as pod-already-gone ([e17199e](https://github.com/feza-ai/spark/commit/e17199e1409df95c0f0728b6eaf883ea0209e4c2)), closes [#71](https://github.com/feza-ai/spark/issues/71)
+* **executor:** bound StopPod/RemovePod's own wait against a wedged podman ([a54c05c](https://github.com/feza-ai/spark/commit/a54c05c4f5af2044bb0c3afb40f7a1745f956634))
+* **executor:** stop JSON-folding multi-token Command into --entrypoint ([9821995](https://github.com/feza-ai/spark/commit/9821995437b5a69ffd39b6620313e323bccdaae2))
+* **manifest:** parse block sequences at the same indent as their key ([b4bc9de](https://github.com/feza-ai/spark/commit/b4bc9de0d30e02b9c70045c251222da3f4006a2a)), closes [#77](https://github.com/feza-ai/spark/issues/77)
+* **manifest:** reject YAML documents that parse to zero fields ([19958cb](https://github.com/feza-ai/spark/commit/19958cbe6aeb10852b7a62d8b13676fdc13d2d52))
+* **reconciler:** treat backoffLimit 0 as no-retries, not unlimited ([de7b90e](https://github.com/feza-ai/spark/commit/de7b90e76ef38c44b314983ee7fa53e25190c8b7))
+* **scheduler:** floor non-CPU resource availability at 0 ([f30c7aa](https://github.com/feza-ai/spark/commit/f30c7aa55957479e960165c14dec7d240bddbfff))
+* **scheduler:** scope anti-thrash cap per (victim, requester) pair ([81e1cbf](https://github.com/feza-ai/spark/commit/81e1cbf37772142464e8ef5e86acdf565c0a4992))
+
 ## [1.18.0](https://github.com/feza-ai/spark/compare/v1.17.0...v1.18.0) (2026-08-28)
 
 
