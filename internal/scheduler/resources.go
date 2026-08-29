@@ -505,10 +505,23 @@ func (rt *ResourceTracker) UpdateAllocation(name string, actual manifest.Resourc
 func (rt *ResourceTracker) availableLocked() Resources {
 	alloc := rt.allocatedLocked()
 	out := Resources{
-		CPUMillis:   rt.allocatable.CPUMillis - alloc.CPUMillis,
-		MemoryMB:    rt.allocatable.MemoryMB - alloc.MemoryMB,
-		GPUCount:    rt.allocatable.GPUCount - alloc.GPUCount,
-		GPUMemoryMB: rt.allocatable.GPUMemoryMB - alloc.GPUMemoryMB,
+		// CPUMillis is deliberately NOT floored at 0: utilization-aware
+		// overcommit (issue #76) can admit a pod past accounted CPU on
+		// purpose, and a negative value here is the honest signal that
+		// accounted CPU is oversubscribed (see
+		// TestAllocateOverCommittingCPU_AllowsCPUOvercommit). Clamping it
+		// would hide that signal, not fix a bug.
+		CPUMillis: rt.allocatable.CPUMillis - alloc.CPUMillis,
+		// MemoryMB, GPUCount, and GPUMemoryMB have no such overcommit path,
+		// so a negative value here can only mean the allocation ledger
+		// double-counted (e.g. a stale/leaked allocation from a crashed
+		// pod's restart, issue #80) — never a legitimate "more allocated
+		// than allocatable" state. Floor at 0 so callers (describeShortfall,
+		// canFitLocked) never see or display a nonsensical negative "free"
+		// figure, e.g. issue #80's "gpu 0 > -1 free".
+		MemoryMB:    nonNegative(rt.allocatable.MemoryMB - alloc.MemoryMB),
+		GPUCount:    nonNegative(rt.allocatable.GPUCount - alloc.GPUCount),
+		GPUMemoryMB: nonNegative(rt.allocatable.GPUMemoryMB - alloc.GPUMemoryMB),
 	}
 	if len(rt.cores) > 0 {
 		assigned := make(map[int]bool)
@@ -537,4 +550,15 @@ func (rt *ResourceTracker) allocatedLocked() Resources {
 		r.GPUMemoryMB += a.GPUMemoryMB
 	}
 	return r
+}
+
+// nonNegative floors a resource quantity at 0. An allocatable-minus-allocated
+// subtraction going negative means the allocation ledger over-counted
+// (issue #80) — there is no dimension besides CPUMillis where reporting or
+// acting on a negative "free" figure is ever correct (see availableLocked).
+func nonNegative(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
 }

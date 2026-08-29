@@ -68,6 +68,61 @@ func TestReleaseIncreasesAvailable(t *testing.T) {
 	}
 }
 
+// TestAvailable_FloorsGPUAndMemoryAtZero covers issue #80's "gpu 0 > -1
+// free" signedness bug: ForceAllocate (used to adopt already-running pods
+// after a restart, bypassing capacity checks) can push the allocation
+// ledger's GPUCount/MemoryMB/GPUMemoryMB above what's allocatable -- e.g.
+// a crashed pod's stale allocation still on the ledger when its restart is
+// force-allocated again. Available() must floor those dimensions at 0
+// rather than reporting a negative "free" figure that no caller can act on
+// sensibly. CPUMillis is deliberately excluded here: it has its own test
+// (TestAllocateOverCommittingCPU_AllowsCPUOvercommit) asserting the
+// opposite -- issue #76's overcommit bypass depends on it staying signed.
+func TestAvailable_FloorsGPUAndMemoryAtZero(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUCount: 1, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0}, 1,
+	)
+
+	// Force-allocate two overlapping GPU pods' worth of resources onto a
+	// tracker with only 1 GPU and 8192MB allocatable -- exactly the shape
+	// of a stale allocation surviving a restart (issue #80).
+	rt.ForceAllocate("stale", manifest.ResourceList{MemoryMB: 8192, GPUCount: 1, GPUMemoryMB: 16384})
+	rt.ForceAllocate("restarted", manifest.ResourceList{MemoryMB: 8192, GPUCount: 1, GPUMemoryMB: 16384})
+
+	avail := rt.Available()
+	if avail.GPUCount != 0 {
+		t.Errorf("avail.GPUCount = %d, want 0 (floored, not negative)", avail.GPUCount)
+	}
+	if avail.MemoryMB != 0 {
+		t.Errorf("avail.MemoryMB = %d, want 0 (floored, not negative)", avail.MemoryMB)
+	}
+	if avail.GPUMemoryMB != 0 {
+		t.Errorf("avail.GPUMemoryMB = %d, want 0 (floored, not negative)", avail.GPUMemoryMB)
+	}
+}
+
+func TestNonNegative(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"negative floors to zero", -1, 0},
+		{"large negative floors to zero", -500, 0},
+		{"zero stays zero", 0, 0},
+		{"positive passes through", 7, 7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nonNegative(tt.in); got != tt.want {
+				t.Errorf("nonNegative(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCanFitReturnsFalseWhenFull(t *testing.T) {
 	rt := newTestTracker()
 
