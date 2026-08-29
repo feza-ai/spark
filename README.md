@@ -126,6 +126,14 @@ curl http://localhost:8080/api/v1/pods/myapp
 
 Returns the full pod record including spec, status, events, and timestamps.
 
+### Get Pod Manifest
+
+```bash
+curl http://localhost:8080/api/v1/pods/myapp/manifest
+```
+
+Returns the exact manifest bytes that were submitted for this pod -- via `POST /api/v1/pods`, `req.spark.apply`, or the manifest directory watcher -- byte-for-byte, whether the original submission was YAML or JSON. Unlike Get Pod, this is not filtered by status: it works for a pod stuck in any state, including one whose reported status has diverged from its actual container. Useful for recreating a pod faithfully after such an incident, since Get Pod alone only returns a status summary.
+
 ### Apply Pod
 
 ```bash
