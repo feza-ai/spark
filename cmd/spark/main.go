@@ -396,6 +396,8 @@ func main() {
 				if podRec, ok := store.Get(pod.Name); ok {
 					podRec.SourcePath = event.Path
 					store.SetSourcePath(pod.Name, event.Path)
+					podRec.RawManifest = event.Content
+					store.SetRawManifest(pod.Name, event.Content)
 					if err := sqlStore.SavePod(&podRec); err != nil {
 						slog.Error("failed to persist applied pod", "pod", pod.Name, "error", err)
 					}
