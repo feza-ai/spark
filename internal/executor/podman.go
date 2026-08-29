@@ -271,14 +271,24 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 
 	// K8s pod spec semantics: Container.Command overrides the image's
 	// ENTRYPOINT, and Container.Args overrides CMD. Translate to podman:
-	//   --entrypoint <cmd>      (single token)
-	//   --entrypoint '["a","b"]'  (multi token, JSON array form)
-	// Args (or Command[1:] when Args is empty) are appended after the
-	// image so they form the container CMD.
+	//   --entrypoint <cmd>        (single token)
+	//   --entrypoint '["a","b"]'  (multi token, JSON array form -- only
+	//                              when Args is also set, so Command[1:]
+	//                              has somewhere else to go: podman has no
+	//                              way to express a multi-token ENTRYPOINT
+	//                              other than the JSON-array form)
+	// When Args is empty, Command[1:] is appended after the image as
+	// plain CMD-tail argv elements instead -- exactly like Args itself
+	// always was -- rather than folded into the --entrypoint JSON blob
+	// alongside Command[0]. Folding it in there mangled multi-token
+	// commands whose trailing token itself contained nested double quotes
+	// (issue #73): the quoting needed to survive as its own literal argv
+	// element got re-escaped into a single JSON string instead.
 	if len(container.Command) > 0 {
-		if len(container.Command) == 1 {
+		switch {
+		case len(container.Command) == 1:
 			args = append(args, "--entrypoint", container.Command[0])
-		} else {
+		case len(container.Args) > 0:
 			encoded, err := json.Marshal(container.Command)
 			if err == nil {
 				args = append(args, "--entrypoint", string(encoded))
@@ -287,13 +297,18 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 				// as CMD-style args.
 				args = append(args, "--entrypoint", container.Command[0])
 			}
+		default:
+			args = append(args, "--entrypoint", container.Command[0])
 		}
 	}
 
 	args = append(args, normalizeImage(container.Image))
 
-	if len(container.Args) > 0 {
+	switch {
+	case len(container.Args) > 0:
 		args = append(args, container.Args...)
+	case len(container.Command) > 1:
+		args = append(args, container.Command[1:]...)
 	}
 
 	return args
