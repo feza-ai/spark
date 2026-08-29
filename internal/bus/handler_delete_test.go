@@ -21,6 +21,14 @@ type stubExecutor struct {
 	removed      []string
 	podStatus    executor.Status
 	podStatusErr error
+
+	// removeErrSequence, when non-nil, scripts a per-call result for
+	// RemovePod: entry i is returned on the (i+1)th call (a nil entry
+	// means success on that call). Once the sequence is exhausted,
+	// RemovePod returns nil. Used to test retry behavior; removeErr keeps
+	// its existing single-error-every-call meaning when this is nil.
+	removeErrSequence []error
+	removeCallCount   int
 }
 
 func (e *stubExecutor) CreatePod(_ context.Context, _ manifest.PodSpec) error {
@@ -40,6 +48,14 @@ func (e *stubExecutor) PodStatus(_ context.Context, _ string) (executor.Status, 
 
 func (e *stubExecutor) RemovePod(_ context.Context, name string) error {
 	e.removed = append(e.removed, name)
+	if e.removeErrSequence != nil {
+		idx := e.removeCallCount
+		e.removeCallCount++
+		if idx < len(e.removeErrSequence) {
+			return e.removeErrSequence[idx]
+		}
+		return nil
+	}
 	return e.removeErr
 }
 
@@ -211,5 +227,78 @@ func TestDeleteHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDeleteHandler_CgroupRaceTreatedAsSuccess reproduces issue #71 for the
+// NATS delete handler: podman pod rm can report "cgroup: Unit
+// machine-libpod_pod_<id>.slice not loaded" when the pod's containers were
+// already torn down and its cgroup slice was reaped before rm got to it --
+// the desired end state (pod gone) is already true, so delete must still
+// succeed and release the scheduler reservation, even once the bounded
+// retry is exhausted (every attempt returns the same error here).
+func TestDeleteHandler_CgroupRaceTreatedAsSuccess(t *testing.T) {
+	b := NewStubBus()
+	store := state.NewPodStore()
+	exec := &stubExecutor{
+		removeErr: fmt.Errorf("Error: removing pod a3f9c21b: cgroup: Unit machine-libpod_pod_a3f9c21b.slice not loaded."),
+	}
+	sched := &stubPodRemover{}
+
+	store.Apply(manifest.PodSpec{Name: "race-pod", TerminationGracePeriodSeconds: 10})
+	RegisterDeleteHandler(b, store, exec, sched)
+
+	reqData, _ := json.Marshal(DeleteRequest{Name: "race-pod"})
+	resp, err := b.Request(context.Background(), "req.spark.delete", reqData)
+	if err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+
+	var dr DeleteResponse
+	if err := json.Unmarshal(resp, &dr); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !dr.Deleted {
+		t.Errorf("expected Deleted=true for the cgroup-cleanup race error, got response %+v", dr)
+	}
+	if len(sched.removed) != 1 || sched.removed[0] != "race-pod" {
+		t.Errorf("expected scheduler.RemovePod(race-pod) once, got %v", sched.removed)
+	}
+}
+
+// TestDeleteHandler_CgroupRaceRetrySucceeds reproduces the exact issue #71
+// repro for the NATS delete handler: the first podman pod rm hits the
+// cgroup-cleanup race and errors, but an immediate retry succeeds outright
+// once the race window has passed. RemovePod must be retried, and the
+// second call succeeding must not be treated as a failure.
+func TestDeleteHandler_CgroupRaceRetrySucceeds(t *testing.T) {
+	b := NewStubBus()
+	store := state.NewPodStore()
+	exec := &stubExecutor{
+		removeErrSequence: []error{
+			fmt.Errorf("Error: removing pod issue71: cgroup: Unit machine-libpod_pod_issue71.slice not loaded."),
+			nil,
+		},
+	}
+	sched := &stubPodRemover{}
+
+	store.Apply(manifest.PodSpec{Name: "issue71", TerminationGracePeriodSeconds: 10})
+	RegisterDeleteHandler(b, store, exec, sched)
+
+	reqData, _ := json.Marshal(DeleteRequest{Name: "issue71"})
+	resp, err := b.Request(context.Background(), "req.spark.delete", reqData)
+	if err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+
+	var dr DeleteResponse
+	if err := json.Unmarshal(resp, &dr); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !dr.Deleted {
+		t.Errorf("expected Deleted=true once the retried RemovePod succeeds, got response %+v", dr)
+	}
+	if len(exec.removed) != 2 {
+		t.Errorf("expected RemovePod to be retried once (2 calls total), got %d", len(exec.removed))
 	}
 }
