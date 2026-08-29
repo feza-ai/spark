@@ -45,3 +45,33 @@ style), not same-indent. The same-indent case is itself a real parser bug
 (already the confirmed root cause of issue #77, fixed in PR #90) -- it's
 recorded here for the general class, not because this repo is still
 carrying it.
+
+## GitHub auto-closes an issue twice: once from the feature PR, again from the release-please PR
+
+A merged PR whose body contains `Fixes #N`/`Closes #N` auto-closes the
+issue -- expected, and why this repo's Operating Procedure requires
+reopening it if the fix isn't live-verified yet (see `docs/plan.md`).
+Less obvious: **the *next* release-please PR can independently re-close
+the same issue a second time**, even after you've reopened it.
+
+release-please builds its changelog from each commit's conventional-commit
+body, and if the original commit used a `closes #N`/`fixes #N` trailer
+(common when a commit message documents what it fixes for the changelog),
+that trailer's text survives verbatim into the release PR's auto-generated
+body (`chore(main): release X.Y.Z`). GitHub's auto-close scanner reads
+*any* merged PR body for that keyword, not just the originating feature
+PR -- so merging the release PR fires it again, closing the issue at the
+exact same timestamp as the release merge.
+
+Confirmed 2026-08-29: PR #101 (issue #71) and PR #90 (issue #77) were both
+reopened after their own merges auto-closed them; both were silently
+re-closed a second time the moment release-please's PR #91 merged
+(`closedAt` on both issues == PR #91's `mergedAt`, to the second).
+
+**How to apply:** after merging a release-please PR, re-check every issue
+this wave touched (`gh issue view <N> --json state,closedAt`), not just
+the ones you expect -- a `closedAt` matching the release PR's merge time
+is the tell. There is no reliable way to prevent this from the commit
+side (the trailer is what makes release-please's changelog useful) --
+treat "reopen after merge" as needing a second pass after the release PR
+merges too, not a one-time step.
