@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/feza-ai/spark/internal/executor"
 	"github.com/feza-ai/spark/internal/gpu"
@@ -36,6 +37,10 @@ type Server struct {
 	mux             *http.ServeMux
 	handler         http.Handler
 	scheduler       PodRemover
+	// pendingLogTimeout bounds how long GET /logs treats a Pending pod's
+	// "no such pod" podman error as still-queued before it reports the
+	// shortfall directly instead (issue #78). See SetPendingLogTimeout.
+	pendingLogTimeout time.Duration
 }
 
 // NewServer creates a Server and registers all HTTP routes.
@@ -43,18 +48,19 @@ type Server struct {
 // Bearer token authentication.
 func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec executor.Executor, priorityClasses map[string]int, sqlStore *state.SQLiteStore, collector *metrics.Collector, cronSched CronRegisterer, token string, sched PodRemover, gpuInfo *gpu.GPUInfo, sysInfo *gpu.SystemInfo, version string) *Server {
 	s := &Server{
-		store:           store,
-		tracker:         tracker,
-		executor:        exec,
-		priorityClasses: priorityClasses,
-		sqlStore:        sqlStore,
-		collector:       collector,
-		cronSched:       cronSched,
-		gpuInfo:         gpuInfo,
-		sysInfo:         sysInfo,
-		version:         version,
-		mux:             http.NewServeMux(),
-		scheduler:       sched,
+		store:             store,
+		tracker:           tracker,
+		executor:          exec,
+		priorityClasses:   priorityClasses,
+		sqlStore:          sqlStore,
+		collector:         collector,
+		cronSched:         cronSched,
+		gpuInfo:           gpuInfo,
+		sysInfo:           sysInfo,
+		version:           version,
+		mux:               http.NewServeMux(),
+		scheduler:         sched,
+		pendingLogTimeout: defaultPendingLogTimeout,
 	}
 	s.registerHealthRoutes()
 	s.registerResourceRoutes()
@@ -79,4 +85,15 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
+}
+
+// SetPendingLogTimeout overrides the default duration a pod may stay
+// Pending before GET /logs stops treating podman's "no such pod" error as
+// still-queued and reports the shortfall instead (issue #78). Values <= 0
+// are ignored, leaving the current timeout (defaultPendingLogTimeout by
+// default) in place.
+func (s *Server) SetPendingLogTimeout(d time.Duration) {
+	if d > 0 {
+		s.pendingLogTimeout = d
+	}
 }
