@@ -44,7 +44,8 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		reason TEXT DEFAULT '',
 		start_attempts INTEGER DEFAULT 0,
 		last_attempt_at TEXT,
-		assigned_cores TEXT DEFAULT ''
+		assigned_cores TEXT DEFAULT '',
+		manifest_raw BLOB DEFAULT ''
 	)`
 	if _, err := db.Exec(createPods); err != nil {
 		db.Close()
@@ -82,6 +83,10 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 	if err := ensureColumn(db, "pods", "assigned_cores", "TEXT DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "pods", "manifest_raw", "BLOB DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -184,8 +189,8 @@ func (s *SQLiteStore) SavePod(rec *PodRecord) error {
 	// a still-pending pod was being reset roughly every reconcile interval).
 	// DO UPDATE modifies the row in place instead, so it never deletes.
 	_, err = s.db.Exec(
-		`INSERT INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at, assigned_cores)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO pods (name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at, assigned_cores, manifest_raw)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(name) DO UPDATE SET
 		   spec_json = excluded.spec_json,
 		   status = excluded.status,
@@ -197,10 +202,11 @@ func (s *SQLiteStore) SavePod(rec *PodRecord) error {
 		   reason = excluded.reason,
 		   start_attempts = excluded.start_attempts,
 		   last_attempt_at = excluded.last_attempt_at,
-		   assigned_cores = excluded.assigned_cores`,
+		   assigned_cores = excluded.assigned_cores,
+		   manifest_raw = excluded.manifest_raw`,
 		rec.Spec.Name, string(specJSON), string(rec.Status),
 		startedAt, finishedAt, rec.Restarts, rec.RetryCount, rec.SourcePath,
-		rec.Reason, rec.StartAttempts, lastAttemptAt, encodeCores(rec.AssignedCores),
+		rec.Reason, rec.StartAttempts, lastAttemptAt, encodeCores(rec.AssignedCores), rec.RawManifest,
 	)
 	return err
 }
@@ -217,7 +223,7 @@ func (s *SQLiteStore) SaveEvent(podName string, event PodEvent) error {
 // LoadAll reads all pods and their events from the database.
 func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at, assigned_cores FROM pods`,
+		`SELECT name, spec_json, status, started_at, finished_at, restarts, retry_count, source_path, reason, start_attempts, last_attempt_at, assigned_cores, manifest_raw FROM pods`,
 	)
 	if err != nil {
 		return nil, err
@@ -232,8 +238,9 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 		var sourcePath, reason string
 		var startAttempts int
 		var assignedCores sql.NullString
+		var manifestRaw []byte
 
-		if err := rows.Scan(&name, &specJSON, &status, &startedAt, &finishedAt, &restarts, &retryCount, &sourcePath, &reason, &startAttempts, &lastAttemptAt, &assignedCores); err != nil {
+		if err := rows.Scan(&name, &specJSON, &status, &startedAt, &finishedAt, &restarts, &retryCount, &sourcePath, &reason, &startAttempts, &lastAttemptAt, &assignedCores, &manifestRaw); err != nil {
 			return nil, err
 		}
 
@@ -251,6 +258,7 @@ func (s *SQLiteStore) LoadAll() (map[string]*PodRecord, error) {
 			Reason:        reason,
 			StartAttempts: startAttempts,
 			AssignedCores: decodeCores(assignedCores.String),
+			RawManifest:   manifestRaw,
 		}
 		if startedAt.Valid {
 			if t, err := time.Parse(time.RFC3339, startedAt.String); err == nil {
