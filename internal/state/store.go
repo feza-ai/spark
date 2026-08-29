@@ -41,6 +41,11 @@ type PodRecord struct {
 	StartAttempts int       // number of failed pod-create/start attempts since last success
 	LastAttemptAt time.Time // time of the most recent failed start attempt; zero when none pending
 	AssignedCores []int     // host CPU core IDs pinned to this pod; persisted to survive Spark restarts
+	// RawManifest holds the exact bytes of the manifest that produced or
+	// last updated this pod (the raw HTTP/NATS/file submission, not a
+	// re-serialization of Spec) so GET /api/v1/pods/{name}/manifest can
+	// return byte-equivalent content (issue #80 quick win 1).
+	RawManifest []byte
 }
 
 // maxReasonBytes caps the size of PodRecord.Reason to keep the store bounded.
@@ -346,6 +351,22 @@ func (s *PodStore) SetSourcePath(name string, path string) bool {
 		return false
 	}
 	rec.SourcePath = path
+	return true
+}
+
+// SetRawManifest sets the RawManifest for a pod. Returns false if not found.
+// The provided slice is copied; the caller may continue to mutate it.
+func (s *PodStore) SetRawManifest(name string, raw []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.pods[name]
+	if !ok {
+		return false
+	}
+	cp := make([]byte, len(raw))
+	copy(cp, raw)
+	rec.RawManifest = cp
 	return true
 }
 
