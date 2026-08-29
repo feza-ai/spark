@@ -220,12 +220,16 @@ func TestBuildRunArgs_GPUDevicesWithEntrypointOverride(t *testing.T) {
 	// --entrypoint and its own value token, corrupting the invocation and
 	// making podman reject the image reference.
 	tests := []struct {
-		name    string
-		command []string
-		wantEP  string
+		name     string
+		command  []string
+		wantEP   string
+		wantTail []string
 	}{
-		{"single-token command", []string{"sleep"}, "sleep"},
-		{"multi-token command", []string{"sleep", "300"}, `["sleep","300"]`},
+		{"single-token command", []string{"sleep"}, "sleep", nil},
+		// Multi-token command with no Args set now splits into a plain
+		// --entrypoint (Command[0]) plus a literal CMD-tail (Command[1:])
+		// instead of a JSON-array --entrypoint blob -- see issue #73.
+		{"multi-token command", []string{"sleep", "300"}, "sleep", []string{"300"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -268,8 +272,8 @@ func TestBuildRunArgs_GPUDevicesWithEntrypointOverride(t *testing.T) {
 			if imgIdx < 0 {
 				t.Fatalf("image reference missing or corrupted in %v", args)
 			}
-			if imgIdx != len(args)-1 {
-				t.Errorf("image must be the last arg (no command/args set): %v", args)
+			if tail := args[imgIdx+1:]; !slices.Equal(tail, tt.wantTail) {
+				t.Errorf("CMD tail after image = %v, want %v", tail, tt.wantTail)
 			}
 		})
 	}
@@ -369,8 +373,8 @@ func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
 			name:           "multi-token command no args",
 			command:        []string{"nsys", "profile", "-o", "/out"},
 			argv:           nil,
-			wantEntrypoint: `["nsys","profile","-o","/out"]`,
-			wantTail:       nil,
+			wantEntrypoint: "nsys",
+			wantTail:       []string{"profile", "-o", "/out"},
 		},
 		{
 			name:           "command and args",
