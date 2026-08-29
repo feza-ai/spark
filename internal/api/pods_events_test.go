@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func newPodEventsTestServer(t *testing.T) *Server {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
 		scheduler.Resources{CPUMillis: 1000, MemoryMB: 2048, GPUMemoryMB: 0},
-	nil, 0,
+		nil, 0,
 	)
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	sqlStore, err := state.OpenSQLite(dbPath)
@@ -128,6 +129,47 @@ func TestPodEvents_NotFound(t *testing.T) {
 	}
 	if body["error"] != "pod not found: nonexistent" {
 		t.Errorf("expected error message, got %q", body["error"])
+	}
+}
+
+// TestPodEvents_PendingShortfallReason covers issue #78 / plan T4.6: a pod
+// pending on a resource shortfall must surface the shortfall reason via
+// GET /events. This is a regression test for existing wiring (the
+// reconciler already records a "PendingWatchdog" event with the
+// "awaiting-resources: ..." message on every reconcile tick a pod stays
+// queued; handlePodEvents already returns all recorded events) -- no
+// production change accompanies it.
+func TestPodEvents_PendingShortfallReason(t *testing.T) {
+	srv := newPodEventsTestServer(t)
+
+	srv.store.Apply(manifest.PodSpec{Name: "queued"})
+	srv.sqlStore.SavePod(&state.PodRecord{Spec: manifest.PodSpec{Name: "queued"}, Status: state.StatusPending})
+	srv.sqlStore.SaveEvent("queued", state.PodEvent{
+		Time:    time.Now(),
+		Type:    "PendingWatchdog",
+		Message: "awaiting-resources: no preemption candidates (lower-priority, non-thrashed pods); shortfall: cpu 250m > 100m free",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pods/queued/events", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var body podEventsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	found := false
+	for _, e := range body.Events {
+		if e.Type == "PendingWatchdog" && strings.Contains(e.Message, "cpu 250m > 100m free") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an event surfacing the shortfall reason, got %+v", body.Events)
 	}
 }
 
