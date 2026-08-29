@@ -73,6 +73,7 @@ Spark will detect system resources (CPU, memory, GPU), connect to NATS, and begi
 | `--failed-pod-ttl` | `24h` | TTL after which Failed pods are reaped (0 disables) |
 | `--orphan-reap-ttl` | `1h` | TTL after which terminal-state orphan podman pods are reaped (0 disables) |
 | `--image-prune-interval` | `24h` | Interval between `podman image prune -f` runs (0 disables) |
+| `--pending-log-timeout` | `10m` | How long a Pending pod's `GET /logs` treats podman's "no such pod" as still-queued before reporting the resource shortfall instead of staying silent (issue #78) |
 
 Per-pod TTL override is available via the `spark.feza.ai/ttl-after-finished` annotation (any value parseable by `time.ParseDuration`; `0s` disables cleanup for that pod).
 
