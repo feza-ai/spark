@@ -44,6 +44,7 @@ func RegisterApplyHandler(b Bus, store *state.PodStore, priorityClasses map[stri
 
 		for _, pod := range result.Pods {
 			store.Apply(pod)
+			store.SetRawManifest(pod.Name, data)
 			resp.Pods = append(resp.Pods, PodStatus{
 				Name:   pod.Name,
 				Status: "pending",
