@@ -67,6 +67,7 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 	s.registerNodeRoutes()
 	s.registerPodQueryRoutes()
 	s.registerPodMutateRoutes()
+	s.registerPodManifestRoutes()
 	s.registerPodLogRoutes()
 	s.registerImageRoutes()
 	s.registerCronJobRoutes()
