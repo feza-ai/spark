@@ -345,6 +345,44 @@ func buildRemoveArgs(name string) []string {
 	return []string{"pod", "rm", name}
 }
 
+// podmanStopTimeout bounds a single podman invocation issued from the
+// stop/delete path, independent of the caller's own context. The DELETE
+// HTTP handler passes r.Context() straight through, which carries no
+// deadline of its own -- it only ends if the client disconnects. Without
+// a bound here, a wedged podman invocation blocks the calling goroutine
+// (and the HTTP request) for as long as podman stays wedged (issue #88:
+// a real ~7-minute stall, self-resolved, not guaranteed to always be).
+const podmanStopTimeout = 20 * time.Second
+
+// podmanWaitDelay bounds how long Cmd.Wait may keep blocking after the
+// podman process is known to have exited (or podmanStopTimeout above
+// fires), waiting for its stdout/stderr pipes to see EOF. This is the
+// other half of issue #88's gap: `exec.CommandContext`'s own cancellation
+// only signals the *direct* child. If that child forked a subprocess
+// (e.g. podman's own conmon/netavark helpers) that inherited the pipe and
+// is itself stuck on a storage/CDI lock, the direct child can already be
+// a reaped-pending zombie -- exactly what `ps` showed on the DGX,
+// `[podman] <defunct>` parented by spark's own PID -- while
+// CombinedOutput() still blocks forever reading for EOF that never comes.
+// Cmd.WaitDelay (Go 1.20+) is the stdlib's documented fix for precisely
+// this class of hang: it force-closes the pipes after the delay, so Wait
+// returns even if a grandchild is still holding them open.
+const podmanWaitDelay = 5 * time.Second
+
+// runPodmanBounded runs podman with its own timeout and WaitDelay,
+// layered on top of ctx rather than replacing it -- if ctx already carries
+// an earlier deadline, that still wins. See podmanStopTimeout and
+// podmanWaitDelay for why both are needed: a timeout alone only bounds
+// how long Spark waits *before signaling* the direct child; WaitDelay is
+// what guarantees Wait() itself returns afterward (issue #88).
+func runPodmanBounded(ctx context.Context, timeout, waitDelay time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "podman", args...)
+	cmd.WaitDelay = waitDelay
+	return cmd.CombinedOutput()
+}
+
 // StopPod stops a pod with the given grace period in seconds and removes it.
 // StartContainer starts an exited container in place (same config,
 // same filesystem) via `podman start`. Used for per-container restarts:
@@ -362,14 +400,14 @@ func (p *PodmanExecutor) StartContainer(ctx context.Context, containerName strin
 func (p *PodmanExecutor) StopPod(ctx context.Context, name string, gracePeriod int) error {
 	args := buildStopArgs(name, gracePeriod)
 	slog.Info("stopping pod", "cmd", "podman", "args", args)
-	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	out, err := runPodmanBounded(ctx, podmanStopTimeout, podmanWaitDelay, args...)
 	if err != nil {
 		return fmt.Errorf("podman pod stop: %w: %s", err, out)
 	}
 
 	rmArgs := buildRemoveArgs(name)
 	slog.Info("removing pod", "cmd", "podman", "args", rmArgs)
-	out, err = exec.CommandContext(ctx, "podman", rmArgs...).CombinedOutput()
+	out, err = runPodmanBounded(ctx, podmanStopTimeout, podmanWaitDelay, rmArgs...)
 	if err != nil {
 		if strings.Contains(string(out), "no such pod") {
 			return nil
@@ -490,7 +528,7 @@ func derivePodStatus(containers []ContainerStatus) Status {
 func (p *PodmanExecutor) RemovePod(ctx context.Context, name string) error {
 	args := []string{"pod", "rm", "-f", name}
 	slog.Info("removing pod", "cmd", "podman", "args", args)
-	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	out, err := runPodmanBounded(ctx, podmanStopTimeout, podmanWaitDelay, args...)
 	if err != nil {
 		return fmt.Errorf("podman pod rm: %w: %s", err, out)
 	}
