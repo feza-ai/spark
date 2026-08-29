@@ -102,6 +102,68 @@ func TestSchedule_CpusetShortfallReason(t *testing.T) {
 	}
 }
 
+// TestDescribeShortfall_NeverShowsNegativeFree covers issue #80's exact
+// reported symptom: "gpu 0 > -1 free" in a Pending reason, from a pod that
+// doesn't even request a GPU (req.GPUCount == 0), because Available() had
+// gone negative. Available() now floors non-CPU dimensions at 0 (see
+// TestAvailable_FloorsGPUAndMemoryAtZero), so this constructs the
+// pre-fix-shaped input directly against describeShortfall to also pin the
+// display side: even a hand-built negative avail must never surface as a
+// negative "free" figure, and a zero request against zero (floored) free
+// must not be reported as a shortfall at all.
+func TestDescribeShortfall_NeverShowsNegativeFree(t *testing.T) {
+	req := manifest.ResourceList{CPUMillis: 6000, GPUCount: 0}
+	avail := Resources{CPUMillis: 5700, GPUCount: 0} // already floored, as Available() now guarantees
+
+	got := describeShortfall(req, avail, false, 0)
+
+	if strings.Contains(got, "gpu 0 > -1 free") {
+		t.Fatalf("describeShortfall reproduced issue #80's exact bug: %q", got)
+	}
+	if strings.Contains(got, "> -") {
+		t.Fatalf("describeShortfall displayed a negative free value: %q", got)
+	}
+	if strings.Contains(got, "gpu") {
+		t.Fatalf("describeShortfall flagged a GPU shortfall for a pod that requested 0 GPUs: %q", got)
+	}
+	wantSub := "cpu 6000m > 5700m free"
+	if !strings.Contains(got, wantSub) {
+		t.Fatalf("describeShortfall = %q, want substring %q", got, wantSub)
+	}
+}
+
+// TestSchedule_Issue80ExactScenario reproduces the full event sequence from
+// issue #80: a restarted pod's stale GPU allocation survives on the ledger
+// (ForceAllocate, the restart-adoption path) alongside its live
+// replacement, over-counting GPUCount past allocatable. A second, unrelated
+// pod that requests CPU but no GPU must be reported Pending with an honest
+// CPU shortfall and no negative or spurious GPU figure.
+func TestSchedule_Issue80ExactScenario(t *testing.T) {
+	tracker := NewResourceTracker(
+		Resources{CPUMillis: 6000, MemoryMB: 16384, GPUCount: 1, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0}, 1,
+	)
+	s := NewScheduler(tracker)
+
+	// Two GPU allocations force-recorded for the same logical pod across a
+	// crash-restart (the old one never released before the new one landed).
+	tracker.ForceAllocate("runner-old", manifest.ResourceList{CPUMillis: 300, MemoryMB: 1024, GPUCount: 1, GPUMemoryMB: 8192})
+	tracker.ForceAllocate("runner-new", manifest.ResourceList{CPUMillis: 300, MemoryMB: 1024, GPUCount: 1, GPUMemoryMB: 8192})
+
+	result := s.Schedule(podSpec("cpu-only-pod", 100, 6000, 1024, 0))
+
+	if result.Action != Pending {
+		t.Fatalf("expected Pending, got action=%d reason=%q", result.Action, result.Reason)
+	}
+	if strings.Contains(result.Reason, "gpu") {
+		t.Fatalf("Reason wrongly names a GPU shortfall for a pod requesting no GPU: %q", result.Reason)
+	}
+	if strings.Contains(result.Reason, "> -") {
+		t.Fatalf("Reason displays a negative free value: %q", result.Reason)
+	}
+}
+
 func TestSchedule_FullNoPreemptionCandidates(t *testing.T) {
 	tracker := newTracker(2000, 4096, 8000)
 	s := NewScheduler(tracker)
