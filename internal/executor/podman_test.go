@@ -370,6 +370,11 @@ func TestBuildRunArgs_CommandAndArgs(t *testing.T) {
 			wantTail:       nil,
 		},
 		{
+			// Encoding changed by issue #73's fix: --entrypoint used to
+			// carry the whole Command array as a JSON blob here; it now
+			// carries only Command[0], with Command[1:] moved to the CMD
+			// tail. The resulting exec argv is unchanged (nsys profile -o
+			// /out either way) -- this is not a #85 regression, see #73's PR.
 			name:           "multi-token command no args",
 			command:        []string{"nsys", "profile", "-o", "/out"},
 			argv:           nil,
