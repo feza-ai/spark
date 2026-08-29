@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/feza-ai/spark/internal/manifest"
 )
@@ -20,16 +21,69 @@ func isNoSuchPod(err error) bool {
 	return strings.Contains(msg, "no such pod")
 }
 
+// isCgroupCleanupRace reports whether err is podman's benign
+// "cgroup: Unit machine-libpod_pod_<id>.slice not loaded" error from
+// `podman pod rm` (issue #71). It surfaces when the pod's containers were
+// already torn down (e.g. by a preceding stop) and systemd/crun reaped the
+// pod's cgroup slice before rm got to it -- podman reports the absence of
+// the thing it's cleaning up as a hard error even though the desired end
+// state (pod gone) is already true.
+func isCgroupCleanupRace(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "cgroup") && strings.Contains(msg, "not loaded")
+}
+
+// isPodAlreadyGone reports whether err indicates the pod is already absent
+// from podman state -- either explicitly ("no such pod") or via the
+// cgroup-cleanup race in isCgroupCleanupRace (issue #71). Callers classify
+// both the same way: proceed with cleanup instead of aborting.
+func isPodAlreadyGone(err error) bool {
+	return isNoSuchPod(err) || isCgroupCleanupRace(err)
+}
+
 // podConfirmedGone reports whether a pod is confirmed absent from podman,
 // used to distinguish a spurious RemovePod error (the pod was actually
 // removed despite the error) from a genuine failure that left it alive.
-// Only "no such pod" from a fresh status check counts as confirmation;
+// Only isPodAlreadyGone from a fresh status check counts as confirmation;
 // any other outcome -- the pod still reports a status, or the status
 // check itself errors some other way -- is treated conservatively as
 // "still there", preserving the existing safe (no release) behavior.
 func (s *Server) podConfirmedGone(ctx context.Context, name string) bool {
 	_, err := s.executor.PodStatus(ctx, name)
-	return err != nil && isNoSuchPod(err)
+	return err != nil && isPodAlreadyGone(err)
+}
+
+// removePodMaxAttempts bounds the retries around executor.RemovePod when it
+// hits the podman cgroup-cleanup race (issue #71): "podman pod rm" can
+// report the slice-not-loaded error even though the pod is already torn
+// down, and an immediate retry commonly succeeds outright once the race
+// window has passed.
+const removePodMaxAttempts = 3
+
+// removePodRetryDelay is the pause between retries in removePodWithRetry.
+var removePodRetryDelay = 20 * time.Millisecond
+
+// removePodWithRetry calls executor.RemovePod, retrying up to
+// removePodMaxAttempts times when the failure is the cgroup-cleanup race
+// (isCgroupCleanupRace) rather than giving up on the first attempt. Any
+// other error, a "no such pod" result, or success returns immediately:
+// retrying either wastes time (no such pod never becomes "found") or has
+// already achieved the state the caller wants.
+func (s *Server) removePodWithRetry(ctx context.Context, name string) error {
+	var err error
+	for attempt := 1; attempt <= removePodMaxAttempts; attempt++ {
+		err = s.executor.RemovePod(ctx, name)
+		if err == nil || !isCgroupCleanupRace(err) {
+			return err
+		}
+		if attempt < removePodMaxAttempts {
+			time.Sleep(removePodRetryDelay)
+		}
+	}
+	return err
 }
 
 func (s *Server) registerPodMutateRoutes() {
@@ -123,7 +177,7 @@ func (s *Server) handleDeletePod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.executor.StopPod(r.Context(), name, 10); err != nil && !isNoSuchPod(err) {
+	if err := s.executor.StopPod(r.Context(), name, 10); err != nil && !isPodAlreadyGone(err) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -134,10 +188,11 @@ func (s *Server) handleDeletePod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.executor.RemovePod(r.Context(), name); err != nil && !isNoSuchPod(err) {
-		// podman occasionally reports a non-fatal error (e.g. a network or
-		// cgroup cleanup warning) after it has already removed the pod --
-		// the message doesn't match "no such pod" so it isn't caught above.
+	if err := s.removePodWithRetry(r.Context(), name); err != nil && !isPodAlreadyGone(err) {
+		// podman occasionally reports a non-fatal error (e.g. a network
+		// cleanup warning, or -- once retries above are exhausted -- the
+		// cgroup-cleanup race) after it has already removed the pod, whose
+		// message doesn't match isPodAlreadyGone so it isn't caught above.
 		// Trusting the error at face value here left the store record and
 		// the scheduler's resource reservation (including any GPU device
 		// slot) intact for a pod that no longer existed, leaking that

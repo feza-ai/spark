@@ -27,6 +27,14 @@ type stubExecutor struct {
 	removeErr    error
 	podStatus    executor.Status
 	podStatusErr error
+
+	// removeErrSequence, when non-nil, scripts a per-call result for
+	// RemovePod: entry i is returned on the (i+1)th call (a nil entry
+	// means success on that call). Once the sequence is exhausted,
+	// RemovePod returns nil. Used to test retry behavior; removeErr keeps
+	// its existing single-error-every-call meaning when this is nil.
+	removeErrSequence []error
+	removeCallCount   int
 }
 
 func (e *stubExecutor) CreatePod(_ context.Context, spec manifest.PodSpec) error {
@@ -55,6 +63,14 @@ func (e *stubExecutor) RemovePod(_ context.Context, name string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.removes = append(e.removes, name)
+	if e.removeErrSequence != nil {
+		idx := e.removeCallCount
+		e.removeCallCount++
+		if idx < len(e.removeErrSequence) {
+			return e.removeErrSequence[idx]
+		}
+		return nil
+	}
 	return e.removeErr
 }
 
@@ -483,6 +499,106 @@ func TestDeletePodSchedulerRemove(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDeletePodCgroupRaceTreatedAsSuccess reproduces issue #71: podman pod
+// rm can report "cgroup: Unit machine-libpod_pod_<id>.slice not loaded"
+// when the pod's containers were already torn down and its cgroup slice
+// was reaped before rm got to it -- the desired end state (pod gone) is
+// already true, so DELETE must still return deleted:true and release the
+// store record and scheduler reservation, not return 500, even once the
+// bounded retry is exhausted (every attempt returns the same error here).
+func TestDeletePodCgroupRaceTreatedAsSuccess(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
+		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+		nil, 0,
+	)
+	exec := &stubExecutor{
+		removeErr: errors.New("Error: removing pod a3f9c21b: cgroup: Unit machine-libpod_pod_a3f9c21b.slice not loaded."),
+	}
+	sched := &stubScheduler{}
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil, "test")
+
+	store.Apply(manifest.PodSpec{Name: "race-pod"})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/pods/race-pod", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Name    string `json:"name"`
+		Deleted bool   `json:"deleted"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if !body.Deleted {
+		t.Error("expected deleted=true for the cgroup-cleanup race error")
+	}
+
+	if _, ok := store.Get("race-pod"); ok {
+		t.Error("store record should be removed for the cgroup-cleanup race error")
+	}
+
+	sched.mu.Lock()
+	if len(sched.removed) != 1 || sched.removed[0] != "race-pod" {
+		t.Errorf("expected scheduler.RemovePod(race-pod) once, got %v", sched.removed)
+	}
+	sched.mu.Unlock()
+}
+
+// TestDeletePodCgroupRaceRetrySucceeds reproduces the exact issue #71
+// repro: the first podman pod rm hits the cgroup-cleanup race and errors,
+// but an immediate retry succeeds outright once the race window has
+// passed. RemovePod must be retried, and the second call succeeding must
+// not be treated as a failure.
+func TestDeletePodCgroupRaceRetrySucceeds(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768},
+		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
+		nil, 0,
+	)
+	exec := &stubExecutor{
+		removeErrSequence: []error{
+			errors.New("Error: removing pod issue71: cgroup: Unit machine-libpod_pod_issue71.slice not loaded."),
+			nil,
+		},
+	}
+	sched := &stubScheduler{}
+	srv := NewServer(store, tracker, exec, nil, nil, nil, nil, "", sched, nil, nil, "test")
+
+	store.Apply(manifest.PodSpec{Name: "issue71"})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/pods/issue71", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if !body.Deleted {
+		t.Error("expected deleted=true once the retried RemovePod succeeds")
+	}
+
+	exec.mu.Lock()
+	if len(exec.removes) != 2 {
+		t.Errorf("expected RemovePod to be retried once (2 calls total), got %d", len(exec.removes))
+	}
+	exec.mu.Unlock()
 }
 
 func TestDeletePodStopFails(t *testing.T) {
