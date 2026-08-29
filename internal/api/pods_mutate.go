@@ -138,6 +138,7 @@ func (s *Server) handleApplyPod(w http.ResponseWriter, r *http.Request) {
 
 	for _, pod := range result.Pods {
 		s.store.Apply(pod)
+		s.store.SetRawManifest(pod.Name, body)
 		if s.sqlStore != nil {
 			if rec, ok := s.store.Get(pod.Name); ok {
 				s.sqlStore.SavePod(&rec)
