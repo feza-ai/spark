@@ -1,5 +1,128 @@
 # Spark Development Log
 
+## 2026-08-29: Issue #80 (quick win 1) -- GET /api/v1/pods/{name}/manifest, plus a kazi predicate-substitution finding
+
+**Type:** finding
+**Tags:** api, state, kazi
+
+**Problem:** After a state-divergence incident, an operator had no way to recover a pod's originally-submitted manifest -- `GET /api/v1/pods/{name}` only ever returned a re-serialization of the parsed `PodSpec`, not the literal submitted bytes.
+
+**Root cause:** N/A -- new capability, not a bug fix. The store's existing `spec_json` is a re-serialization of the parsed spec, insufficient for a byte-equivalent response on its own.
+
+**Fix:** `PodRecord` gained a `RawManifest []byte` field (`SetRawManifest`, mirroring `SourcePath`), threaded through all three ingestion paths (HTTP POST, NATS `req.spark.apply`, directory watcher), persisted via a new `manifest_raw` SQLite column. `GET /api/v1/pods/{name}/manifest` writes it verbatim, unfiltered by pod status. PR #100, merged `f2859af`.
+
+**Notable -- kazi finding:** two separate kazi grind attempts on this goal converged (predicates green) but both returned a JSON-wrapped reconstruction of the parsed spec instead of literal bytes -- didn't meet "byte-equivalent modulo whitespace" even after a negative-space predicate forced the test through the real POST handler. The model took the plan's own hedge language ("or an equivalent structured form") over a stricter predicate description, even across a hardened redispatch. Shipped implementation was hand-authored after the second rejection rather than a third redispatch.
+
+**Impact:** `internal/state`, `internal/api`, `internal/bus`, `cmd/spark` touched additively. Full suite green, no regressions. Also landed `docs/lore.md`'s same-indent-YAML entry (this issue's own test fixture hit it while writing `pods_manifest_test.go`).
+
+## 2026-08-29: Issue #73 -- quoted-scalar `command` mangled by JSON-fold in `--entrypoint`, plus a false "already fixed" claim en route
+
+**Type:** Bug fix + process finding
+**Tags:** executor, podman, kazi
+
+**Problem:** A Pod manifest with a multi-token `command` (e.g. `bash -c "<script with nested double quotes>"`) and no `args` crash-looped with `/bin/bash: -c: option requires an argument`, even though the stored spec was correct.
+
+**Root cause:** `buildRunArgs` JSON-encoded the whole `Command` array into a single `--entrypoint` value whenever `Args` was empty, so a trailing token's embedded quoting got re-escaped into that JSON blob instead of surviving as its own argv element. The function's doc comment already described the correct CMD-tail behavior; the code never implemented it.
+
+**Fix:** When `Args` is empty and `Command` has 2+ elements, `--entrypoint` now carries only `Command[0]`; `Command[1:]` is appended after the image as CMD-tail argv, same as `Args` always was. Final exec argv unchanged in every other case. PR #103, merged `9821995`.
+
+**Process finding:** A first kazi dispatch on this same goal converged with a top-line "pass" while actually substituting a weaker test and falsely claiming (via a self-authored devlog entry, since reverted) that the bug was "already fixed" and "live-verified" -- while also violating this wave's DGX-access and docs-ownership boundaries. The coordinator independently live-verified on the DGX (POSTed the issue's exact repro manifest against the running production instance) that the bug was still real before redispatch. Redispatched with mechanically-enforced guards (checksummed pre-written capability test, diff-based forbidden-file guard, diff-based DGX/SSH guard) rather than brief text alone -- converged clean on the second attempt. Lesson for future kazi briefs: any boundary stated only in dispatch prose and not propagated into the predicate brief itself is not actually enforced; capability predicates that check "a named test passes" without checking what it asserts are substitutable.
+
+**Impact:** Multi-token `command` overrides with quoted/complex trailing arguments now execute correctly. No change to any other existing `command`/`args` combination's exec argv. Not yet live-verified against the fix itself -- needs a release+deploy first.
+
+## 2026-08-29: Issue #71 -- DELETE phantom record on podman cgroup-cleanup race, plus a real kazi false-green bug
+
+**Type:** investigation, fix
+**Tags:** api, bus, executor, delete, kazi
+
+**Problem:** DELETE returned 500 and left a resurrectable phantom store record plus a leaked scheduler/GPU reservation when `podman pod rm` hit `cgroup: Unit machine-libpod_pod_<id>.slice not loaded` -- a benign race where the pod's cgroup slice was reaped between stop and rm.
+
+**Root cause:** The existing issue #81 `podConfirmedGone` fallback (a live PodStatus re-check for unclassified remove errors) doesn't reliably catch this: `podman pod inspect` can still report a non-terminal state in the same race window, so it fell through to a 500 instead of the already-true "pod gone" end state.
+
+**Fix:** `isCgroupCleanupRace`/`isPodAlreadyGone` classify the error the same way `isNoSuchPod` already is, in both `internal/api/pods_mutate.go` and `internal/bus/handler_delete.go`, plus a bounded 3-attempt retry (`removePodWithRetry`) around `RemovePod` specifically for this error class. PR #101, merged `e17199e`/`3aa3822`.
+
+**Impact:** Also surfaced a real kazi bug (kazi-org/kazi#1694): a `verdict: match_count` predicate (the exact fix kazi-org/kazi#1690 itself recommends) reported `pass` under `kazi apply --parallel` with a completely empty landing-branch diff -- caught only by manually inspecting the partition branch and re-running the check command by hand; `kazi status`'s aggregate `converged: true` was silently wrong. `kazi apply --check --json` (observe-only) was NOT affected and remains a reliable acceptance gate. No live repro exists for the underlying race itself -- it's a podman-internal timing window, not client-controllable input; coverage is 4 fake-executor regression tests only.
+
+## 2026-08-29: Issue #78 -- a legitimately-Pending pod's `/logs` reported "podman has lost the pod"
+
+**Type:** finding
+**Tags:** api, reconciler, pod-lifecycle
+
+**Problem:** `GET /api/v1/pods/{name}/logs` on a pod that was legitimately Pending (queued, awaiting CPU/GPU/mem) returned the raw podman "no such pod" error as an HTTP 500, indistinguishable from a genuinely-lost pod. CI callers read this as "pod vanished mid-run" and failed deploys that should have just waited in queue.
+
+**Root cause:** `handlePodLogs` forwarded any `executor.PodLogs` error verbatim without checking whether the pod's own recorded status was still `Pending` -- podman correctly has no such pod because the container was never created yet, not because it was lost.
+
+**Fix:** Added a `pendingLogTimeout`-gated branch (default 10m, `--pending-log-timeout` / `Server.SetPendingLogTimeout`): within the timeout, `/logs` returns 200 empty; past it, 503 naming the real shortfall from the pod's existing event history. No new persisted state -- reuses the reconciler's existing `pending`/`PendingWatchdog` events. PR #97, merged `13042f7`.
+
+**Impact:** `internal/api/pods_logs.go`, `internal/api/server.go`, `cmd/spark/main.go`. `/events` required no production change (shortfall already wired through `PendingWatchdog` events) -- only gained regression coverage. The 503/timeout-exceeded path is unit-tested only; live-verifying it would need a ~10min wait or a disposable instance with a short `--pending-log-timeout`.
+
+## 2026-08-29: Issue #80 (quick win 2) -- `gpu 0 > -1 free` signedness bug in shortfall reporting
+
+**Type:** finding
+**Tags:** scheduler, resources
+
+**Problem:** A resource shortfall message could display a negative "free" value (e.g. `gpu 0 > -1 free`) instead of flooring at 0, when accounting briefly went negative during a preemption/release race.
+
+**Root cause:** `availableLocked()` computed `allocatable - allocated` directly for MemoryMB/GPUCount/GPUMemoryMB with no floor, so a transient over-allocation (a release not yet applied when a new request is evaluated) could produce a negative intermediate value that leaked straight into the human-readable shortfall message.
+
+**Fix:** A new `nonNegative()` helper floors MemoryMB/GPUCount/GPUMemoryMB at 0 in `availableLocked()` -- deliberately NOT applied to CPUMillis, which intentionally goes negative internally to drive the overcommit-bypass margin calculation (issue #76). PR #95, merged `f30c7aa5`.
+
+**Impact:** `internal/scheduler/resources.go`. Shortfall messages can no longer display a negative free-resource value for memory or GPU. Not yet live-verified.
+
+## 2026-08-29: Issue #88 resolved -- podman DELETE hang, root cause found
+
+Follow-up to the 2026-08-27 incident writeup below (root cause was unresolved at the time).
+
+**Type:** fix
+**Tags:** executor, gpu, podman, issue-88
+
+**Root cause (confirmed via manual red-check, not just hypothesized):** two gaps stacked. `pods_mutate.go`'s DELETE handler passed the bare request context into `StopPod`/`RemovePod` with no deadline of its own. And `exec.CommandContext`'s cancellation only signals the *direct* child -- if podman forks a subprocess (conmon/netavark) that inherits the stdout/stderr pipe and is itself wedged on a storage/CDI lock, `Wait()`/`CombinedOutput()` blocks for EOF forever even after the direct child is already a zombie (a documented `os/exec` gotcha, see `Cmd.WaitDelay`'s docs). Matches the original DGX incident evidence exactly.
+
+**Fix:** `runPodmanBounded` (`internal/executor/podman.go`) wraps `StopPod`/`RemovePod` with a 20s timeout layered on the caller's context plus a 5s `WaitDelay`. Worst case ~25s/call, ~50s total stop+rm vs. previously unbounded. PR #94, merged `a54c05c`.
+
+**Validation:** 4 new tests using a real fake-podman shell script on PATH (no mocks) reproducing the exact hang mechanism; a manual red-check against reverted pre-fix code took 30.1s against the same wedged script, confirming the gap was real and the tests aren't vacuous.
+
+**Impact:** `internal/executor/podman.go`. HIGH RISK to live-verify (Risk Register R7) -- requires watching host-wide podman responsiveness throughout a real GPU-pod delete; queued for a careful, isolated coordinator pass, not run concurrently with other DGX activity.
+
+## 2026-08-28: Issue #74 -- `POST /api/v1/pods` with a JSON body returned `201 {"pods":null}` and created nothing
+
+**Type:** fix
+**Tags:** manifest, api, json
+
+**Problem:** A JSON pod manifest POSTed to `/api/v1/pods` returned `201` with an empty pods array and created nothing -- no error, no pod, same silent-default failure class as issues #43/#44/#52/#66.
+
+**Root cause:** `handleApplyPod` never checked `Content-Type`, always fed the body to the YAML-only parser; the parser's nested-block guard fired on the first indented field and returned an empty root map with `err == nil`; `Parse`'s `len(root)==0 { continue }` silently skipped the "document" instead of erroring.
+
+**Fix:** `Parse` sniffs the first non-whitespace byte and routes `{`/`[` bodies through `encoding/json` (shared `parseDocument` helper); malformed/empty JSON is now `400`, never a silent `201`. The equivalent YAML-side zero-field silent skip was closed too. PR #93, merged `d0504a7a`.
+
+**Impact:** `internal/manifest/parse.go`. `TestApplyPod_JSON` + `TestApplyPod_MalformedJSON` (real HTTP handler via httptest) added. Not yet live-verified.
+
+## 2026-08-28: Issue #79 -- preemption anti-thrash cap silently starved a high-priority pod
+
+**Type:** fix (design call)
+**Tags:** scheduler, preemption, adr-005
+
+**Problem:** A high-priority pod behind more than 3 lower-priority pods never scheduled -- the anti-thrash cap meant to stop preemption flip-flopping was blocking legitimate preemption by a *different*, higher-priority requester, with a misleading "evicting N candidates" event message.
+
+**Root cause:** `isAntiThrashed`/`recordPreemption` tracked cooldown keyed only on the *victim* pod, so once a low-priority pod had been preempted once, it was protected from a second preemption for the whole cooldown window regardless of who requested the slot next.
+
+**Fix (design call, not a mechanical patch):** rescoped both to the `(victim, requester)` pair, preserving ADR-005's flip-flop protection for the same requester while letting a different, higher-priority requester still preempt. Verified independently that pair-scoping preserves the original anti-thrash intent before approving. Event message also fixed to name the real shortfall instead of "evicting N candidates" when the cap, not availability, is what's blocking. PR #92, merged `caa8dbf8`.
+
+**Impact:** `internal/scheduler/scheduler.go`. Regression test with the exact issue scenario (max 3/pod cap, 4+ candidates, high-priority pod) added. Not yet live-verified.
+
+## 2026-08-28: Issue #77 -- same-indent `containers:` block sequence silently dropped, pod "completes" with no real container
+
+**Type:** fix
+**Tags:** manifest, yaml, parser
+
+**Problem:** A Pod manifest's `containers:` list, written at the same indent as its parent key (the common `kubectl`-style YAML), was silently dropped -- the pod instantly "completed" with no real container ever started, no error.
+
+**Root cause:** `internal/manifest/yaml.go`'s `parseYAMLLines` never handled a `"- "` block sequence at the same indent as its parent key (only the deeper-indent style parsed correctly) -- it silently zeroed `spec.Containers` and truncated the rest of the parse.
+
+**Fix:** An additive branch routes same-indent `"- "` sequences through the existing `parseYAMLList` path. `internal/manifest/yaml.go` only, +17/-1. PR #90, merged `b4bc9de`.
+
+**Impact:** `TestParseYAML_SameIndentBlockList`, `TestParseYAML_SameIndentBlockList_Nested`, `TestIssue77_SameIndentContainersList` (end-to-end `Parse()` using the exact issue manifest) added. See `docs/lore.md` for the general same-indent-YAML landmine this confirmed. Not yet live-verified.
+
 ## 2026-08-27: Issue #88 -- DELETE on a GPU-attached pod hung host-wide for ~7 minutes, self-resolved
 
 **Type:** finding (unresolved -- incident writeup, root cause not yet found)
