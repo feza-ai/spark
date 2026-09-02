@@ -58,9 +58,17 @@ func main() {
 	orphanReapTTL := flag.Duration("orphan-reap-ttl", time.Hour, "TTL after which terminal-state orphan podman pods are reaped (0 disables)")
 	imagePruneInterval := flag.Duration("image-prune-interval", 24*time.Hour, "interval between 'podman image prune -f' runs (0 disables)")
 	hostLoadSampleInterval := flag.Duration("host-load-sample-interval", 15*time.Second, "interval between /proc/loadavg samples used for utilization-aware CPU admission (issue #76)")
+	priorityConfigPath := flag.String("priority-config", "", "path to a priority classes config file (see manifest.LoadPriorityClasses); empty uses the built-in default table")
 	cpuOvercommitMarginMillis := flag.Int("cpu-overcommit-margin-millis", 1000, "CPU millicores subtracted from the live headroom estimate before utilization-aware admission (issue #76) will admit a pod over the accounted ceiling; covers the trailing load average's lag")
 	pendingLogTimeout := flag.Duration("pending-log-timeout", 10*time.Minute, "how long a Pending pod's GET /logs treats podman's 'no such pod' as still-queued before reporting the resource shortfall instead of staying silent (issue #78)")
 	flag.Parse()
+
+	priorityClasses, err := manifest.LoadPriorityClasses(*priorityConfigPath)
+	if err != nil {
+		slog.Error("invalid --priority-config", "path", *priorityConfigPath, "error", err)
+		os.Exit(1)
+	}
+	slog.Info("priority classes loaded", "classes", priorityClasses)
 
 	reserveCores, err := scheduler.ParseCoreRange(*systemReserveCoresStr, runtime.NumCPU())
 	if err != nil {
@@ -225,13 +233,6 @@ func main() {
 	cronSched := cron.NewCronScheduler(store)
 
 	// 7. Register NATS handlers.
-	priorityClasses := map[string]int{
-		"system-critical": 0,
-		"high":            100,
-		"default":         1000,
-		"low":             10000,
-		"batch":           20000,
-	}
 	bus.RegisterApplyHandler(b, store, priorityClasses, cronSched)
 	bus.RegisterDeleteHandler(b, store, exec, sched)
 	bus.RegisterGetHandler(b, store)

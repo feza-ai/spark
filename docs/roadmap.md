@@ -17,6 +17,8 @@
 
 ## In flight (PRs open)
 
+- **Priority-class table divergence** (found diagnosing #114 — false `gpu 1 > 0 free` shortfall on an `ltx-spark` render pod). `cmd/spark/main.go` built its own inline priority-class map (`"high": 100`, `"default": 1000`, no `"normal"` key) instead of `manifest.DefaultPriorityClasses()` (ADR 005's `"high": 500` below `"normal": 1000`) — two independently-maintained tables that had drifted apart. Fix removes the shadow map, adds `--priority-config` sourcing `manifest.LoadPriorityClasses`. This alone likely isn't the full explanation for #114's symptom (left a second lead — `Available().GPUCount` ledger vs `assignedDeviceCountLocked()` device map, drifted apart by `ForceAllocate` on pod adoption — as a comment on #114). PR #116, opened 2026-09-01, awaiting review/merge. Not yet released or deployed to the DGX. Owner: this session.
+
 **Wave 1 (dispatched via `/apply --pool` 2026-08-28, pool-coordinated) is
 fully landed as of 2026-08-29** — all 10 dispatch units merged, see
 Shipped above. `T2.6` (flag-skip-list regression coverage) independently
