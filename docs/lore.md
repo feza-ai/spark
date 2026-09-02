@@ -75,3 +75,25 @@ is the tell. There is no reliable way to prevent this from the commit
 side (the trailer is what makes release-please's changelog useful) --
 treat "reopen after merge" as needing a second pass after the release PR
 merges too, not a one-time step.
+
+## Buildah/OCI image builds need `securityContext.privileged: true`
+
+A pod running `buildah build`/`buildah push` fails under Spark's default
+(non-privileged) pod securityContext: it can't do the overlay mount work
+buildah needs ("failed to make mount private: permission denied").
+Switching to `--storage-driver vfs` does not dodge this -- it fails later,
+applying layers, with "remount /: permission denied". The actual fix is
+`privileged: true` in the container spec, kept on the default overlay
+storage driver.
+
+Confirmed 2026-09-02 building `canary-sire:latest` for ECR (adapting
+`jobs/dgx-canary/build-images.sh`'s pattern from the DGX local registry to
+ECR): the first two submissions failed exactly this way, back to back; the
+third, adding `privileged: true` and reverting to overlay, succeeded in
+~2 minutes.
+
+**How to apply:** any manifest submitting a buildah/image-build job to
+Spark needs `privileged: true` set explicitly -- don't copy a non-privileged
+pod spec as a starting point for an image build. This is a real widening
+of what the pod is granted, so call it out in the manifest/PR rather than
+adding it silently.
