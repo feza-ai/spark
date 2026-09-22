@@ -12,6 +12,12 @@ type ResourceList struct {
 type ResourceRequirements struct {
 	Requests ResourceList
 	Limits   ResourceList
+	// MemoryRequestUndeclared reports that the container declared neither a
+	// memory request nor a memory limit. Such a container is accounted at
+	// 0MB unless Parse is given WithDefaultMemoryRequestMB, which is how a
+	// node packed with undeclared containers reported a completely empty
+	// memory ledger while it was full (issue #121).
+	MemoryRequestUndeclared bool
 }
 
 // EnvVar represents an environment variable.
@@ -102,6 +108,20 @@ type PodSpec struct {
 	BackoffLimit                  int
 	GPUDevices                    []int // runtime: assigned GPU device IDs (set by scheduler, not parsed from YAML)
 	CpusetCores                   []int // runtime: assigned CPU core IDs for --cpuset-cpus (set by reconciler, not parsed from YAML)
+}
+
+// UndeclaredMemoryContainers returns the names of accounted containers that
+// declared neither a memory request nor a memory limit, in spec order.
+// Returns nil when every container declared memory. Init containers are
+// excluded because TotalRequests does not account them.
+func (p *PodSpec) UndeclaredMemoryContainers() []string {
+	var names []string
+	for _, c := range p.Containers {
+		if c.Resources.MemoryRequestUndeclared {
+			names = append(names, c.Name)
+		}
+	}
+	return names
 }
 
 // TotalRequests sums resource requests across all containers in the pod.

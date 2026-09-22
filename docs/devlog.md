@@ -1,5 +1,27 @@
 # Spark Development Log
 
+## 2026-09-22: Issue #121 -- admission trusted a ledger that reads zero for undeclared containers
+
+**Type:** finding
+**Tags:** scheduler, manifest, admission, incident
+
+**Problem:** On a single-node GB10 (114372MB allocatable), `GET /api/v1/resources` reported `available.memoryMB` equal to the entire allocatable total while eight container workloads were resident and actively building. A 100GiB render request was compared against that figure, correctly found to fit, and admitted. Minutes later the host stopped servicing the network at the link layer -- no ICMP, no SSH, an incomplete ARP entry -- observed independently from three machines.
+
+**Root cause:** `parseResources` returned a zero `ResourceRequirements` for a container with no `resources:` block, with no error, so such a container was accounted at 0MB permanently; `PodSpec.TotalRequests` summed those zeros plainly, and `availableLocked` computes memory as `allocatable - sum(declared)` with nothing reading the host. The admission check itself was never wrong -- `canFitLocked` has no memory skip path and ADR 013 deliberately withheld the CPU-style live-load bypass from memory. The number it enforced was empty.
+
+Measured before the incident, not inferred from it: with one 8GiB job running, `allocated.memoryMB` read 8192 and the container cgroup confirmed `memory.max = 8589934592`; deleting that job moved `allocated.memoryMB` to 0 and `cpuMillis` from 16900 to 16400, exactly its 500m. Eight CI containers, mid-build, declared 0MB between them.
+
+**Fix:** Two complementary changes (`docs/adr/015-undeclared-memory-admission.md`).
+
+1. `parseResources` records `MemoryRequestUndeclared` when neither a memory request nor a memory limit names memory; `Parse` applies `WithDefaultMemoryRequestMB` (default 2048, `--default-memory-request-mb`) to those containers *after* the document parses, so a malformed quantity still errors rather than quietly becoming the default. An explicit `memory: "0"` is a declaration and is honored. All three ingestion paths get the same options from `main`.
+2. `Scheduler.HostMemorySource`/`SetHostMemory` reads `/proc/meminfo` `MemAvailable` on demand at both admission doors, refusing with `ErrLiveMemoryExhausted` when admitting would leave less than `--live-memory-reserve-mb` actually free. It runs only after the ledger has already approved a pod, so it adds refusals and can never admit -- `TestSchedule_UtilizationAwareAdmission_NeverBypassesMemory` still holds, and a new test asserts the #76 CPU-overcommit path cannot route around it either.
+
+**Worth recording:** the default's adequacy is coincidental to container count. At the incident's eight undeclared containers, 2048MB accounts 16384MB and the 102400MB render is refused with 97988MB showing available. At five containers it accounts 10240MB, 104132MB shows available, and the same render is admitted again. A default makes the ledger pessimistic; only the live guard makes it informed. `spark_defaulted_memory_admissions_total` climbing is a prompt to fix the manifests.
+
+**Also worth recording:** `available.memoryMB` reads full precisely when undeclared workloads are what fill the node, so any runbook gating on it passes in exactly the situation it exists to catch. Gate on live `/proc/meminfo` instead. Recorded in `docs/lore.md`.
+
+**Not verified:** nothing in this change has been observed on the DGX. The host has been down since the incident, so the refusal path, the WARN log, and both counters are unit-tested only.
+
 ## 2026-08-29: Issue #80 (quick win 1) -- GET /api/v1/pods/{name}/manifest, plus a kazi predicate-substitution finding
 
 **Type:** finding

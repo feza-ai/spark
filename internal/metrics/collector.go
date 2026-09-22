@@ -15,6 +15,15 @@ type SchedulerMetrics interface {
 	// covering an accounted CPU shortfall. Gives operators direct
 	// visibility into how often the bypass engages.
 	CPUOvercommitAdmissions() int64
+	// DefaultedMemoryAdmissions returns the total number of pods admitted
+	// carrying a memory request Spark supplied because the manifest
+	// declared none (issue #121). A climbing figure means the memory
+	// ledger rests on a default rather than on what workloads declared.
+	DefaultedMemoryAdmissions() int64
+	// LiveMemoryRefusals returns the total number of admissions refused by
+	// the live memory guard -- pods the declared-request ledger approved
+	// and real host memory did not (issues #47, #121).
+	LiveMemoryRefusals() int64
 }
 
 // HousekeepingMetrics exposes housekeeper counters for /metrics.
@@ -168,6 +177,18 @@ func (c *Collector) Collect() []MetricFamily {
 			Help:    "Total pods admitted via utilization-aware CPU overcommit (accounted CPU short, real host headroom available)",
 			Type:    "counter",
 			Metrics: []Metric{{Value: float64(c.scheduler.CPUOvercommitAdmissions())}},
+		})
+		families = append(families, MetricFamily{
+			Name:    "spark_defaulted_memory_admissions_total",
+			Help:    "Total pods admitted carrying a memory request Spark supplied because the manifest declared none",
+			Type:    "counter",
+			Metrics: []Metric{{Value: float64(c.scheduler.DefaultedMemoryAdmissions())}},
+		})
+		families = append(families, MetricFamily{
+			Name:    "spark_live_memory_refusals_total",
+			Help:    "Total admissions refused because real host memory was insufficient, despite the declared-request ledger having room",
+			Type:    "counter",
+			Metrics: []Metric{{Value: float64(c.scheduler.LiveMemoryRefusals())}},
 		})
 	}
 
