@@ -17,6 +17,8 @@
 
 ## In flight (PRs open)
 
+- **#121 — undeclared memory requests and the live memory admission guard.** A container declaring neither a memory request nor a memory limit was accounted at 0MB, so a GB10 node with eight resident build containers reported `available.memoryMB` at the full 114372MB allocatable; a 100GiB render was admitted against that figure and the host dropped off the network minutes later. Two changes: `--default-memory-request-mb` (default 2048) charges undeclared containers at parse time via `manifest.WithDefaultMemoryRequestMB`, and `--live-memory-guard` (default on) reads `/proc/meminfo` `MemAvailable` at admission, refusing with `ErrLiveMemoryExhausted` when admitting would leave less than `--live-memory-reserve-mb` free. The guard is subtractive only — it runs after the declared ledger approves and can never admit what the ledger rejects, so ADR 013's memory asymmetry holds. Also closes the live-usage half of #47 (proposal 3, memory only); #47's usage sampling and alerting (proposals 1 and 2) stay open. Owner: this session. Design: `docs/adr/015-undeclared-memory-admission.md`, `docs/devlog.md`, `docs/lore.md`. **Caveat: no live verification.** The DGX has been down since the incident, so the refusal path, the WARN log, and both new counters are unit-tested only, and the default's sufficiency has not been observed against real workloads.
+
 **Wave 1 (dispatched via `/apply --pool` 2026-08-28, pool-coordinated) is
 fully landed as of 2026-08-29** — all 10 dispatch units merged, see
 Shipped above. `T2.6` (flag-skip-list regression coverage) independently

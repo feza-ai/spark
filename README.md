@@ -74,6 +74,60 @@ Spark will detect system resources (CPU, memory, GPU), connect to NATS, and begi
 | `--orphan-reap-ttl` | `1h` | TTL after which terminal-state orphan podman pods are reaped (0 disables) |
 | `--image-prune-interval` | `24h` | Interval between `podman image prune -f` runs (0 disables) |
 | `--pending-log-timeout` | `10m` | How long a Pending pod's `GET /logs` treats podman's "no such pod" as still-queued before reporting the resource shortfall instead of staying silent (issue #78) |
+| `--host-load-sample-interval` | `15s` | Interval between `/proc/loadavg` samples used for utilization-aware CPU admission (issue #76) |
+| `--cpu-overcommit-margin-millis` | `1000` | CPU millicores subtracted from the live headroom estimate before utilization-aware admission will admit a pod over the accounted ceiling |
+| `--default-memory-request-mb` | `2048` | Memory request accounted for a container that declares neither a memory request nor a memory limit. `0` disables defaulting and accounts such a container at 0MB (issue #121) |
+| `--live-memory-guard` | `true` | Refuse admission when real host memory minus the pod's request would fall below `--live-memory-reserve-mb`, even when the declared-request ledger has room |
+| `--live-memory-reserve-mb` | `4096` | MB of real host memory the live memory guard never hands out |
+
+### Memory admission
+
+Two independent protections stand between a manifest and a node that runs
+out of RAM. Both default on; see `docs/adr/015-undeclared-memory-admission.md`.
+
+**Undeclared memory is accounted at a default.** A container that names no
+memory request and no memory limit is charged `--default-memory-request-mb`
+rather than 0MB. Without this, a node packed with such containers reports
+its memory ledger as completely empty while it is full, and admission
+believes it. An explicit `memory: "0"` is a declaration and is honored as
+written; only silent absence is defaulted. Set the flag to `0` to restore
+the previous behavior.
+
+**Real host memory is checked at admission.** After the declared-request
+ledger approves a pod, Spark reads `MemAvailable` from `/proc/meminfo` and
+refuses the pod when admitting it would leave less than
+`--live-memory-reserve-mb` actually free. The refusal appears on
+`GET /api/v1/pods/{name}/events` with a reason beginning
+`refused: live memory`. This guard only ever refuses: it can never admit a
+pod the ledger rejects. On a host without `/proc/meminfo` it disables
+itself and admission falls back to accounting alone.
+
+Two counters on `/metrics` report how much the ledger is trusting a guess
+and how often the host overrules it:
+`spark_defaulted_memory_admissions_total` and
+`spark_live_memory_refusals_total`.
+
+### Overriding a flag that `spark.env` does not list
+
+`deploy/spark.env` covers the settings the service unit passes explicitly.
+Every other flag uses its built-in default. To change one on an installed
+host, add a systemd drop-in rather than editing the unit file, which a
+package upgrade replaces:
+
+```bash
+sudo systemctl edit spark
+```
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/spark --live-memory-reserve-mb 16384
+```
+
+The empty `ExecStart=` is required: it clears the unit's own command before
+the replacement is appended. Reproduce the flags from
+`deploy/spark.service` that the host needs, then
+`sudo systemctl restart spark`.
 
 Per-pod TTL override is available via the `spark.feza.ai/ttl-after-finished` annotation (any value parseable by `time.ParseDuration`; `0s` disables cleanup for that pod).
 

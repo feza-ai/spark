@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -468,7 +469,16 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 		msg := "awaiting-resources: " + reason
 		slog.Info("pod awaiting resources", "pod", pod.Spec.Name, "reason", reason)
 		r.updateStatus(pod.Spec.Name, state.StatusPending, msg)
-		r.store.AddEvent(pod.Spec.Name, "PendingWatchdog", msg)
+		// A live-memory refusal gets its own event type so an operator
+		// reading /events can tell a full host from a full ledger without
+		// parsing the message (issue #121). Both cases are the same
+		// per-tick watchdog record otherwise, and internal/api's
+		// isPendingEvent treats them identically.
+		eventType := "PendingWatchdog"
+		if errors.Is(result.Err, scheduler.ErrLiveMemoryExhausted) {
+			eventType = "LiveMemoryRefused"
+		}
+		r.store.AddEvent(pod.Spec.Name, eventType, msg)
 	}
 }
 

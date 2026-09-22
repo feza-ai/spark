@@ -2012,3 +2012,68 @@ func TestReconcilePending_PersistsAssignedCores(t *testing.T) {
 		t.Fatalf("expected AssignedCores=[2 3], got %v; status=%s", rec.AssignedCores, rec.Status)
 	}
 }
+
+// fakeExhaustedHostMemory reports a host with almost nothing free,
+// regardless of what the declared-request ledger says.
+type fakeExhaustedHostMemory struct{ freeMB int }
+
+func (f fakeExhaustedHostMemory) AvailableMemoryMB() (int, bool) { return f.freeMB, true }
+
+// TestReconcilePending_LiveMemoryRefusalEmitsItsOwnEvent covers the operator-
+// facing half of issue #121. A pod the declared ledger approves, refused
+// because the host is really full, must be distinguishable on /events from
+// an ordinary accounted no-fit -- otherwise the one failure mode the guard
+// exists to surface looks like every other pending pod.
+func TestReconcilePending_LiveMemoryRefusalEmitsItsOwnEvent(t *testing.T) {
+	store := state.NewPodStore()
+	// A ledger with ample room: nothing here refuses the pod.
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 18000, MemoryMB: 114372},
+		scheduler.Resources{},
+		nil, 0,
+	)
+	sched := scheduler.NewScheduler(tracker)
+	// A host that is really full: 11972MB free against a 4096MB reserve.
+	sched.SetHostMemory(fakeExhaustedHostMemory{freeMB: 11972}, 4096)
+	r := NewReconciler(store, sched, newStubExecutor(), 50*time.Millisecond)
+
+	podName := "spark-live-memory-refused"
+	store.Apply(manifest.PodSpec{
+		Name: podName,
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:      "render",
+				Image:     "docker.io/library/alpine:latest",
+				Resources: manifest.ResourceRequirements{Requests: manifest.ResourceList{MemoryMB: 102400}},
+			},
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go r.Run(ctx)
+
+	deadline := time.After(3 * time.Second)
+	for {
+		if rec, ok := store.Get(podName); ok {
+			for _, ev := range rec.Events {
+				if ev.Type != "LiveMemoryRefused" {
+					continue
+				}
+				if !strings.Contains(ev.Message, "refused: live memory") {
+					t.Fatalf("LiveMemoryRefused event should say why: %q", ev.Message)
+				}
+				if _, held := tracker.AllocatedBy(podName); held {
+					t.Fatal("a refused pod must hold no allocation")
+				}
+				return // success
+			}
+		}
+		select {
+		case <-deadline:
+			rec, _ := store.Get(podName)
+			t.Fatalf("no LiveMemoryRefused event within 3s; events=%+v reason=%q", rec.Events, rec.Reason)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}

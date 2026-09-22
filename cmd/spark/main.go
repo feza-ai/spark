@@ -59,6 +59,9 @@ func main() {
 	imagePruneInterval := flag.Duration("image-prune-interval", 24*time.Hour, "interval between 'podman image prune -f' runs (0 disables)")
 	hostLoadSampleInterval := flag.Duration("host-load-sample-interval", 15*time.Second, "interval between /proc/loadavg samples used for utilization-aware CPU admission (issue #76)")
 	cpuOvercommitMarginMillis := flag.Int("cpu-overcommit-margin-millis", 1000, "CPU millicores subtracted from the live headroom estimate before utilization-aware admission (issue #76) will admit a pod over the accounted ceiling; covers the trailing load average's lag")
+	defaultMemoryRequestMB := flag.Int("default-memory-request-mb", 2048, "memory request, in MB, accounted for a container that declares neither a memory request nor a memory limit (issue #121); 0 disables defaulting and accounts such a container at 0MB, which lets a node full of undeclared workloads report an empty memory ledger")
+	liveMemoryGuard := flag.Bool("live-memory-guard", true, "refuse admission when real host memory (/proc/meminfo MemAvailable) minus the pod's request would fall below --live-memory-reserve-mb, even when the declared-request ledger has room (issues #47, #121); makes admission depend on live host state")
+	liveMemoryReserveMB := flag.Int("live-memory-reserve-mb", 4096, "MB of real host memory the live memory guard never hands out; matches --system-reserve-memory's default, raise it on unified-memory hosts where a driver OOM takes the whole node down")
 	pendingLogTimeout := flag.Duration("pending-log-timeout", 10*time.Minute, "how long a Pending pod's GET /logs treats podman's 'no such pod' as still-queued before reporting the resource shortfall instead of staying silent (issue #78)")
 	flag.Parse()
 
@@ -209,6 +212,23 @@ func main() {
 	hostLoad := newHostLoadAdapter(sysInfo.CPUMillis, *cpuOvercommitMarginMillis)
 	sched.SetHostLoad(hostLoad)
 
+	// Live memory admission guard (issues #47, #121): the declared-request
+	// ledger only knows what pods declared, so a node packed with
+	// containers that declared nothing reports itself empty. Consult the
+	// host before acting on the ledger's approval. This can only refuse an
+	// admission, never grant one -- memory keeps no CPU-style bypass.
+	if *liveMemoryGuard {
+		sched.SetHostMemory(newHostMemoryAdapter(), *liveMemoryReserveMB)
+		slog.Info("live memory admission guard enabled", "reserve_mb", *liveMemoryReserveMB)
+	} else {
+		slog.Warn("live memory admission guard disabled; admission trusts declared requests alone (issue #121)")
+	}
+	if *defaultMemoryRequestMB > 0 {
+		slog.Info("defaulting undeclared container memory requests", "default_mb", *defaultMemoryRequestMB)
+	} else {
+		slog.Warn("undeclared container memory requests are accounted at 0MB (--default-memory-request-mb=0); the memory ledger can read empty on a full node (issue #121)")
+	}
+
 	// Rehydrate per-pod core assignments so recovered pods keep the same
 	// cpuset across Spark restarts. Must run before any Allocate to avoid
 	// handing out a core that is already pinned to a running container.
@@ -232,7 +252,13 @@ func main() {
 		"low":             10000,
 		"batch":           20000,
 	}
-	bus.RegisterApplyHandler(b, store, priorityClasses, cronSched)
+	// Every ingestion path -- NATS, HTTP, and the directory watcher --
+	// parses with the same options, so a manifest is accounted the same
+	// however it arrives (issue #121).
+	parseOpts := []manifest.ParseOption{
+		manifest.WithDefaultMemoryRequestMB(*defaultMemoryRequestMB),
+	}
+	bus.RegisterApplyHandler(b, store, priorityClasses, parseOpts, cronSched)
 	bus.RegisterDeleteHandler(b, store, exec, sched)
 	bus.RegisterGetHandler(b, store)
 	bus.RegisterListHandler(b, store)
@@ -333,6 +359,7 @@ func main() {
 	}
 	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, cronSched, apiToken, sched, gpuInfoPtr, &sysInfo, version)
 	apiServer.SetPendingLogTimeout(*pendingLogTimeout)
+	apiServer.SetParseOptions(parseOpts...)
 	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
 	go func() {
 		slog.Info("HTTP server starting", "addr", *httpAddr)
@@ -386,7 +413,7 @@ func main() {
 	go watcher.Watch(ctx, *manifestDir, func(event watcher.WatchEvent) {
 		switch event.Type {
 		case watcher.Added, watcher.Modified:
-			result, err := manifest.Parse(event.Content, priorityClasses)
+			result, err := manifest.Parse(event.Content, priorityClasses, parseOpts...)
 			if err != nil {
 				slog.Error("failed to parse manifest", "path", event.Path, "error", err)
 				return
