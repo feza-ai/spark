@@ -109,3 +109,74 @@ func TestResources(t *testing.T) {
 		t.Errorf("available gpuMemoryMB: expected 24576, got %v", v)
 	}
 }
+
+// TestResources_ReportsGPUCount pins the field whose absence made issue #114
+// undiagnosable from outside the process. allocatable.GPUCount is the only GPU
+// number the preemption planner reads; it appeared in no endpoint, so an
+// affected node was indistinguishable from a healthy one.
+func TestResources_ReportsGPUCount(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 32768, GPUCount: 2},
+		scheduler.Resources{CPUMillis: 1000, MemoryMB: 2048},
+		[]int{0, 1}, 2,
+	)
+	tracker.Allocate("gpu-pod", manifest.ResourceList{CPUMillis: 1000, MemoryMB: 1024, GPUCount: 1})
+
+	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil, "test")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var body map[string]map[string]float64
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	for block, want := range map[string]float64{"allocatable": 2, "allocated": 1, "available": 1} {
+		got, ok := body[block]["gpuCount"]
+		if !ok {
+			t.Errorf("%s.gpuCount missing; an absent key is not a zero value, and "+
+				"callers cannot tell a GPU-less node from an unreported one", block)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s.gpuCount = %v, want %v", block, got, want)
+		}
+	}
+}
+
+// TestResources_ReportsGPUCountZeroExplicitly makes the no-GPU case observable
+// too. Omitting a zero would recreate the exact ambiguity this field exists to
+// remove.
+func TestResources_ReportsGPUCountZeroExplicitly(t *testing.T) {
+	store := state.NewPodStore()
+	tracker := scheduler.NewResourceTracker(
+		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384},
+		scheduler.Resources{},
+		nil, 0,
+	)
+
+	srv := NewServer(store, tracker, nil, nil, nil, nil, nil, "", nil, nil, nil, "test")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	var raw map[string]map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, block := range []string{"allocatable", "allocated", "available"} {
+		v, ok := raw[block]["gpuCount"]
+		if !ok {
+			t.Fatalf("%s.gpuCount omitted on a GPU-less node; it must be an explicit 0", block)
+		}
+		if string(v) != "0" {
+			t.Errorf("%s.gpuCount = %s, want 0", block, v)
+		}
+	}
+}
