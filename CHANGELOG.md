@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.20.0](https://github.com/feza-ai/spark/compare/v1.19.0...v1.20.0) (2026-09-22)
+
+
+### Features
+
+* **api:** report GPU count in /api/v1/resources ([4f4bca6](https://github.com/feza-ai/spark/commit/4f4bca6812e032e3d360c5d7998851c3a65ecd02))
+
+
+### Bug Fixes
+
+* **cmd/spark:** carry the detected GPU count into total node resources ([45a8577](https://github.com/feza-ai/spark/commit/45a85775a87cb502c36fbdb40463e32f1be5aa7e)), closes [#114](https://github.com/feza-ai/spark/issues/114)
+* **scheduler:** stop admitting against a memory ledger that reads zero ([1b3a76d](https://github.com/feza-ai/spark/commit/1b3a76d104590ea1036a3e5fb6bfb56a7351c921)), closes [#121](https://github.com/feza-ai/spark/issues/121) [#47](https://github.com/feza-ai/spark/issues/47) [#43](https://github.com/feza-ai/spark/issues/43)
+
 ## [1.19.0](https://github.com/feza-ai/spark/compare/v1.18.0...v1.19.0) (2026-08-29)
 
 
