@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/feza-ai/spark/internal/manifest"
@@ -18,15 +19,16 @@ type Resources struct {
 
 // ResourceTracker tracks total, allocatable, and allocated resources on a node.
 type ResourceTracker struct {
-	mu              sync.Mutex
-	allocatable     Resources
-	allocations     map[string]manifest.ResourceList
-	gpuDevices      []int
-	gpuMax          int
-	gpuAssignments  map[string][]int
-	cores           []int
-	reservedCores   []int
-	coreAssignments map[string][]int
+	mu                    sync.Mutex
+	allocatable           Resources
+	allocations           map[string]manifest.ResourceList
+	gpuDevices            []int
+	gpuMax                int
+	gpuAssignments        map[string][]int
+	cores                 []int
+	reservedCores         []int
+	coreAssignments       map[string][]int
+	gpuCountMisconfigured bool
 }
 
 // NewResourceTracker creates a tracker with total resources and system reserve.
@@ -48,6 +50,23 @@ func NewResourceTracker(total Resources, systemReserve Resources, gpuDevices []i
 		copy(rt.gpuDevices, gpuDevices)
 		rt.gpuMax = gpuMax
 		rt.gpuAssignments = make(map[string][]int)
+
+		// Device-slot tracking is on, but total.GPUCount never got a value.
+		// allocatable.GPUCount (and everything derived from it, notably
+		// availableLocked().GPUCount) is 0 unconditionally, even though real
+		// devices exist and may be idle. Direct admission still works (it
+		// checks gpuDevices/gpuMax, not this ledger), but the preemption
+		// planner seeds freed GPU capacity from Available().GPUCount, so any
+		// GPU pod that needs preemption to schedule is permanently stuck
+		// reporting "gpu 1 > 0 free" (issue #114). This is a caller
+		// configuration bug -- most commonly a Resources{} literal that sets
+		// every other field but forgets GPUCount -- so warn loudly rather
+		// than silently accepting it.
+		if total.GPUCount == 0 {
+			rt.gpuCountMisconfigured = true
+			slog.Warn("resource tracker misconfigured: GPU device slots enabled but total.GPUCount is 0 -- GPU pods needing preemption will be permanently unschedulable (issue #114)",
+				"device_count", len(gpuDevices))
+		}
 	}
 	// Compute allocatable cores: total.Cores minus systemReserve.Cores.
 	if len(total.Cores) > 0 {
@@ -315,6 +334,19 @@ func (rt *ResourceTracker) assignedCoreCountLocked() int {
 		count += len(cs)
 	}
 	return count
+}
+
+// GPUCountMisconfigured reports whether this tracker was constructed with
+// GPU device-slot tracking enabled (a non-empty gpuDevices list) but
+// total.GPUCount left at its zero value -- the exact misconfiguration
+// behind issue #114. Callers that construct a ResourceTracker themselves
+// (rather than going through a fixed call site) can check this at startup
+// to fail fast instead of discovering it only when a GPU pod needs
+// preemption to schedule.
+func (rt *ResourceTracker) GPUCountMisconfigured() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.gpuCountMisconfigured
 }
 
 // CoresEnabled reports whether cpuset pinning is active (i.e. the tracker
