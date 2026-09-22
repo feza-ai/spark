@@ -187,12 +187,7 @@ func main() {
 	// 5. Create resource tracker and scheduler.
 	gpuMemMB := gpuInfo.MemoryTotalMB
 
-	total := scheduler.Resources{
-		CPUMillis:   sysInfo.CPUMillis,
-		MemoryMB:    sysInfo.MemoryTotalMB,
-		GPUMemoryMB: gpuMemMB,
-		Cores:       sysInfo.CoreIDs,
-	}
+	total := totalResources(sysInfo, gpuInfo)
 	reserve := scheduler.Resources{
 		CPUMillis: *systemReserveCPU,
 		MemoryMB:  *systemReserveMem,
