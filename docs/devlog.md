@@ -459,3 +459,20 @@ Key findings:
 - Pod recovery reconciles podman state with SQLite on restart.
 - Retention pruning (10-min tick) cleans both in-memory store and SQLite.
 - No orphaned code paths or unconnected handlers found.
+
+### 2026-10-11 — Priority class migration for PR #116
+
+Resolved PR #116 against current main. The default class table keeps the
+previously accepted `system-critical`, `default`, and `batch` names with their
+original numeric values. At startup, persisted pod specs are re-resolved
+against the selected class table and saved before recovery registers running
+pods in the scheduler. This prevents old numeric values from competing against
+new submissions under the changed table. A failed save aborts startup before
+scheduling. The class table and persistence paths have regression coverage.
+
+An independent review found two further startup edge cases: classless recovered
+pods now use the selected `normal` class value, and an explicitly configured
+priority file must exist and contain classes. Startup stops before rewriting
+stored priorities if that file is missing or empty. The numeric changes for
+`high` and `low` are the intended switch to the documented canonical table;
+all recovered and newly submitted pods use the same values.
