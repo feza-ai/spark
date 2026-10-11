@@ -421,6 +421,58 @@ func TestGPUSlotDisabled(t *testing.T) {
 	}
 }
 
+// TestNewResourceTracker_WarnsWhenGPUCountOmitted covers issue #114's exact
+// shape: device-slot tracking is enabled (a non-empty device list, as
+// cmd/spark passes gpuInfo.DeviceIDs), but the total Resources literal
+// never set GPUCount, so allocatable.GPUCount silently defaults to 0. That
+// makes Available().GPUCount always 0 regardless of real device
+// availability, which permanently blocks preemption for any GPU pod.
+// GPUCountMisconfigured must flag this shape so a caller (or a future
+// caller) can catch the mistake instead of only seeing it once a GPU pod
+// needs preemption.
+func TestNewResourceTracker_WarnsWhenGPUCountOmitted(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUMemoryMB: 16384}, // GPUCount left unset
+		Resources{},
+		[]int{0}, 1,
+	)
+
+	if !rt.GPUCountMisconfigured() {
+		t.Fatal("GPUCountMisconfigured() = false, want true: gpuDevices is non-empty but total.GPUCount is 0")
+	}
+}
+
+// TestNewResourceTracker_NoWarningWhenGPUCountSet is the fixed shape: total
+// GPUCount reflects the real device count, matching cmd/spark's corrected
+// literal.
+func TestNewResourceTracker_NoWarningWhenGPUCountSet(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192, GPUCount: 1, GPUMemoryMB: 16384},
+		Resources{},
+		[]int{0}, 1,
+	)
+
+	if rt.GPUCountMisconfigured() {
+		t.Fatal("GPUCountMisconfigured() = true, want false: total.GPUCount correctly reflects the device count")
+	}
+}
+
+// TestNewResourceTracker_NoWarningWhenGPUDisabled covers the CPU-only /
+// memory-only-GPU node shape (nil gpuDevices): GPUCount being 0 there is
+// correct, not a misconfiguration, since device-slot tracking never
+// activates.
+func TestNewResourceTracker_NoWarningWhenGPUDisabled(t *testing.T) {
+	rt := NewResourceTracker(
+		Resources{CPUMillis: 4000, MemoryMB: 8192},
+		Resources{},
+		nil, 0,
+	)
+
+	if rt.GPUCountMisconfigured() {
+		t.Fatal("GPUCountMisconfigured() = true, want false: GPU device-slot tracking is disabled (no devices)")
+	}
+}
+
 func TestGPUCountAllocation(t *testing.T) {
 	tests := []struct {
 		name       string

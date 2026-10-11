@@ -75,3 +75,63 @@ is the tell. There is no reliable way to prevent this from the commit
 side (the trailer is what makes release-please's changelog useful) --
 treat "reopen after merge" as needing a second pass after the release PR
 merges too, not a one-time step.
+
+## internal/scheduler: available.memoryMB reads full precisely when the node is full
+
+`GET /api/v1/resources` reports
+`available.memoryMB = allocatable - sum(declared memory requests)`. Nothing
+in that figure comes from the host. A container that declares neither a
+memory request nor a memory limit was accounted at 0MB, so a node packed
+with such containers reported its memory ledger as **completely empty while
+it was full** -- and admission, which enforces that ledger strictly and
+correctly, found room.
+
+Measured on a GB10 (114372MB allocatable) before the incident, not inferred
+from it: with one 8GiB job running, `allocated.memoryMB` read 8192 and the
+cgroup confirmed `memory.max = 8589934592`; deleting it moved
+`allocated.memoryMB` to 0. Eight CI containers, mid-build, declared 0MB
+between them. A 100GiB render was then admitted against a ledger reporting
+the full 114372MB free, and minutes later the host stopped servicing the
+network at the link layer (issue #121).
+
+**Why it matters:** *any runbook that gates on `available.memoryMB` passes
+in exactly the situation it exists to catch.* A rule of the form "only
+submit if available memory is above N" is a statement about bookkeeping, not
+about RAM.
+
+**How to apply:** gate on live `/proc/meminfo` `MemAvailable`, not on
+`/api/v1/resources`. In-process, that is what
+`Scheduler.SetHostMemory`/`--live-memory-guard` now does, and
+`spark_live_memory_refusals_total` counts how often the host overrules the
+ledger. `--default-memory-request-mb` makes the ledger pessimistic rather
+than blind, but its accuracy is coincidental: it charges undeclared
+containers a fixed guess, so whether it is sufficient depends on how many
+are resident. At the incident's 8 containers a 2048MB default would have
+refused the render; at 5 it would have admitted it. Treat
+`spark_defaulted_memory_admissions_total` climbing as a prompt to fix the
+manifests, not as the problem being solved. See
+`docs/adr/015-undeclared-memory-admission.md`.
+
+## internal/manifest: silent zero is this repo's recurring defect class
+
+Four separate issues, one shape: input that should have been a resource
+quantity became `0` with no error, and admission trusted it.
+
+- **#43** -- a limits-only pod was accounted at zero (`requests` absent).
+  Fixed by Kubernetes' own rule: an unspecified request defaults to the
+  limit (`parseResources`, `job.go`).
+- **#66** -- flow-style YAML maps (`limits: { memory: 512Mi }`) parsed as a
+  scalar string, so `getMap` returned nil and the container was accounted at
+  zero.
+- **#77** -- block sequences at the same indent as their key parsed as an
+  empty list.
+- **#121** -- a container declaring neither requests nor limits was
+  accounted at zero.
+
+**How to apply:** when touching the parser, the question is never "does this
+parse" but "what does this produce when it does not parse". The rule the
+repo settled on: **unparseable input must be an error; absent input may be
+defaulted, but never to zero on a dimension admission enforces.** Defaulting
+must also run *after* parsing, never inside it, or a malformed quantity
+quietly becomes the default -- which would convert #66 from a loud bug into
+a silent one.

@@ -17,11 +17,16 @@ func DefaultPriorityClasses() map[string]int {
 		"normal":    1000,
 		"low":       2000,
 		"idle":      10000,
+		// Compatibility with class names accepted before --priority-config.
+		"system-critical": 0,
+		"default":         1000,
+		"batch":           20000,
 	}
 }
 
 // LoadPriorityClasses reads priority classes from a config file at the given path.
-// If path is empty or the file does not exist, the default classes are returned.
+// If path is empty, the default classes are returned. An explicitly configured
+// path must exist and contain a priorityClasses block.
 // The config file uses a simple YAML-like format:
 //
 //	priorityClasses:
@@ -33,9 +38,6 @@ func LoadPriorityClasses(path string) (map[string]int, error) {
 	}
 
 	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return DefaultPriorityClasses(), nil
-	}
 	if err != nil {
 		return nil, fmt.Errorf("open priority config: %w", err)
 	}
@@ -91,7 +93,7 @@ func LoadPriorityClasses(path string) (map[string]int, error) {
 	}
 
 	if len(classes) == 0 {
-		return DefaultPriorityClasses(), nil
+		return nil, fmt.Errorf("priority config %q contains no classes", path)
 	}
 
 	return classes, nil

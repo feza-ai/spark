@@ -14,6 +14,32 @@ type ParseResult struct {
 	CronJobs []CronJobSpec
 }
 
+// ParseOptions carries parser configuration that the manifest itself cannot
+// supply. The zero value parses exactly as Spark did before these options
+// existed.
+type ParseOptions struct {
+	// DefaultMemoryRequestMB is the memory request, in MB, assigned to a
+	// container that declares neither a memory request nor a memory limit.
+	// Zero or negative disables defaulting, leaving such a container
+	// accounted at 0MB (issue #121).
+	DefaultMemoryRequestMB int
+}
+
+// ParseOption configures Parse.
+type ParseOption func(*ParseOptions)
+
+// WithDefaultMemoryRequestMB makes Parse account a container that declares
+// no memory request and no memory limit at mb rather than at 0MB. Values of
+// zero or less leave defaulting off.
+//
+// The default is applied after the whole document is parsed, so it never
+// masks a parse error: an unparseable quantity still fails loudly, which is
+// the distinction issue #66 drew between absent input (may be defaulted) and
+// malformed input (must be rejected).
+func WithDefaultMemoryRequestMB(mb int) ParseOption {
+	return func(o *ParseOptions) { o.DefaultMemoryRequestMB = mb }
+}
+
 // Parse parses K8s-compatible manifest bytes and returns pod specs and cron
 // job specs. Accepts either YAML (the historical format, including
 // "---"-separated multi-document streams) or JSON. Supports kinds: Pod,
@@ -25,7 +51,44 @@ type ParseResult struct {
 // pretty-printed JSON (opening brace on its own line, nested braces) either
 // silently produced an empty document or mis-parsed -- a POST with a JSON
 // body returned 201 {"pods":null} and created nothing (issue #74).
-func Parse(data []byte, priorityClasses map[string]int) (ParseResult, error) {
+func Parse(data []byte, priorityClasses map[string]int, opts ...ParseOption) (ParseResult, error) {
+	var cfg ParseOptions
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	result, err := parseDocuments(data, priorityClasses)
+	if err != nil {
+		return ParseResult{}, err
+	}
+	applyMemoryRequestDefault(&result, cfg.DefaultMemoryRequestMB)
+	return result, nil
+}
+
+// applyMemoryRequestDefault fills in a memory request for every accounted
+// container that declared none. Init containers are left alone because
+// PodSpec.TotalRequests does not account them, so defaulting them would
+// change nothing the scheduler reads.
+func applyMemoryRequestDefault(result *ParseResult, defaultMB int) {
+	if defaultMB <= 0 {
+		return
+	}
+	for i := range result.Pods {
+		defaultPodMemoryRequest(&result.Pods[i], defaultMB)
+	}
+	for i := range result.CronJobs {
+		defaultPodMemoryRequest(&result.CronJobs[i].JobTemplate, defaultMB)
+	}
+}
+
+func defaultPodMemoryRequest(p *PodSpec, defaultMB int) {
+	for i := range p.Containers {
+		if p.Containers[i].Resources.MemoryRequestUndeclared {
+			p.Containers[i].Resources.Requests.MemoryMB = defaultMB
+		}
+	}
+}
+
+func parseDocuments(data []byte, priorityClasses map[string]int) (ParseResult, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 		return parseJSONManifest(trimmed, priorityClasses)

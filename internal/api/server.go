@@ -41,6 +41,11 @@ type Server struct {
 	// "no such pod" podman error as still-queued before it reports the
 	// shortfall directly instead (issue #78). See SetPendingLogTimeout.
 	pendingLogTimeout time.Duration
+	// parseOpts configures the manifest parser for POST /api/v1/pods. It
+	// must match what the NATS and directory-watch ingestion paths use, or
+	// the same manifest is accounted differently depending on which door
+	// it came through (issue #121). See SetParseOptions.
+	parseOpts []manifest.ParseOption
 }
 
 // NewServer creates a Server and registers all HTTP routes.
@@ -97,4 +102,13 @@ func (s *Server) SetPendingLogTimeout(d time.Duration) {
 	if d > 0 {
 		s.pendingLogTimeout = d
 	}
+}
+
+// SetParseOptions sets the manifest parser options applied to manifests
+// submitted over HTTP, such as the default memory request for containers
+// that declare none (issue #121). Callers pass the same options to every
+// ingestion path so a manifest is accounted identically however it
+// arrives. Passing none restores the parser's own defaults.
+func (s *Server) SetParseOptions(opts ...manifest.ParseOption) {
+	s.parseOpts = opts
 }

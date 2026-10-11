@@ -10,12 +10,15 @@ import (
 func TestDefaultPriorityClasses(t *testing.T) {
 	got := DefaultPriorityClasses()
 	want := map[string]int{
-		"emergency": 0,
-		"critical":  100,
-		"high":      500,
-		"normal":    1000,
-		"low":       2000,
-		"idle":      10000,
+		"emergency":       0,
+		"critical":        100,
+		"high":            500,
+		"normal":          1000,
+		"low":             2000,
+		"idle":            10000,
+		"system-critical": 0,
+		"default":         1000,
+		"batch":           20000,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("DefaultPriorityClasses() = %v, want %v", got, want)
@@ -24,12 +27,15 @@ func TestDefaultPriorityClasses(t *testing.T) {
 
 func TestLoadPriorityClasses(t *testing.T) {
 	defaults := map[string]int{
-		"emergency": 0,
-		"critical":  100,
-		"high":      500,
-		"normal":    1000,
-		"low":       2000,
-		"idle":      10000,
+		"emergency":       0,
+		"critical":        100,
+		"high":            500,
+		"normal":          1000,
+		"low":             2000,
+		"idle":            10000,
+		"system-critical": 0,
+		"default":         1000,
+		"batch":           20000,
 	}
 
 	tests := []struct {
@@ -46,9 +52,9 @@ func TestLoadPriorityClasses(t *testing.T) {
 			want:     defaults,
 		},
 		{
-			name:   "missing file returns defaults",
-			noFile: true,
-			want:   defaults,
+			name:    "missing explicit file is an error",
+			noFile:  true,
+			wantErr: true,
 		},
 		{
 			name: "valid config",
@@ -76,10 +82,10 @@ priorityClasses:
 			},
 		},
 		{
-			name: "empty block returns defaults",
+			name: "empty explicit block is an error",
 			content: `priorityClasses:
 `,
-			want: defaults,
+			wantErr: true,
 		},
 		{
 			name: "invalid value returns error",

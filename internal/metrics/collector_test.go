@@ -14,11 +14,17 @@ type fakeSchedulerMetrics struct {
 	attempts           int64
 	preemptions        int64
 	overcommitAdmitted int64
+	defaultedMemory    int64
+	liveMemoryRefusals int64
 }
 
 func (f *fakeSchedulerMetrics) ScheduleAttempts() int64        { return f.attempts }
 func (f *fakeSchedulerMetrics) PreemptionCount() int64         { return f.preemptions }
 func (f *fakeSchedulerMetrics) CPUOvercommitAdmissions() int64 { return f.overcommitAdmitted }
+func (f *fakeSchedulerMetrics) DefaultedMemoryAdmissions() int64 {
+	return f.defaultedMemory
+}
+func (f *fakeSchedulerMetrics) LiveMemoryRefusals() int64 { return f.liveMemoryRefusals }
 
 type fakeHousekeepingMetrics struct {
 	reaped            map[string]int64
@@ -131,7 +137,7 @@ func TestCollect_SchedulerMetrics(t *testing.T) {
 		scheduler.Resources{},
 		nil, 0,
 	)
-	sched := &fakeSchedulerMetrics{attempts: 42, preemptions: 7, overcommitAdmitted: 3}
+	sched := &fakeSchedulerMetrics{attempts: 42, preemptions: 7, overcommitAdmitted: 3, defaultedMemory: 5, liveMemoryRefusals: 9}
 	c := NewCollector(store, tracker, sched)
 	families := c.Collect()
 
@@ -142,6 +148,8 @@ func TestCollect_SchedulerMetrics(t *testing.T) {
 		{"spark_scheduling_attempts_total", 42},
 		{"spark_preemptions_total", 7},
 		{"spark_cpu_overcommit_admissions_total", 3},
+		{"spark_defaulted_memory_admissions_total", 5},
+		{"spark_live_memory_refusals_total", 9},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

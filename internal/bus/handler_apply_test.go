@@ -26,7 +26,7 @@ func registerAndApply(t *testing.T, yaml string) ApplyResponse {
 	b := NewStubBus()
 	store := state.NewPodStore()
 	pc := map[string]int{}
-	RegisterApplyHandler(b, store, pc)
+	RegisterApplyHandler(b, store, pc, nil)
 
 	raw, err := b.Request(context.Background(), "req.spark.apply", []byte(yaml))
 	if err != nil {
@@ -195,7 +195,7 @@ spec:
 func TestApplyHandler_StoreContainsPods(t *testing.T) {
 	b := NewStubBus()
 	store := state.NewPodStore()
-	RegisterApplyHandler(b, store, map[string]int{})
+	RegisterApplyHandler(b, store, map[string]int{}, nil)
 
 	yaml := `
 apiVersion: v1
@@ -280,7 +280,7 @@ spec:
 			b := NewStubBus()
 			store := state.NewPodStore()
 			mock := &mockCronRegisterer{err: tt.regErr}
-			RegisterApplyHandler(b, store, map[string]int{}, mock)
+			RegisterApplyHandler(b, store, map[string]int{}, nil, mock)
 
 			raw, err := b.Request(context.Background(), "req.spark.apply", []byte(tt.yaml))
 			if err != nil {
@@ -316,7 +316,7 @@ spec:
 func TestApplyHandler_NilCronRegisterer(t *testing.T) {
 	b := NewStubBus()
 	store := state.NewPodStore()
-	RegisterApplyHandler(b, store, map[string]int{})
+	RegisterApplyHandler(b, store, map[string]int{}, nil)
 
 	yaml := `
 apiVersion: batch/v1

@@ -100,7 +100,7 @@ func (s *Server) handleApplyPod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := manifest.Parse(body, s.priorityClasses)
+	result, err := manifest.Parse(body, s.priorityClasses, s.parseOpts...)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
