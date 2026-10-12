@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.20.0](https://github.com/feza-ai/spark/compare/v1.19.0...v1.20.0) (2026-10-12)
+
+
+### Features
+
+* **api:** report GPU count in /api/v1/resources ([4f4bca6](https://github.com/feza-ai/spark/commit/4f4bca6812e032e3d360c5d7998851c3a65ecd02))
+* wake idle workloads on HTTP, TCP, and CI demand ([c575576](https://github.com/feza-ai/spark/commit/c5755767815b40a63a1d8594c19fba6c80db9c80))
+* wake idle workloads on HTTP, TCP, and CI demand ([a4c9735](https://github.com/feza-ai/spark/commit/a4c97357b5a461b9ca4030332cee213f09da9595))
+
+
+### Bug Fixes
+
+* **cmd/spark:** carry the detected GPU count into total node resources ([45a8577](https://github.com/feza-ai/spark/commit/45a85775a87cb502c36fbdb40463e32f1be5aa7e)), closes [#114](https://github.com/feza-ai/spark/issues/114)
+* **cmd/spark:** stop shadowing the canonical priority-class table ([b2a65a3](https://github.com/feza-ai/spark/commit/b2a65a3dee22016f7321b63fae024ad9da518157))
+* **cmd/spark:** stop shadowing the canonical priority-class table ([60f2ff4](https://github.com/feza-ai/spark/commit/60f2ff41819e147db7735e4612189630ba8cce2a))
+* **scheduler:** stop admitting against a memory ledger that reads zero ([1b3a76d](https://github.com/feza-ai/spark/commit/1b3a76d104590ea1036a3e5fb6bfb56a7351c921)), closes [#121](https://github.com/feza-ai/spark/issues/121) [#47](https://github.com/feza-ai/spark/issues/47) [#43](https://github.com/feza-ai/spark/issues/43)
+
 ## [1.19.0](https://github.com/feza-ai/spark/compare/v1.18.0...v1.19.0) (2026-08-29)
 
 
