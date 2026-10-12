@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,12 +25,12 @@ type stubExecutor struct {
 	removes      []string
 	statuses     map[string]executor.Status
 	createErr    error
-	statusErr   error
-	listPods    []executor.PodListEntry
-	listErr     error
-	removeErr   error
-	podStats    map[string]executor.PodResourceUsage
-	podStatsErr error
+	statusErr    error
+	listPods     []executor.PodListEntry
+	listErr      error
+	removeErr    error
+	podStats     map[string]executor.PodResourceUsage
+	podStatsErr  error
 
 	// Probe stubs.
 	execProbeExit int
@@ -213,7 +214,7 @@ func newTestScheduler() *scheduler.Scheduler {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: 8000, MemoryMB: 16384, GPUMemoryMB: 49152},
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
-	nil, 0,
+		nil, 0,
 	)
 	return scheduler.NewScheduler(tracker)
 }
@@ -928,7 +929,7 @@ func newTightScheduler(cpuMillis, memoryMB int) *scheduler.Scheduler {
 	tracker := scheduler.NewResourceTracker(
 		scheduler.Resources{CPUMillis: cpuMillis, MemoryMB: memoryMB, GPUMemoryMB: 0},
 		scheduler.Resources{CPUMillis: 0, MemoryMB: 0, GPUMemoryMB: 0},
-	nil, 0,
+		nil, 0,
 	)
 	return scheduler.NewScheduler(tracker)
 }
@@ -2075,5 +2076,120 @@ func TestReconcilePending_LiveMemoryRefusalEmitsItsOwnEvent(t *testing.T) {
 			t.Fatalf("no LiveMemoryRefused event within 3s; events=%+v reason=%q", rec.Events, rec.Reason)
 		case <-time.After(50 * time.Millisecond):
 		}
+	}
+}
+
+func TestRecoverPods_ReconcilesPersistedCoreAssignments(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     state.PodStatus
+		podPresent bool
+		podRunning bool
+		wantCores  bool
+	}{
+		{name: "active pod keeps its cores", status: state.StatusRunning, podPresent: true, podRunning: true, wantCores: true},
+		{name: "stopped running pod keeps cores for restart", status: state.StatusRunning, podPresent: true, wantCores: true},
+		{name: "terminal record with live pod keeps cores", status: state.StatusCompleted, podPresent: true, podRunning: true, wantCores: true},
+		{name: "missing running pod releases cores", status: state.StatusRunning},
+		{name: "missing scheduled pod releases cores", status: state.StatusScheduled},
+		{name: "terminal pod releases cores", status: state.StatusCompleted, podPresent: true},
+		{name: "failed pod releases cores", status: state.StatusFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := scheduler.NewResourceTracker(
+				scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3}},
+				scheduler.Resources{}, nil, 0,
+			)
+			sched := scheduler.NewScheduler(tracker)
+			store := state.NewPodStore()
+			store.LoadFrom(map[string]*state.PodRecord{
+				"pinned": {Spec: manifest.PodSpec{Name: "pinned"}, Status: tc.status, AssignedCores: []int{2, 3}},
+			})
+			tracker.RestoreAssignment("pinned", []int{2, 3})
+			exec := newStubExecutor()
+			if tc.podPresent {
+				exec.listPods = []executor.PodListEntry{{Name: "pinned", Running: tc.podRunning}}
+			}
+			r := NewReconciler(store, sched, exec, time.Second)
+			if err := r.RecoverPods(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got := tracker.AssignedCores("pinned")
+			if tc.wantCores && len(got) != 2 {
+				t.Fatalf("active assignment lost: %v", got)
+			}
+			if !tc.wantCores && len(got) != 0 {
+				t.Fatalf("stale assignment retained: %v", got)
+			}
+			rec, _ := store.Get("pinned")
+			if !tc.wantCores && len(rec.AssignedCores) != 0 {
+				t.Fatalf("stale persisted assignment retained: %v", rec.AssignedCores)
+			}
+		})
+	}
+}
+
+type cpusetStubExecutor struct {
+	*stubExecutor
+	liveCores  []int
+	inspectErr error
+}
+
+func (s *cpusetStubExecutor) RunningCpusetCores(context.Context, string) ([]int, error) {
+	return s.liveCores, s.inspectErr
+}
+
+func TestRecoverPods_ReconcilesLiveCpuset(t *testing.T) {
+	cases := []struct {
+		name         string
+		liveCores    []int
+		inspectErr   error
+		degraded     bool
+		missingSaved bool
+		wantCores    []int
+	}{
+		{name: "unpinned live pod releases phantom cores"},
+		{name: "matching live pin retained", liveCores: []int{2, 3}, wantCores: []int{2, 3}},
+		{name: "missing saved claim restored from live pin", liveCores: []int{2, 3}, missingSaved: true, wantCores: []int{2, 3}},
+		{name: "degraded pod with live pin retained", liveCores: []int{2, 3}, degraded: true, wantCores: []int{2, 3}},
+		{name: "drifted live pin replaces saved cores", liveCores: []int{0, 1}, wantCores: []int{0, 1}},
+		{name: "drifted one-core live pin stays one core", liveCores: []int{1}, wantCores: []int{1}},
+		{name: "inspection error preserves ownership", inspectErr: errors.New("podman unavailable"), wantCores: []int{2, 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := scheduler.NewResourceTracker(
+				scheduler.Resources{CPUMillis: 4000, MemoryMB: 8192, Cores: []int{0, 1, 2, 3}},
+				scheduler.Resources{}, nil, 0,
+			)
+			sched := scheduler.NewScheduler(tracker)
+			store := state.NewPodStore()
+			saved := []int{2, 3}
+			if tc.missingSaved {
+				saved = nil
+			}
+			store.LoadFrom(map[string]*state.PodRecord{
+				"pinned": {Spec: manifest.PodSpec{Name: "pinned", Containers: []manifest.ContainerSpec{{Name: "worker", Resources: manifest.ResourceRequirements{Requests: manifest.ResourceList{CPUMillis: 2000}}}}}, Status: state.StatusRunning, AssignedCores: saved},
+			})
+			tracker.RestoreAssignment("pinned", saved)
+			exec := &cpusetStubExecutor{
+				stubExecutor: newStubExecutor(),
+				liveCores:    tc.liveCores,
+				inspectErr:   tc.inspectErr,
+			}
+			exec.listPods = []executor.PodListEntry{{Name: "pinned", Running: !tc.degraded}}
+			r := NewReconciler(store, sched, exec, time.Second)
+			if err := r.RecoverPods(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := tracker.AssignedCores("pinned"); !slices.Equal(got, tc.wantCores) {
+				t.Fatalf("tracker cores = %v, want %v", got, tc.wantCores)
+			}
+			rec, _ := store.Get("pinned")
+			if !slices.Equal(rec.AssignedCores, tc.wantCores) {
+				t.Fatalf("persisted cores = %v, want %v", rec.AssignedCores, tc.wantCores)
+			}
+		})
 	}
 }
