@@ -1089,26 +1089,26 @@ func TestBuildRunArgs_SecurityContext(t *testing.T) {
 			notArgs: []string{"--user", "--privileged", "--cap-add", "--cap-drop"},
 		},
 		{
-			name: "runAsUser only",
-			sc:   &manifest.SecurityContext{RunAsUser: 1000},
+			name:     "runAsUser only",
+			sc:       &manifest.SecurityContext{RunAsUser: 1000},
 			wantArgs: []string{"--user", "1000"},
 			notArgs:  []string{"--privileged", "--cap-add", "--cap-drop"},
 		},
 		{
-			name: "privileged only",
-			sc:   &manifest.SecurityContext{Privileged: true},
+			name:     "privileged only",
+			sc:       &manifest.SecurityContext{Privileged: true},
 			wantArgs: []string{"--privileged"},
 			notArgs:  []string{"--user", "--cap-add", "--cap-drop"},
 		},
 		{
-			name: "add capabilities",
-			sc:   &manifest.SecurityContext{AddCaps: []string{"NET_ADMIN", "SYS_PTRACE"}},
+			name:     "add capabilities",
+			sc:       &manifest.SecurityContext{AddCaps: []string{"NET_ADMIN", "SYS_PTRACE"}},
 			wantArgs: []string{"--cap-add", "NET_ADMIN", "--cap-add", "SYS_PTRACE"},
 			notArgs:  []string{"--user", "--privileged", "--cap-drop"},
 		},
 		{
-			name: "drop capabilities",
-			sc:   &manifest.SecurityContext{DropCaps: []string{"ALL"}},
+			name:     "drop capabilities",
+			sc:       &manifest.SecurityContext{DropCaps: []string{"ALL"}},
 			wantArgs: []string{"--cap-drop", "ALL"},
 			notArgs:  []string{"--user", "--privileged", "--cap-add"},
 		},
@@ -1230,5 +1230,19 @@ func TestBuildRunArgs_OmitsCpusetCpusWhenEmpty(t *testing.T) {
 
 	if slices.Contains(args, "--cpuset-cpus") {
 		t.Errorf("expected no --cpuset-cpus flag when cpusetCores is nil, got %v", args)
+	}
+}
+
+func TestPersistentVolumeUsesNamedSource(t *testing.T) {
+	c := manifest.ContainerSpec{Name: "db", Image: "postgres", VolumeMounts: []manifest.VolumeMount{{Name: "data", MountPath: "/var/lib/postgresql/data"}}}
+	args := buildRunArgs("db", c, []manifest.VolumeSpec{{Name: "data", PodmanVolume: "existing-database"}}, "spark-net", true, nil, nil)
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && args[i+1] == "existing-database:/var/lib/postgresql/data" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing persistent volume: %v", args)
 	}
 }

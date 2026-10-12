@@ -722,7 +722,7 @@ spec:
 			volumes: `    - name: orphan
 `,
 			wantErr:   true,
-			errSubstr: `volume "orphan": must set hostPath or emptyDir`,
+			errSubstr: `volume "orphan": must set hostPath, emptyDir, or persistentVolumeClaim`,
 		},
 	}
 

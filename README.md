@@ -464,3 +464,177 @@ staticcheck ./...
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+## On-demand HTTP workloads
+
+Spark can register an HTTP service without starting it, wake it when a request
+arrives, and unload its containers after inactivity. Enable this per pod:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: model
+  annotations:
+    spark.feza.ai/on-demand: "true"
+    spark.feza.ai/backend-port: "18080"
+    spark.feza.ai/readiness-path: "/health"
+    spark.feza.ai/idle-timeout: "5m"
+    spark.feza.ai/startup-timeout: "5m"
+    spark.feza.ai/max-requests: "64"
+    spark.feza.ai/always-warm: "false"
+spec:
+  restartPolicy: Always
+  containers:
+    - name: server
+      image: localhost:5000/model-server:latest
+      ports:
+        - containerPort: 8080
+          hostPort: 18080
+      resources:
+        requests:
+          cpu: "2"
+          memory: "8Gi"
+```
+
+Replace the image, resource requests, ports, and readiness path with those of
+your service. Its readiness endpoint must return **2xx only when it can serve
+requests**, including loading any models. The backend port must match a TCP
+`hostPort` in the manifest. Redirects do not indicate readiness.
+
+Apply the manifest normally, then send application requests through Spark:
+
+```bash
+curl -X POST http://localhost:8080/workloads/model/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Hello"}'
+```
+
+The gateway forwards this to `http://127.0.0.1:18080/v1/completions`. Use a
+trailing slash for the backend root: `/workloads/model/`. Requests share a
+single startup and wait for readiness, bounded by `startup-timeout`. Bodies
+are streamed after readiness; responses, SSE, and WebSockets remain pinned
+until their connections finish. `max-requests` caps waiting **and active**
+requests per pod; excess requests receive 429 with `Retry-After`. A readiness
+wait timeout returns 504; startup failure returns 503. Connection failures
+return 502 and are not automatically replayed.
+
+If Spark authentication is enabled, supply its bearer token as usual. Spark
+consumes this Authorization header and does not pass the Spark token to the
+application. Application authentication must use another header or cookie.
+
+New pods report `dormant`. The first request activates normal scheduling;
+`running` plus `ready: true` means the application can receive traffic.
+`GET /api/v1/pods/{name}` also reports `onDemand` and `inFlight`. After
+`idle-timeout` with no outstanding requests, Spark enters `stopping`, removes
+the containers, releases resources, and returns to `dormant`. The manifest
+and hostPath data remain registered. Container writable layers and emptyDir
+volumes are recreated, so keep model caches and durable data on hostPath
+volumes. Containers are restarted and models reloaded on the next request;
+the first request pays this cold-start delay.
+
+Timeout defaults are 5 minutes; request capacity defaults to 64. Both timeouts
+must be positive durations. On-demand services require `restartPolicy: Always`
+(the default when omitted). `always-warm: "true"` starts the service at apply
+time and prevents idle eviction while retaining gateway readiness checks.
+For Deployments and StatefulSets, put annotations under
+`spec.template.metadata.annotations` and use the expanded pod name (for example
+`model-0`) in the gateway URL. Jobs and CronJobs cannot use on-demand mode.
+
+All application traffic must pass through the gateway for idle accounting.
+Direct host-port requests and background work are invisible to it. Use
+always-warm mode for services that continue processing after returning a
+response. Existing priority preemption still applies, including to active
+on-demand workloads. See [ADR 016](docs/adr/016-on-demand-http-workloads.md).
+
+### TCP services
+
+Use native client connections for PostgreSQL, BuildKit (including TLS/gRPC), or
+another TCP service:
+
+```yaml
+metadata:
+  annotations:
+    spark.feza.ai/on-demand: "true"
+    spark.feza.ai/activation: "tcp"
+    spark.feza.ai/gateway-port: "5432"
+    spark.feza.ai/backend-port: "15432"
+    spark.feza.ai/idle-timeout: "5m"
+    spark.feza.ai/readiness-container: "postgres"
+    spark.feza.ai/readiness-command: '["pg_isready", "-U", "postgres"]'
+spec:
+  containers:
+    - name: postgres
+      ports:
+        - containerPort: 5432
+          hostPort: 15432
+```
+
+This fragment augments a complete manifest. Spark owns the public gateway port
+and publishes the backend host port on loopback. Existing applications continue
+to connect to port 5432. The optional readiness command must exit zero before
+connections are forwarded; otherwise readiness checks that the backend accepts
+TCP connections. Both directions are streamed without interpreting application
+messages or TLS. Database/TLS authentication is unchanged. A connection, even
+an idle pooled connection, prevents eviction until it closes. Capacity or
+startup-timeout failures close the connection; clients should retry and allow
+for cold-start latency. Spark restarts close gateway connections.
+
+### GitHub Actions runners
+
+Configure the host with `--github-token-file /etc/spark/github-token` (or
+`SPARK_GITHUB_TOKEN_FILE` in the service environment). The file should be readable
+only by the Spark service account and contain a GitHub token with Actions read
+access to the configured repositories. Polling defaults to 30 seconds; set
+`--github-poll-interval` to change it.
+
+```yaml
+metadata:
+  annotations:
+    spark.feza.ai/on-demand: "true"
+    spark.feza.ai/activation: "github"
+    spark.feza.ai/github-repository: "owner/repository"
+    spark.feza.ai/github-runner-name: "gpu-runner-1"
+    spark.feza.ai/github-labels: "self-hosted,Linux,ARM64,dgx"
+    spark.feza.ai/worker-container: "runner"
+    spark.feza.ai/idle-timeout: "5m"
+```
+
+Run the registered runner with `./run.sh --once`, and retain its registration
+files on persistent storage. The configured runner name and labels must match
+GitHub. A queued job wakes a matching runner; an executing job is protected
+until the actual runner process exits. Spark then unloads the finished pod
+(including sidecars) after the idle timeout, or immediately replaces it for new
+queued work. Queue errors never authorize eviction based on stale observations.
+
+A listening runner that has not yet completed a job stays protected. If its
+triggering job was cancelled or claimed by another runner, it can remain warm
+until a later job completes. This avoids interrupting jobs during the gap
+between assignment and GitHub API updates. Jobs and CronJobs retain their
+existing submission/schedule-driven lifecycle and run to completion.
+
+### Retaining local volumes
+
+Use explicit local Podman volumes for durable data across eviction:
+
+```yaml
+spec:
+  volumes:
+    - name: database
+      persistentVolumeClaim:
+        claimName: existing-postgres-volume
+  containers:
+    - name: postgres
+      volumeMounts:
+        - name: database
+          mountPath: /var/lib/postgresql/data
+```
+
+`claimName` maps directly to an existing, explicitly named local Podman volume.
+Create that volume before applying the manifest; Spark rejects startup if it is
+missing, preventing silent replacement with an empty database. Back up databases
+before migration. For image-created anonymous volumes, copy the data into an
+explicitly created named volume before removing the original pod: referencing an
+anonymous volume by its generated name does not make it durable. Named volumes
+survive idle eviction.
+See [ADR 017](docs/adr/017-connection-and-queue-activation.md).

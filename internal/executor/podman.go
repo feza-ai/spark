@@ -103,6 +103,16 @@ func NewPodmanExecutor(network string) *PodmanExecutor {
 
 // CreatePod creates a pod and starts all containers defined in the spec.
 func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) error {
+	// A claim references existing data. Do not let Podman silently replace a
+	// missing volume with an empty one (for example after external deletion).
+	for _, volume := range spec.Volumes {
+		if volume.PodmanVolume == "" {
+			continue
+		}
+		if err := exec.CommandContext(ctx, "podman", "volume", "exists", volume.PodmanVolume).Run(); err != nil {
+			return fmt.Errorf("persistent volume %q must exist before pod creation: %w", volume.PodmanVolume, err)
+		}
+	}
 	// If any container requests a GPU, ensure the NVIDIA CDI spec exists.
 	// Without it, `--device nvidia.com/gpu=all` injects only the device
 	// node — not the CUDA runtime libraries — and workloads fall back to CPU.
@@ -117,10 +127,18 @@ func (p *PodmanExecutor) CreatePod(ctx context.Context, spec manifest.PodSpec) e
 	// Create the pod.
 	args := []string{"pod", "create", "--name", spec.Name, "--network", p.network}
 
+	for _, name := range spec.GatewayHosts {
+		args = append(args, "--add-host", name+":host-gateway")
+	}
+
 	// Collect port mappings from all containers — ports must be published at pod creation time.
 	for _, c := range spec.Containers {
 		for _, port := range c.Ports {
-			args = append(args, "--publish", formatPublish(port))
+			publish := formatPublish(port)
+			if spec.OnDemand != nil && spec.OnDemand.ActivationMode() != "github" && port.HostPort == spec.OnDemand.HostPort {
+				publish = "127.0.0.1:" + publish
+			}
+			args = append(args, "--publish", publish)
 		}
 	}
 
@@ -223,7 +241,11 @@ func buildRunArgs(podName string, container manifest.ContainerSpec, volumes []ma
 			}
 			args = append(args, "--mount", mount)
 		} else {
-			mount := vol.HostPath + ":" + m.MountPath
+			source := vol.HostPath
+			if vol.PodmanVolume != "" {
+				source = vol.PodmanVolume
+			}
+			mount := source + ":" + m.MountPath
 			if m.ReadOnly {
 				mount += ":ro"
 			}

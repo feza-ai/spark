@@ -1,5 +1,69 @@
 # Spark Development Log
 
+## 2026-09-28: On-demand HTTP workloads implemented and deployed
+
+**Outcome:** Spark now supports opt-in dormant registration, activation on HTTP
+requests, application readiness gating, and idle container eviction. The DGX
+runs `v1.19.0-ondemand-4f4bca6-20260928`, built from the working tree on
+`4f4bca6`. Binary SHA-256:
+`8d5327b639a4072dcb0f6df72a419c0612dc1ca0f072675e5a820b96c6d55770`.
+
+**Design:** [ADR 016](adr/016-on-demand-http-workloads.md). Manifest annotations
+configure the feature; `/workloads/{pod-name}/{path...}` is the authenticated
+activation/proxy route. Requests hold a lease through startup and the complete
+response. Idle eviction commits under the same lock as request admission and
+retains resource charges until cleanup succeeds. The `stopping` state survives
+restarts. Application readiness requires a 2xx HTTP response, independently of
+container running/liveness status. Deployment template annotations now carry
+through to generated pods. NATS apply emits a registration event so a dormant
+manifest is persisted even without a subsequent lifecycle transition.
+
+**Validation:** `go test -race ./... -timeout 120s` passed. After the final
+runtime refinements, race tests for manifest, API, reconciler, state, and bus
+passed again. `go vet ./...` and `staticcheck ./...` passed. Coverage includes
+request/eviction concurrency, bounded capacity and cancellation, escaped paths
+and bodies, streaming, credential isolation, readiness redirects, cleanup
+failure accounting, SQLite recovery, and always-warm behavior.
+
+**Live verification:** Installed the Linux ARM64 executable with checksum
+verification and restarted the existing service. All 23 existing containers
+retained their IDs and start times. A temporary Python HTTP workload using an
+already cached image passed dormant/no-container registration, exact manifest
+retention, eight concurrent requests sharing a single ready backend, a stream
+remaining active beyond its idle timeout, container removal after inactivity,
+and a subsequent request starting a new process. The smoke workload was then
+deleted and its container absence confirmed. This tested the HTTP lifecycle on
+real Podman; model-specific GPU loading latency was not benchmarked.
+
+**Deployment:** Previous executable retained at
+`/usr/local/bin/spark.before-ondemand-20260928`. Service settings were preserved.
+This is a custom binary deployment, not a published release; the installed deb
+version remains 1.19.0 and the existing auto-upgrade timer remains enabled.
+A future package upgrade can replace this executable. Existing workload
+manifests were not opted in. See the README's on-demand section for setup.
+
+**Post-verification reachability:** After the successful live smoke test and
+cleanup, follow-up connections from this workstation to both SSH and the HTTP
+API timed out (confirmed again at 2026-09-29 06:37 UTC). The route and ARP entry
+were present. Current service health could not be re-confirmed, and no cause
+was established. No rollback or further remote mutation was attempted without
+connectivity; the successful deployment and smoke-test results above describe
+the last observed service state.
+
+**Recovery follow-up (2026-09-29 06:44 UTC):** SSH and HTTP are reachable
+again following a host reboot (uptime approximately one minute). Spark is
+active and `/healthz` confirms the same on-demand build. The running inventory
+contains CI runners, BuildKit, and PostgreSQL, with no workloads opted into
+on-demand mode; both recorded render workloads are completed. The next rollout
+step is to onboard an HTTP inference service and measure its model-specific
+cold-start latency, then publish the feature through the normal release path.
+The reboot/outage cause has not been established.
+
+**Tooling finding:** Native SSH failed locally because UID 501 could not be
+resolved, and DNS prevented installing an alternate Python SSH client. Deployment
+used a temporary Go client with the already cached x/crypto/ssh dependency,
+existing SSH credentials, and strict known-hosts verification.
+
 ## 2026-09-22: Issue #121 -- admission trusted a ledger that reads zero for undeclared containers
 
 **Type:** finding
@@ -459,6 +523,18 @@ Key findings:
 - Pod recovery reconciles podman state with SQLite on restart.
 - Retention pruning (10-min tick) cleans both in-memory store and SQLite.
 - No orphaned code paths or unconnected handlers found.
+
+### 2026-09-29 — Extend DGX demand activation to TCP services and CI queues
+
+Added TCP connection leases, GitHub Actions queue polling, one-job runner
+retirement, explicit existing Podman volume references, and runtime host-gateway
+service aliases. Deployed the all-workload custom build and migrated the ten
+service/runner pods; batch jobs keep their existing completion lifecycle.
+Restored both databases to their saved logical state and retained runner
+registration state. Original anonymous volumes were removed during migration;
+the BuildKit cache starts empty. The r2 build refuses missing persistent volumes.
+Private deployment records retain backup/rollback details and verification limits.
+The temporary auto-upgrade hold must end once a release includes this feature.
 
 ### 2026-10-11 — Priority class migration for PR #116
 

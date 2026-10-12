@@ -344,11 +344,17 @@ func parseVolume(vm map[string]interface{}) (VolumeSpec, error) {
 			v.EmptyDir = true
 		}
 	}
+	if claim := getMap(vm, "persistentVolumeClaim"); claim != nil {
+		v.PodmanVolume = getString(claim, "claimName")
+		if !validName(v.PodmanVolume) || hostPathPresent || v.EmptyDir {
+			return VolumeSpec{}, fmt.Errorf("volume %q: persistentVolumeClaim requires a valid claimName and no other volume type", v.Name)
+		}
+	}
 	if hostPathPresent && v.HostPath == "" {
 		return VolumeSpec{}, fmt.Errorf("volume %q: hostPath.path is empty", v.Name)
 	}
-	if !hostPathPresent && !v.EmptyDir {
-		return VolumeSpec{}, fmt.Errorf("volume %q: must set hostPath or emptyDir", v.Name)
+	if !hostPathPresent && !v.EmptyDir && v.PodmanVolume == "" {
+		return VolumeSpec{}, fmt.Errorf("volume %q: must set hostPath, emptyDir, or persistentVolumeClaim", v.Name)
 	}
 	return v, nil
 }

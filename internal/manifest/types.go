@@ -42,9 +42,10 @@ type VolumeMount struct {
 
 // VolumeSpec describes a volume available to a pod.
 type VolumeSpec struct {
-	Name     string
-	HostPath string
-	EmptyDir bool
+	PodmanVolume string // explicit persistentVolumeClaim.claimName mapped to a local Podman volume
+	Name         string
+	HostPath     string
+	EmptyDir     bool
 }
 
 // SecurityContext holds security configuration for a container.
@@ -93,6 +94,8 @@ type ContainerSpec struct {
 
 // PodSpec is the internal representation of a schedulable pod.
 type PodSpec struct {
+	GatewayHosts                  []string // runtime: TCP service names routed through the host gateway
+	OnDemand                      *OnDemandSpec
 	Name                          string
 	Labels                        map[string]string
 	Annotations                   map[string]string

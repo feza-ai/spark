@@ -60,6 +60,16 @@ func Parse(data []byte, priorityClasses map[string]int, opts ...ParseOption) (Pa
 	if err != nil {
 		return ParseResult{}, err
 	}
+	for i := range result.Pods {
+		if err := configureOnDemand(&result.Pods[i]); err != nil {
+			return ParseResult{}, fmt.Errorf("pod %q: %w", result.Pods[i].Name, err)
+		}
+	}
+	for i := range result.CronJobs {
+		if err := configureOnDemand(&result.CronJobs[i].JobTemplate); err != nil {
+			return ParseResult{}, err
+		}
+	}
 	applyMemoryRequestDefault(&result, cfg.DefaultMemoryRequestMB)
 	return result, nil
 }

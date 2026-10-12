@@ -24,19 +24,22 @@ type PodRemover interface {
 
 // Server provides HTTP endpoints for health, resources, and pod management.
 type Server struct {
-	store           *state.PodStore
-	tracker         *scheduler.ResourceTracker
-	executor        executor.Executor
-	priorityClasses map[string]int
-	sqlStore        *state.SQLiteStore
-	collector       *metrics.Collector
-	cronSched       CronRegisterer
-	gpuInfo         *gpu.GPUInfo
-	sysInfo         *gpu.SystemInfo
-	version         string
-	mux             *http.ServeMux
-	handler         http.Handler
-	scheduler       PodRemover
+	workloadWake     func()
+	gatewayTransport *http.Transport
+	gatewayUsesToken bool
+	store            *state.PodStore
+	tracker          *scheduler.ResourceTracker
+	executor         executor.Executor
+	priorityClasses  map[string]int
+	sqlStore         *state.SQLiteStore
+	collector        *metrics.Collector
+	cronSched        CronRegisterer
+	gpuInfo          *gpu.GPUInfo
+	sysInfo          *gpu.SystemInfo
+	version          string
+	mux              *http.ServeMux
+	handler          http.Handler
+	scheduler        PodRemover
 	// pendingLogTimeout bounds how long GET /logs treats a Pending pod's
 	// "no such pod" podman error as still-queued before it reports the
 	// shortfall directly instead (issue #78). See SetPendingLogTimeout.
@@ -67,6 +70,10 @@ func NewServer(store *state.PodStore, tracker *scheduler.ResourceTracker, exec e
 		scheduler:         sched,
 		pendingLogTimeout: defaultPendingLogTimeout,
 	}
+	s.gatewayTransport = http.DefaultTransport.(*http.Transport).Clone()
+	s.gatewayTransport.Proxy = nil
+	s.gatewayUsesToken = token != ""
+	s.mux.HandleFunc("/workloads/{name}/{path...}", s.handleWorkload)
 	s.registerHealthRoutes()
 	s.registerResourceRoutes()
 	s.registerNodeRoutes()
