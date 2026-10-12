@@ -37,6 +37,30 @@ func newTracker(cpu, mem, gpu int) *ResourceTracker {
 	)
 }
 
+// podSpecGPU is podSpec plus a GPUCount request, for tests that need to
+// exercise the device-slot GPU accounting path rather than GPUMemoryMB
+// alone.
+func podSpecGPU(name string, priority, cpu, mem, gpuCount, gpuMem int) manifest.PodSpec {
+	return manifest.PodSpec{
+		Name:     name,
+		Priority: priority,
+		Containers: []manifest.ContainerSpec{
+			{
+				Name:  "main",
+				Image: "test",
+				Resources: manifest.ResourceRequirements{
+					Requests: manifest.ResourceList{
+						CPUMillis:   cpu,
+						MemoryMB:    mem,
+						GPUCount:    gpuCount,
+						GPUMemoryMB: gpuMem,
+					},
+				},
+			},
+		},
+	}
+}
+
 func TestSchedule_ResourcesAvailable(t *testing.T) {
 	tracker := newTracker(4000, 8192, 16000)
 	s := NewScheduler(tracker)
@@ -524,6 +548,63 @@ func TestSchedule_MultipleVictimsNeeded(t *testing.T) {
 	}
 	if len(result.Victims) != 2 {
 		t.Fatalf("expected 2 victims, got %d: %v", len(result.Victims), result.Victims)
+	}
+}
+
+// TestSchedule_PreemptsGPUPodWhenDeviceIsIdle reproduces issue #114: a GPU
+// pod that needs preemption to schedule -- because accounted CPU, not GPU,
+// is what blocks direct admission -- was permanently stuck reporting
+// "gpu 1 > 0 free" even though the GPU device itself sat completely idle
+// (`/node` showed gpu_allocations: [], nvidia-smi showed no processes).
+//
+// Root cause: cmd/spark/main.go's total Resources{} literal never set
+// GPUCount, so allocatable.GPUCount -- and therefore
+// Available().GPUCount, which Schedule()'s preemption planner seeds its
+// freed-GPU accumulator from -- was always 0 regardless of real device
+// state. Evicting the CPU-only candidates below satisfies every other
+// dimension but can never contribute a GPU, so the shortfall never
+// clears. This test builds the tracker the way the fixed main.go now does
+// (total.GPUCount == len(deviceIDs)) and requires preemption to succeed.
+//
+// Verified red/green manually against this test: with total.GPUCount
+// zeroed (the pre-fix cmd/spark/main.go shape), this fails with
+// Action == Pending and Reason containing "gpu 1 > 0 free" -- issue #114's
+// exact reported symptom. With GPUCount set to the real device count (the
+// fix), it passes.
+func TestSchedule_PreemptsGPUPodWhenDeviceIsIdle(t *testing.T) {
+	tracker := NewResourceTracker(
+		Resources{CPUMillis: 18000, MemoryMB: 110276, GPUCount: 1, GPUMemoryMB: 122564},
+		Resources{},
+		[]int{0}, 1,
+	)
+	s := NewScheduler(tracker)
+
+	// A single CPU-only pod at the fleet's default priority (1000) commits
+	// 16400m of the 18000m allocatable, leaving 1600m free -- not enough
+	// for the 12000m render request below, so it must go through
+	// preemption. It requests no GPU at all, matching the incident: the
+	// GPU was never held by anything.
+	ciReq := manifest.ResourceList{CPUMillis: 16400, MemoryMB: 1024}
+	if err := tracker.Allocate("ci-runner", ciReq); err != nil {
+		t.Fatalf("allocate ci-runner: %v", err)
+	}
+	s.AddPod(PodInfo{
+		Name:      "ci-runner",
+		Priority:  1000,
+		Resources: ciReq,
+		StartTime: time.Now(),
+	})
+
+	// A 12-core / ~80GiB / 1-GPU render request at the fleet's "high"
+	// priority (100) -- above the CI runner, so it's a valid preemption
+	// candidate.
+	result := s.Schedule(podSpecGPU("render", 100, 12000, 80000, 1, 100000))
+
+	if result.Action != Preempting {
+		t.Fatalf("expected Preempting, got action=%d reason=%q", result.Action, result.Reason)
+	}
+	if len(result.Victims) != 1 || result.Victims[0] != "ci-runner" {
+		t.Fatalf("expected victims [ci-runner], got %v", result.Victims)
 	}
 }
 

@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -55,6 +56,30 @@ type HostLoadSource interface {
 	AvailableCPUMillis() (millis int, ok bool)
 }
 
+// HostMemorySource reports live host memory headroom -- real free memory,
+// not `allocatable - sum(declared requests)` -- for the live-usage
+// admission guard (issue #47 proposal 3, issue #121). Implementations read
+// the host directly (e.g. /proc/meminfo's MemAvailable). ok is false when
+// no reading is available (e.g. a non-Linux dev host), in which case the
+// guard is skipped for that call and admission falls back to pure
+// accounting.
+//
+// The guard this feeds can only ever refuse an admission the declared
+// ledger already approved. It never admits anything the ledger rejects,
+// which is what keeps the memory dimension free of the CPU-style bypass
+// (ADR 013, TestSchedule_UtilizationAwareAdmission_NeverBypassesMemory).
+type HostMemorySource interface {
+	AvailableMemoryMB() (mb int, ok bool)
+}
+
+// ErrLiveMemoryExhausted is reported on ScheduleResult.Err when the live
+// memory guard refuses a pod the declared ledger would have admitted:
+// real host memory minus the pod's request would fall below the configured
+// reserve. Callers branch on it with errors.Is to distinguish "the host is
+// genuinely full right now" from an ordinary accounted no-fit, which is a
+// different operator action (wait vs. free a reservation).
+var ErrLiveMemoryExhausted = errors.New("insufficient live host memory")
+
 // ScheduleAction represents the outcome type of a scheduling attempt.
 type ScheduleAction int
 
@@ -73,6 +98,11 @@ type ScheduleResult struct {
 	// GPU", "preemption candidate set empty"); optional for Scheduled and
 	// Preempting. Watchdogs in the reconciler quote this verbatim.
 	Reason string
+	// Err names the specific condition behind a Pending result for callers
+	// that branch on it, currently only ErrLiveMemoryExhausted. Nil for
+	// every other outcome, including an ordinary accounted no-fit, which
+	// Reason alone describes.
+	Err error
 }
 
 // PodInfo tracks a running pod's metadata for scheduling decisions.
@@ -121,18 +151,28 @@ type Scheduler struct {
 	now         func() time.Time // injectable clock for testing
 	hostLoad    HostLoadSource   // optional; nil disables utilization-aware admission (issue #76)
 
-	scheduleAttempts        int64 // atomic counter for Schedule() calls
-	preemptionCount         int64 // atomic counter for executed preemptions
-	cpuOvercommitAdmissions int64 // atomic counter for utilization-aware CPU admissions (issue #76)
+	hostMemory        HostMemorySource // optional; nil disables the live memory guard (issue #121)
+	hostMemoryReserve int              // MB of real host memory the guard never hands out
+	// warnedUndeclaredMemory records the pods already warned about, so a
+	// pod that sits Pending through hundreds of reconcile ticks logs its
+	// defaulted memory request once rather than once per attempt.
+	warnedUndeclaredMemory map[string]bool
+
+	scheduleAttempts          int64 // atomic counter for Schedule() calls
+	preemptionCount           int64 // atomic counter for executed preemptions
+	cpuOvercommitAdmissions   int64 // atomic counter for utilization-aware CPU admissions (issue #76)
+	defaultedMemoryAdmissions int64 // atomic counter for admissions carrying a defaulted memory request (issue #121)
+	liveMemoryRefusals        int64 // atomic counter for admissions refused by the live memory guard (issue #121)
 }
 
 // NewScheduler creates a scheduler backed by a resource tracker.
 func NewScheduler(tracker *ResourceTracker) *Scheduler {
 	return &Scheduler{
-		tracker:     tracker,
-		pods:        make(map[string]PodInfo),
-		preemptions: make(map[string]*preemptionRecord),
-		now:         time.Now,
+		tracker:                tracker,
+		pods:                   make(map[string]PodInfo),
+		preemptions:            make(map[string]*preemptionRecord),
+		now:                    time.Now,
+		warnedUndeclaredMemory: make(map[string]bool),
 	}
 }
 
@@ -152,6 +192,71 @@ func (s *Scheduler) SetHostLoad(src HostLoadSource) {
 	s.hostLoad = src
 }
 
+// SetHostMemory wires a live host-memory source for the memory admission
+// guard (issues #47, #121), refusing any pod whose request would drive real
+// free memory below reserveMB. Pass nil (the default) to disable the guard:
+// Schedule then admits purely on declared-request accounting, exactly as it
+// did before this existed.
+//
+// The guard is subtractive only. It adds refusals to admission decisions
+// the declared ledger already approved, and can never admit a pod the
+// ledger rejects.
+func (s *Scheduler) SetHostMemory(src HostMemorySource, reserveMB int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hostMemory = src
+	s.hostMemoryReserve = reserveMB
+}
+
+// refuseOnLiveMemory reports whether the live memory guard blocks a request
+// the accounted ledger has already approved, and the Pending result to
+// return when it does. Caller must hold s.mu.
+//
+// Unlike the declared ledger, this consults the host: the ledger can only
+// see what pods declared, and a node full of containers that declared
+// nothing reports itself empty (issue #121). A source that has no reading
+// (ok=false) never blocks admission -- an unreadable host is not evidence
+// of an exhausted one.
+func (s *Scheduler) refuseOnLiveMemory(req manifest.ResourceList) (ScheduleResult, bool) {
+	if s.hostMemory == nil {
+		return ScheduleResult{}, false
+	}
+	freeMB, ok := s.hostMemory.AvailableMemoryMB()
+	if !ok {
+		return ScheduleResult{}, false
+	}
+	if freeMB-req.MemoryMB >= s.hostMemoryReserve {
+		return ScheduleResult{}, false
+	}
+	atomic.AddInt64(&s.liveMemoryRefusals, 1)
+	return ScheduleResult{
+		Action: Pending,
+		Err:    ErrLiveMemoryExhausted,
+		Reason: fmt.Sprintf(
+			"refused: live memory -- host has %dMB actually free, request is %dMB, and admitting it would leave %dMB against a %dMB reserve (the declared-request ledger approved this pod; real host memory did not)",
+			freeMB, req.MemoryMB, freeMB-req.MemoryMB, s.hostMemoryReserve),
+	}, true
+}
+
+// warnOnUndeclaredMemory logs, once per pod, that a pod is being admitted
+// with a memory request Spark supplied rather than the manifest declaring
+// it. Caller must hold s.mu.
+func (s *Scheduler) warnOnUndeclaredMemory(spec manifest.PodSpec) {
+	names := spec.UndeclaredMemoryContainers()
+	if len(names) == 0 {
+		return
+	}
+	atomic.AddInt64(&s.defaultedMemoryAdmissions, 1)
+	if s.warnedUndeclaredMemory[spec.Name] {
+		return
+	}
+	s.warnedUndeclaredMemory[spec.Name] = true
+	slog.Warn("admitting pod with a defaulted memory request: container declared neither a memory request nor a memory limit",
+		"pod", spec.Name,
+		"containers", strings.Join(names, ","),
+		"accounted_memory_mb", spec.TotalRequests().MemoryMB)
+}
+
 // Schedule attempts to schedule a pod. Returns Scheduled if resources fit,
 // Preempting with victim list if preemption is possible, or Pending otherwise.
 func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
@@ -164,6 +269,15 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 
 	// Step 1: try to fit directly.
 	if s.tracker.CanFit(req) {
+		// The ledger approved this pod. Before acting on that approval,
+		// check the host itself: the ledger is a sum of what pods
+		// declared, and containers that declared nothing make it read
+		// empty on a full node (issue #121). The guard only ever turns
+		// this yes into a no.
+		if res, refused := s.refuseOnLiveMemory(req); refused {
+			return res
+		}
+		s.warnOnUndeclaredMemory(spec)
 		s.tracker.Allocate(spec.Name, req)
 		return ScheduleResult{Action: Scheduled}
 	}
@@ -177,7 +291,11 @@ func (s *Scheduler) Schedule(spec manifest.PodSpec) ScheduleResult {
 	// stay exactly as strict as the Step 1 check above.
 	if s.hostLoad != nil && s.tracker.CanFitIgnoringCPU(req) {
 		if freeMillis, ok := s.hostLoad.AvailableCPUMillis(); ok && freeMillis >= req.CPUMillis {
+			if res, refused := s.refuseOnLiveMemory(req); refused {
+				return res
+			}
 			if err := s.tracker.AllocateOverCommittingCPU(spec.Name, req); err == nil {
+				s.warnOnUndeclaredMemory(spec)
 				atomic.AddInt64(&s.cpuOvercommitAdmissions, 1)
 				return ScheduleResult{
 					Action: Scheduled,
@@ -308,6 +426,7 @@ func (s *Scheduler) RemovePod(name string) {
 	defer s.mu.Unlock()
 	s.tracker.Release(name)
 	delete(s.pods, name)
+	delete(s.warnedUndeclaredMemory, name)
 }
 
 // isAntiThrashed returns true if requester has preempted victim more than
@@ -353,6 +472,23 @@ func (s *Scheduler) PreemptionCount() int64 {
 // headroom. Always 0 when no HostLoadSource is set.
 func (s *Scheduler) CPUOvercommitAdmissions() int64 {
 	return atomic.LoadInt64(&s.cpuOvercommitAdmissions)
+}
+
+// DefaultedMemoryAdmissions returns the total number of pods admitted while
+// carrying a memory request Spark supplied rather than the manifest
+// declaring one (issue #121). A figure that keeps climbing means manifests
+// are still shipping without a memory request, and the ledger is only as
+// accurate as --default-memory-request-mb guesses.
+func (s *Scheduler) DefaultedMemoryAdmissions() int64 {
+	return atomic.LoadInt64(&s.defaultedMemoryAdmissions)
+}
+
+// LiveMemoryRefusals returns the total number of admissions refused by the
+// live memory guard (issue #121) -- pods the declared-request ledger
+// approved and real host memory did not. Always 0 when no HostMemorySource
+// is set.
+func (s *Scheduler) LiveMemoryRefusals() int64 {
+	return atomic.LoadInt64(&s.liveMemoryRefusals)
 }
 
 // recordPreemption records a preemption event for anti-thrash tracking,

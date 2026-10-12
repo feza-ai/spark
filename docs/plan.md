@@ -293,7 +293,29 @@ a specific alert threshold and NATS subject/payload shape, and a
 decision on whether "refuse new admissions above usage threshold" (the
 issue's optional item 3) is in scope for the first cut.
 
-- [ ] T7.0 PLAN: expand E7 to executable fidelity (informed by E1 and E5 landing)  Owner: pool  Est: 1h  kind: plan  delivers: [docs/plan.md E7 at fidelity: executable]  deps: [T1.4, T5.5]  acc: [parse_plan.py sees E7 with >= 3 tasks, every task carries acceptance criteria, deps resolve, fidelity flipped to executable]
+**Partially answered ahead of T7.0 by issue #121 (2026-09-22).** The #121
+incident forced the live-usage half of this epic early: a node whose
+undeclared containers left the memory ledger reading empty admitted a
+100GiB render and dropped off the network. What shipped
+(`docs/adr/015-undeclared-memory-admission.md`) is the issue's optional
+item 3, memory only -- `--live-memory-guard` refuses admission on live
+`/proc/meminfo` `MemAvailable` against a `--live-memory-reserve-mb` floor --
+plus a parser-side default (`--default-memory-request-mb`) for containers
+that declare no memory at all, which #47 did not propose.
+
+What T7.0 still owns, with two of its three exit criteria now answered:
+
+- **Item 1, a headroom reserve as a fraction of allocatable.** Still open,
+  and now needs a decision rather than a default: ADR 015 argues a floor
+  under *real* free memory is the more direct protection than a percentage
+  withheld from a ledger that can be wrong. Decide whether both are wanted.
+- **Item 2, usage-based alerting.** Untouched. Still needs per-pod
+  `podman stats` sampling in the resource-reconciliation loop, a node-wide
+  threshold, and a NATS `evt.spark.*` subject and payload shape.
+- **The live-verification debt.** Nothing in ADR 015 has been observed on
+  the DGX; the host has been down since the incident.
+
+- [ ] T7.0 PLAN: expand E7 to executable fidelity (informed by E1 and E5 landing, and by what ADR 015 already shipped)  Owner: pool  Est: 1h  kind: plan  delivers: [docs/plan.md E7 at fidelity: executable]  deps: [T1.4, T5.5]  acc: [parse_plan.py sees E7 with >= 3 tasks, every task carries acceptance criteria, deps resolve, fidelity flipped to executable]
 
 ## Parallel Work (optimize for up to 10 concurrent agents)
 

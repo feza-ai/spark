@@ -135,10 +135,18 @@ func pendingReason(rec state.PodRecord) string {
 }
 
 // isPendingEvent reports whether an event was recorded while a pod stayed
-// in Pending status -- either the status-change event itself or a
-// PendingWatchdog progress note (see pendingSince).
+// in Pending status -- the status-change event itself, a PendingWatchdog
+// progress note (see pendingSince), or a LiveMemoryRefused note, which is
+// the same per-tick watchdog record under a type of its own (issue #121).
+// Omitting the last one would make GET /logs fall silent for exactly the
+// refusal an operator most needs explained.
 func isPendingEvent(e state.PodEvent) bool {
-	return e.Type == string(state.StatusPending) || e.Type == "PendingWatchdog"
+	switch e.Type {
+	case string(state.StatusPending), "PendingWatchdog", "LiveMemoryRefused":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handlePodLogsFollow(w http.ResponseWriter, r *http.Request, name string, tail int) {

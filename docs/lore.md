@@ -76,24 +76,83 @@ side (the trailer is what makes release-please's changelog useful) --
 treat "reopen after merge" as needing a second pass after the release PR
 merges too, not a one-time step.
 
-## Buildah/OCI image builds need `securityContext.privileged: true`
+## Buildah overlay builds in Spark may need `securityContext.privileged: true`
 
-A pod running `buildah build`/`buildah push` fails under Spark's default
-(non-privileged) pod securityContext: it can't do the overlay mount work
-buildah needs ("failed to make mount private: permission denied").
-Switching to `--storage-driver vfs` does not dodge this -- it fails later,
-applying layers, with "remount /: permission denied". The actual fix is
-`privileged: true` in the container spec, kept on the default overlay
-storage driver.
+The tested `buildah build`/`buildah push` pod failed under Spark's default
+(non-privileged) container security context: it could not do the overlay
+mount work in this environment ("failed to make mount private: permission
+denied"). Switching to `--storage-driver vfs` did not resolve it in this
+test; it failed later, applying layers, with "remount /: permission denied".
+Adding `privileged: true` to the container spec and keeping the default
+overlay storage driver let this build complete.
 
 Confirmed 2026-09-02 building `canary-sire:latest` for ECR (adapting
-`jobs/dgx-canary/build-images.sh`'s pattern from the DGX local registry to
-ECR): the first two submissions failed exactly this way, back to back; the
-third, adding `privileged: true` and reverting to overlay, succeeded in
-~2 minutes.
+a DGX local-registry build script): the first two submissions failed this
+way, back to back; the third, adding `privileged: true` and reverting
+to overlay, succeeded in ~2 minutes.
 
-**How to apply:** any manifest submitting a buildah/image-build job to
-Spark needs `privileged: true` set explicitly -- don't copy a non-privileged
-pod spec as a starting point for an image build. This is a real widening
-of what the pod is granted, so call it out in the manifest/PR rather than
-adding it silently.
+**How to apply:** when running a similar Buildah overlay build on this
+Spark/Podman host, set `securityContext.privileged: true` on the Buildah
+container if these mount permission errors occur. This grants broad host
+capabilities; document the need in the manifest or PR. Other image builders,
+storage drivers, and host configurations may have different requirements.
+
+## internal/scheduler: available.memoryMB reads full precisely when the node is full
+
+`GET /api/v1/resources` reports
+`available.memoryMB = allocatable - sum(declared memory requests)`. Nothing
+in that figure comes from the host. A container that declares neither a
+memory request nor a memory limit was accounted at 0MB, so a node packed
+with such containers reported its memory ledger as **completely empty while
+it was full** -- and admission, which enforces that ledger strictly and
+correctly, found room.
+
+Measured on a GB10 (114372MB allocatable) before the incident, not inferred
+from it: with one 8GiB job running, `allocated.memoryMB` read 8192 and the
+cgroup confirmed `memory.max = 8589934592`; deleting it moved
+`allocated.memoryMB` to 0. Eight CI containers, mid-build, declared 0MB
+between them. A 100GiB render was then admitted against a ledger reporting
+the full 114372MB free, and minutes later the host stopped servicing the
+network at the link layer (issue #121).
+
+**Why it matters:** *any runbook that gates on `available.memoryMB` passes
+in exactly the situation it exists to catch.* A rule of the form "only
+submit if available memory is above N" is a statement about bookkeeping, not
+about RAM.
+
+**How to apply:** gate on live `/proc/meminfo` `MemAvailable`, not on
+`/api/v1/resources`. In-process, that is what
+`Scheduler.SetHostMemory`/`--live-memory-guard` now does, and
+`spark_live_memory_refusals_total` counts how often the host overrules the
+ledger. `--default-memory-request-mb` makes the ledger pessimistic rather
+than blind, but its accuracy is coincidental: it charges undeclared
+containers a fixed guess, so whether it is sufficient depends on how many
+are resident. At the incident's 8 containers a 2048MB default would have
+refused the render; at 5 it would have admitted it. Treat
+`spark_defaulted_memory_admissions_total` climbing as a prompt to fix the
+manifests, not as the problem being solved. See
+`docs/adr/015-undeclared-memory-admission.md`.
+
+## internal/manifest: silent zero is this repo's recurring defect class
+
+Four separate issues, one shape: input that should have been a resource
+quantity became `0` with no error, and admission trusted it.
+
+- **#43** -- a limits-only pod was accounted at zero (`requests` absent).
+  Fixed by Kubernetes' own rule: an unspecified request defaults to the
+  limit (`parseResources`, `job.go`).
+- **#66** -- flow-style YAML maps (`limits: { memory: 512Mi }`) parsed as a
+  scalar string, so `getMap` returned nil and the container was accounted at
+  zero.
+- **#77** -- block sequences at the same indent as their key parsed as an
+  empty list.
+- **#121** -- a container declaring neither requests nor limits was
+  accounted at zero.
+
+**How to apply:** when touching the parser, the question is never "does this
+parse" but "what does this produce when it does not parse". The rule the
+repo settled on: **unparseable input must be an error; absent input may be
+defaulted, but never to zero on a dimension admission enforces.** Defaulting
+must also run *after* parsing, never inside it, or a malformed quantity
+quietly becomes the default -- which would convert #66 from a loud bug into
+a silent one.

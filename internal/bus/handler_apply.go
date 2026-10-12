@@ -26,16 +26,20 @@ type CronRegisterer interface {
 }
 
 // RegisterApplyHandler registers the req.spark.apply handler.
+// parseOpts configures the manifest parser and must match what every other
+// ingestion path uses, or the same manifest is accounted differently
+// depending on which door it came through (issue #121). Pass nil for the
+// parser's own defaults.
 // An optional CronRegisterer may be passed; when provided, each parsed
 // CronJob is registered for scheduled execution.
-func RegisterApplyHandler(b Bus, store *state.PodStore, priorityClasses map[string]int, opts ...CronRegisterer) {
+func RegisterApplyHandler(b Bus, store *state.PodStore, priorityClasses map[string]int, parseOpts []manifest.ParseOption, opts ...CronRegisterer) {
 	var cronReg CronRegisterer
 	if len(opts) > 0 {
 		cronReg = opts[0]
 	}
 
 	b.HandleRequest("req.spark.apply", func(_ string, data []byte) ([]byte, error) {
-		result, err := manifest.Parse(data, priorityClasses)
+		result, err := manifest.Parse(data, priorityClasses, parseOpts...)
 		if err != nil {
 			return json.Marshal(ApplyResponse{Error: err.Error()})
 		}

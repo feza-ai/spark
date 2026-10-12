@@ -197,7 +197,13 @@ func parseSecurityContext(sc map[string]interface{}) *SecurityContext {
 
 func parseResources(rm map[string]interface{}) (ResourceRequirements, error) {
 	if rm == nil {
-		return ResourceRequirements{}, nil
+		// No resources: block at all, so nothing declares memory. Flagging
+		// that here (rather than returning a bare zero value) is what lets
+		// Parse apply WithDefaultMemoryRequestMB: before this, such a
+		// container was accounted at 0MB for its entire life, so a node
+		// packed with them reported a completely empty memory ledger while
+		// it was full, and admission trusted that ledger (issue #121).
+		return ResourceRequirements{MemoryRequestUndeclared: true}, nil
 	}
 	requestsMap := getMap(rm, "requests")
 	limitsMap := getMap(rm, "limits")
@@ -228,7 +234,22 @@ func parseResources(rm map[string]interface{}) (ResourceRequirements, error) {
 		}
 	}
 
-	return ResourceRequirements{Requests: requests, Limits: limits}, nil
+	return ResourceRequirements{
+		Requests: requests,
+		Limits:   limits,
+		// Memory counts as declared when either side names it, including
+		// an explicit "0" -- an explicit zero is a statement about the
+		// container, not the silent absence issue #121 is about.
+		MemoryRequestUndeclared: !declaresMemory(requestsMap) && !declaresMemory(limitsMap),
+	}, nil
+}
+
+// declaresMemory reports whether a requests/limits map names a memory
+// quantity. A nil map, a missing key, and a key with an empty value all
+// count as not declared: a valueless "memory:" line states no more about
+// the container than omitting it does.
+func declaresMemory(m map[string]interface{}) bool {
+	return m != nil && getString(m, "memory") != ""
 }
 
 func parseResourceList(rm map[string]interface{}) (ResourceList, error) {
