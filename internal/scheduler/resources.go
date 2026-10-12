@@ -106,7 +106,7 @@ func (rt *ResourceTracker) ReservedCores() []int {
 
 // Allocate reserves resources for a pod. Returns error if insufficient.
 func (rt *ResourceTracker) Allocate(name string, req manifest.ResourceList) error {
-	return rt.allocate(name, req, false)
+	return rt.allocate(name, req, false, true)
 }
 
 // AllocateOverCommittingCPU behaves like Allocate but skips the accounted
@@ -118,13 +118,19 @@ func (rt *ResourceTracker) Allocate(name string, req manifest.ResourceList) erro
 // soft, recoverable failure mode on this hardware. Memory exhaustion is
 // not, which is why memory accounting has no equivalent bypass.
 func (rt *ResourceTracker) AllocateOverCommittingCPU(name string, req manifest.ResourceList) error {
-	return rt.allocate(name, req, true)
+	return rt.allocate(name, req, true, true)
 }
 
-// allocate is the shared implementation behind Allocate and
-// AllocateOverCommittingCPU. skipCPUCheck disables only the accounted
-// CPUMillis capacity check; every other dimension is checked identically.
-func (rt *ResourceTracker) allocate(name string, req manifest.ResourceList, skipCPUCheck bool) error {
+// allocateExisting records the resource quota of a pod already running in
+// Podman. Its CPU pin must come from observation, never a fresh allocation.
+func (rt *ResourceTracker) allocateExisting(name string, req manifest.ResourceList) error {
+	return rt.allocate(name, req, false, false)
+}
+
+// allocate is the shared implementation behind scheduling and adoption.
+// skipCPUCheck disables only accounted CPU capacity; assignCPUCores controls
+// whether a new cpuset may be selected for a container not yet running.
+func (rt *ResourceTracker) allocate(name string, req manifest.ResourceList, skipCPUCheck, assignCPUCores bool) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
@@ -178,7 +184,7 @@ func (rt *ResourceTracker) allocate(name string, req manifest.ResourceList, skip
 	// If the pod already has an assignment (e.g., RestoreAssignment after
 	// recovery, or a duplicate Allocate from a retry), reuse it so the
 	// running container's cpuset stays consistent.
-	if len(rt.cores) > 0 && req.CPUMillis >= 1000 && req.CPUMillis%1000 == 0 {
+	if assignCPUCores && len(rt.cores) > 0 && req.CPUMillis >= 1000 && req.CPUMillis%1000 == 0 {
 		n := req.CPUMillis / 1000
 		if existing, ok := rt.coreAssignments[name]; ok && len(existing) == n {
 			// Already assigned the right number of cores -- no change.

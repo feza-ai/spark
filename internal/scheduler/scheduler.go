@@ -413,7 +413,7 @@ func (s *Scheduler) AdoptPod(info PodInfo) {
 	if _, held := s.tracker.AllocatedBy(info.Name); held {
 		return
 	}
-	if err := s.tracker.Allocate(info.Name, info.Resources); err != nil {
+	if err := s.tracker.allocateExisting(info.Name, info.Resources); err != nil {
 		slog.Warn("adopting running pod despite ledger capacity error",
 			"pod", info.Name, "err", err)
 		s.tracker.ForceAllocate(info.Name, info.Resources)

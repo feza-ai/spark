@@ -506,6 +506,71 @@ func (p *PodmanExecutor) ContainerStatuses(ctx context.Context, podName string) 
 }
 
 // parseContainerPS parses `podman ps -a --format json` output.
+// RunningCpusetCores returns the host CPU cores pinned by running, non-infra
+// containers in a pod. An empty result means no live container holds a cpuset.
+func (p *PodmanExecutor) RunningCpusetCores(ctx context.Context, podName string) ([]int, error) {
+	statuses, err := p.ContainerStatuses(ctx, podName)
+	if err != nil {
+		return nil, fmt.Errorf("list containers for %s: %w", podName, err)
+	}
+	seen := make(map[int]bool)
+	for _, status := range statuses {
+		if status.IsInfra || !status.Running {
+			continue
+		}
+		out, err := exec.CommandContext(ctx, "podman", "inspect", "--format", "{{.HostConfig.CpusetCpus}}", status.Name).Output()
+		if err != nil {
+			return nil, fmt.Errorf("inspect cpuset for %s: %w", status.Name, err)
+		}
+		cores, err := parseCPURange(strings.TrimSpace(string(out)))
+		if err != nil {
+			return nil, fmt.Errorf("parse cpuset for %s: %w", status.Name, err)
+		}
+		for _, core := range cores {
+			seen[core] = true
+		}
+	}
+	cores := make([]int, 0, len(seen))
+	for core := range seen {
+		cores = append(cores, core)
+	}
+	sort.Ints(cores)
+	return cores, nil
+}
+
+func parseCPURange(raw string) ([]int, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	seen := make(map[int]bool)
+	for _, part := range strings.Split(raw, ",") {
+		bounds := strings.Split(strings.TrimSpace(part), "-")
+		if len(bounds) > 2 {
+			return nil, fmt.Errorf("invalid cpuset %q", raw)
+		}
+		first, err := strconv.Atoi(bounds[0])
+		if err != nil || first < 0 {
+			return nil, fmt.Errorf("invalid cpuset %q", raw)
+		}
+		last := first
+		if len(bounds) == 2 {
+			last, err = strconv.Atoi(bounds[1])
+			if err != nil || last < first || last-first > 4096 {
+				return nil, fmt.Errorf("invalid cpuset %q", raw)
+			}
+		}
+		for core := first; core <= last; core++ {
+			seen[core] = true
+		}
+	}
+	cores := make([]int, 0, len(seen))
+	for core := range seen {
+		cores = append(cores, core)
+	}
+	sort.Ints(cores)
+	return cores, nil
+}
+
 func parseContainerPS(out []byte) ([]ContainerStatus, error) {
 	var rows []struct {
 		Names    []string `json:"Names"`
