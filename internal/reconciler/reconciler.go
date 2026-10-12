@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -202,6 +203,56 @@ func (r *Reconciler) RecoverPods(ctx context.Context) error {
 	podmanSet := make(map[string]bool, len(podmanPods))
 	for _, p := range podmanPods {
 		podmanSet[p.Name] = p.Running
+	}
+
+	// RestoreAssignment runs before pod discovery at startup. Reconcile its
+	// saved claims against live Podman cpusets before scheduling new work.
+	inspector, canInspect := r.executor.(interface {
+		RunningCpusetCores(context.Context, string) ([]int, error)
+	})
+	for _, rec := range r.store.List("") {
+		running, exists := podmanSet[rec.Spec.Name]
+		if len(rec.AssignedCores) == 0 && (!exists || !canInspect) {
+			continue
+		}
+		terminal := rec.Status == state.StatusCompleted || rec.Status == state.StatusFailed || rec.Status == state.StatusPreempted
+		if exists && canInspect {
+			live, err := inspector.RunningCpusetCores(ctx, rec.Spec.Name)
+			if err != nil {
+				// Preserve ownership when Podman cannot prove the claim is stale.
+				slog.Warn("cannot inspect live CPU cpuset; retaining saved assignment", "pod", rec.Spec.Name, "err", err)
+				continue
+			}
+			if len(live) > 0 {
+				saved := slices.Clone(rec.AssignedCores)
+				slices.Sort(saved)
+				if !slices.Equal(saved, live) {
+					r.scheduler.Tracker().RestoreAssignment(rec.Spec.Name, live)
+					r.store.SetAssignedCores(rec.Spec.Name, live)
+					r.store.AddEvent(rec.Spec.Name, "CoreAssignmentCorrected", "saved CPU core assignment updated from live Podman cpuset")
+					if r.onStatusChange != nil {
+						r.onStatusChange(rec.Spec.Name, string(rec.Status), "saved CPU core assignment updated from live Podman cpuset")
+					}
+				}
+				continue
+			}
+		}
+		if len(rec.AssignedCores) == 0 {
+			continue
+		}
+		if exists && !running && !terminal {
+			// A stopped nonterminal pod may restart with its existing pin.
+			continue
+		}
+		if exists && !canInspect && running {
+			continue
+		}
+		r.scheduler.RemovePod(rec.Spec.Name)
+		r.store.SetAssignedCores(rec.Spec.Name, nil)
+		r.store.AddEvent(rec.Spec.Name, "CoreAssignmentReleased", "stale saved CPU core assignment cleared during recovery")
+		if r.onStatusChange != nil {
+			r.onStatusChange(rec.Spec.Name, string(rec.Status), "stale saved CPU core assignment cleared during recovery")
+		}
 	}
 
 	// 2. For each podman pod, check if it exists in store.

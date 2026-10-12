@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os/exec"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1244,5 +1245,30 @@ func TestPersistentVolumeUsesNamedSource(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing persistent volume: %v", args)
+	}
+}
+
+func TestParseCPURange(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    []int
+		wantErr bool
+	}{
+		{name: "empty is unpinned"},
+		{name: "mixed ranges", input: "3,1-2,2", want: []int{1, 2, 3}},
+		{name: "invalid reversed range", input: "3-1", wantErr: true},
+		{name: "invalid token", input: "1,a", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseCPURange(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseCPURange(%q) error = %v, wantErr %v", tc.input, err, tc.wantErr)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseCPURange(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
 	}
 }
