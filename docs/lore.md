@@ -76,6 +76,27 @@ side (the trailer is what makes release-please's changelog useful) --
 treat "reopen after merge" as needing a second pass after the release PR
 merges too, not a one-time step.
 
+## Buildah overlay builds in Spark may need `securityContext.privileged: true`
+
+The tested `buildah build`/`buildah push` pod failed under Spark's default
+(non-privileged) container security context: it could not do the overlay
+mount work in this environment ("failed to make mount private: permission
+denied"). Switching to `--storage-driver vfs` did not resolve it in this
+test; it failed later, applying layers, with "remount /: permission denied".
+Adding `privileged: true` to the container spec and keeping the default
+overlay storage driver let this build complete.
+
+Confirmed 2026-09-02 building `canary-sire:latest` for ECR (adapting
+a DGX local-registry build script): the first two submissions failed this
+way, back to back; the third, adding `privileged: true` and reverting
+to overlay, succeeded in ~2 minutes.
+
+**How to apply:** when running a similar Buildah overlay build on this
+Spark/Podman host, set `securityContext.privileged: true` on the Buildah
+container if these mount permission errors occur. This grants broad host
+capabilities; document the need in the manifest or PR. Other image builders,
+storage drivers, and host configurations may have different requirements.
+
 ## internal/scheduler: available.memoryMB reads full precisely when the node is full
 
 `GET /api/v1/resources` reports
