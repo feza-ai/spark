@@ -55,17 +55,23 @@ type requestedResources struct {
 }
 
 type getPodResponse struct {
-	Name          string              `json:"name"`
-	Status        string              `json:"status"`
-	Priority      int                 `json:"priority"`
-	StartedAt     time.Time           `json:"startedAt"`
-	FinishedAt    time.Time           `json:"finishedAt"`
-	Restarts      int                 `json:"restarts"`
-	StartAttempts int                 `json:"startAttempts,omitempty"`
-	Reason        string              `json:"reason,omitempty"`
-	Requested     requestedResources  `json:"requested"`
-	Containers    []containerResponse `json:"containers,omitempty"`
-	Events        []podEvent          `json:"events"`
+	QueueDemand    bool                `json:"queueDemand"`
+	WorkerRetired  bool                `json:"workerRetired"`
+	QueueCheckedAt time.Time           `json:"queueCheckedAt"`
+	Ready          bool                `json:"ready"`
+	InFlight       int                 `json:"inFlight"`
+	OnDemand       bool                `json:"onDemand"`
+	Name           string              `json:"name"`
+	Status         string              `json:"status"`
+	Priority       int                 `json:"priority"`
+	StartedAt      time.Time           `json:"startedAt"`
+	FinishedAt     time.Time           `json:"finishedAt"`
+	Restarts       int                 `json:"restarts"`
+	StartAttempts  int                 `json:"startAttempts,omitempty"`
+	Reason         string              `json:"reason,omitempty"`
+	Requested      requestedResources  `json:"requested"`
+	Containers     []containerResponse `json:"containers,omitempty"`
+	Events         []podEvent          `json:"events"`
 }
 
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +129,8 @@ func (s *Server) handleGetPod(w http.ResponseWriter, r *http.Request) {
 	requested := rec.Spec.TotalRequests()
 
 	resp := getPodResponse{
+		QueueDemand: rec.QueueDemand, WorkerRetired: rec.WorkerRetired, QueueCheckedAt: rec.QueueCheckedAt,
+		Ready: rec.Ready, InFlight: rec.InFlight, OnDemand: rec.Spec.OnDemand != nil,
 		Name:          rec.Spec.Name,
 		Status:        string(rec.Status),
 		Priority:      rec.Spec.Priority,

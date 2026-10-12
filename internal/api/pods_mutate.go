@@ -144,7 +144,8 @@ func (s *Server) handleApplyPod(w http.ResponseWriter, r *http.Request) {
 				s.sqlStore.SavePod(&rec)
 			}
 		}
-		pods = append(pods, podStatus{Name: pod.Name, Status: "pending"})
+		rec, _ := s.store.Get(pod.Name)
+		pods = append(pods, podStatus{Name: pod.Name, Status: string(rec.Status)})
 	}
 
 	if s.cronSched != nil {

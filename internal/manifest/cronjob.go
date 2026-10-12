@@ -40,6 +40,7 @@ func parseCronJob(root map[string]interface{}, priorityClasses map[string]int) (
 	if err != nil {
 		return CronJobSpec{}, fmt.Errorf("cronjob %q: %w", name, err)
 	}
+	pod.Annotations = getStringMap(root, "spec", "jobTemplate", "spec", "template", "metadata", "annotations")
 	pod.Name = name
 	pod.SourceKind = "CronJob"
 	pod.SourceName = name

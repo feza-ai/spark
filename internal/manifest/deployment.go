@@ -53,6 +53,8 @@ func parseDeployment(root map[string]interface{}, priorityClasses map[string]int
 		base.Labels = labels
 	}
 
+	base.Annotations = getStringMap(template, "metadata", "annotations")
+
 	// Deployment pods always restart.
 	base.RestartPolicy = "Always"
 	base.SourceKind = "Deployment"

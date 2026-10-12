@@ -13,6 +13,8 @@ type PodStatus string
 
 const (
 	StatusPending   PodStatus = "pending"
+	StatusDormant   PodStatus = "dormant"
+	StatusStopping  PodStatus = "stopping"
 	StatusScheduled PodStatus = "scheduled"
 	StatusRunning   PodStatus = "running"
 	StatusCompleted PodStatus = "completed"
@@ -29,6 +31,14 @@ type PodEvent struct {
 
 // PodRecord holds desired and actual state for a pod.
 type PodRecord struct {
+	Generation     uint64 // process-local identity, changes on delete/recreate
+	QueueDemand    bool
+	QueueCheckedAt time.Time
+	WorkerRetired  bool
+	// Runtime activity is reset on recovery, giving surviving pods a full idle window.
+	Ready         bool
+	InFlight      int
+	LastActivity  time.Time
 	Spec          manifest.PodSpec
 	Status        PodStatus
 	Events        []PodEvent
@@ -53,9 +63,10 @@ const maxReasonBytes = 512
 
 // PodStore is a thread-safe in-memory store for pod state.
 type PodStore struct {
-	mu       sync.RWMutex
-	pods     map[string]*PodRecord
-	OnDelete func(name string)
+	nextGeneration uint64
+	mu             sync.RWMutex
+	pods           map[string]*PodRecord
+	OnDelete       func(name string)
 	// OnEvent fires for every event appended to a pod's history, by both
 	// UpdateStatus and AddEvent. Wired by main() to persist events to
 	// SQLite so admission-failure history (e.g. PendingWatchdog) survives
@@ -82,6 +93,14 @@ func (s *PodStore) LoadFrom(pods map[string]*PodRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for name, rec := range pods {
+		s.nextGeneration++
+		rec.Generation = s.nextGeneration
+		rec.QueueDemand = false
+		rec.QueueCheckedAt = time.Time{}
+		rec.WorkerRetired = false
+		rec.Ready = false
+		rec.InFlight = 0
+		rec.LastActivity = time.Now()
 		s.pods[name] = rec
 	}
 }
@@ -97,11 +116,27 @@ func (s *PodStore) Apply(spec manifest.PodSpec) {
 
 	if rec, ok := s.pods[spec.Name]; ok {
 		rec.Spec = spec
+		if spec.OnDemand == nil || spec.OnDemand.ActivationMode() != "github" {
+			rec.QueueDemand = false
+			rec.QueueCheckedAt = time.Time{}
+			rec.WorkerRetired = false
+		}
+		rec.Ready = false
+		if rec.Status == StatusDormant && (spec.OnDemand == nil || spec.OnDemand.AlwaysWarm) {
+			rec.Status = StatusPending
+		}
 		return
 	}
+	status := StatusPending
+	if spec.OnDemand != nil && !spec.OnDemand.AlwaysWarm {
+		status = StatusDormant
+	}
+	s.nextGeneration++
 	s.pods[spec.Name] = &PodRecord{
-		Spec:   spec,
-		Status: StatusPending,
+		Generation:   s.nextGeneration,
+		Spec:         spec,
+		Status:       status,
+		LastActivity: time.Now(),
 	}
 }
 
@@ -164,6 +199,9 @@ func (s *PodStore) UpdateStatus(name string, status PodStatus, message string) b
 		return false
 	}
 
+	if rec.Status != status {
+		rec.Ready = false
+	}
 	rec.Status = status
 	now := time.Now()
 	event := PodEvent{
@@ -175,7 +213,9 @@ func (s *PodStore) UpdateStatus(name string, status PodStatus, message string) b
 
 	switch status {
 	case StatusRunning:
+		rec.WorkerRetired = false
 		rec.StartedAt = now
+		rec.LastActivity = now
 	case StatusCompleted, StatusFailed:
 		rec.FinishedAt = now
 	}

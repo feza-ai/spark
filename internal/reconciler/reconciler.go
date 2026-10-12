@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -22,10 +23,12 @@ type probeState struct {
 
 // Reconciler drives the control loop that moves pods from desired to actual state.
 type Reconciler struct {
-	store     *state.PodStore
-	scheduler *scheduler.Scheduler
-	executor  executor.Executor
-	interval  time.Duration
+	wake            chan struct{}
+	readinessClient *http.Client
+	store           *state.PodStore
+	scheduler       *scheduler.Scheduler
+	executor        executor.Executor
+	interval        time.Duration
 
 	probeStates map[string]*probeState
 
@@ -64,6 +67,8 @@ const defaultOrphanGrace = 30 * time.Second
 // NewReconciler creates a reconciler that ticks at the given interval.
 func NewReconciler(store *state.PodStore, sched *scheduler.Scheduler, exec executor.Executor, interval time.Duration) *Reconciler {
 	return &Reconciler{
+		wake:              make(chan struct{}, 1),
+		readinessClient:   &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		store:             store,
 		scheduler:         sched,
 		executor:          exec,
@@ -229,7 +234,7 @@ func (r *Reconciler) RecoverPods(ctx context.Context) error {
 			delete(r.orphanFirstSeen, p.Name)
 			continue
 		}
-		if rec.Status == state.StatusRunning {
+		if rec.Status == state.StatusRunning || rec.Status == state.StatusStopping {
 			// Tracked as running, but this is a fresh process with an empty
 			// scheduler ledger. Re-adopt so the pod's quota is held again —
 			// otherwise admission overcommits into resources the survivors
@@ -273,7 +278,11 @@ func (r *Reconciler) RecoverPods(ctx context.Context) error {
 	for _, rec := range r.store.List(state.StatusRunning) {
 		if _, inPodman := podmanSet[rec.Spec.Name]; !inPodman {
 			// Running in store but not in podman: pod was lost.
-			r.store.UpdateStatus(rec.Spec.Name, state.StatusFailed, "pod not found in podman after restart")
+			if rec.Spec.OnDemand != nil {
+				r.store.UpdateStatus(rec.Spec.Name, state.StatusDormant, "on-demand pod absent after restart")
+			} else {
+				r.store.UpdateStatus(rec.Spec.Name, state.StatusFailed, "pod not found in podman after restart")
+			}
 			r.scheduler.RemovePod(rec.Spec.Name)
 			slog.Warn("pod marked failed: not found in podman", "pod", rec.Spec.Name)
 		}
@@ -292,6 +301,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			slog.Info("reconciler stopped")
 			return
+		case <-r.wake:
+			r.reconcileOnce(ctx)
 		case <-ticker.C:
 			r.reconcileOnce(ctx)
 		}
@@ -313,6 +324,9 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 		// Re-read current status; a prior iteration may have changed it (e.g. preemption).
 		current, ok := r.store.Get(pod.Spec.Name)
 		if !ok {
+			continue
+		}
+		if r.reconcileOnDemand(ctx, current) {
 			continue
 		}
 		switch current.Status {
@@ -370,7 +384,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 		// (issue #81).
 		pod.Spec.GPUDevices = r.scheduler.Tracker().AssignedGPUs(pod.Spec.Name)
 
-		if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
+		if err := r.executor.CreatePod(ctx, r.withGatewayHosts(pod.Spec)); err != nil {
 			slog.Error("failed to create pod", "pod", pod.Spec.Name, "err", err)
 			attempts := r.recordStartFailure(pod.Spec.Name, err)
 			r.scheduler.RemovePod(pod.Spec.Name)
@@ -393,6 +407,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 		})
 		r.clearStartFailure(pod.Spec.Name)
 		r.updateStatus(pod.Spec.Name, state.StatusRunning, "pod created and running")
+		r.checkReadiness(ctx, pod)
 		slog.Info("pod running", "pod", pod.Spec.Name)
 		if r.onPodRunning != nil {
 			r.onPodRunning(pod.Spec.Name)
@@ -423,7 +438,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 			if retry.Reason != "" {
 				r.store.AddEvent(pod.Spec.Name, "CPUOvercommitAdmitted", retry.Reason)
 			}
-			if err := r.executor.CreatePod(ctx, pod.Spec); err != nil {
+			if err := r.executor.CreatePod(ctx, r.withGatewayHosts(pod.Spec)); err != nil {
 				slog.Error("failed to create pod after preemption", "pod", pod.Spec.Name, "err", err)
 				attempts := r.recordStartFailure(pod.Spec.Name, err)
 				r.scheduler.RemovePod(pod.Spec.Name)
@@ -444,6 +459,7 @@ func (r *Reconciler) reconcilePending(ctx context.Context, pod state.PodRecord) 
 			})
 			r.clearStartFailure(pod.Spec.Name)
 			r.updateStatus(pod.Spec.Name, state.StatusRunning, "pod created after preemption")
+			r.checkReadiness(ctx, pod)
 			slog.Info("pod running after preemption", "pod", pod.Spec.Name)
 			if r.onPodRunning != nil {
 				r.onPodRunning(pod.Spec.Name)
@@ -502,6 +518,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 		return
 	}
 
+	if r.retireCompletedWorker(pod, st) {
+		return
+	}
 	if st.Running {
 		// The pod is up, but individual containers may have exited
 		// (podman "Degraded"). Kubernetes semantics: restartPolicy applies
@@ -510,6 +529,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, pod state.PodRecord) 
 		r.restartCrashedContainers(ctx, pod, st.Containers)
 		// Check liveness probes for the first container.
 		r.checkLivenessProbe(ctx, pod)
+		r.checkReadiness(ctx, pod)
 		return
 	}
 

@@ -18,7 +18,9 @@ import (
 	"github.com/feza-ai/spark/internal/api"
 	"github.com/feza-ai/spark/internal/bus"
 	"github.com/feza-ai/spark/internal/cron"
+	"github.com/feza-ai/spark/internal/demand"
 	"github.com/feza-ai/spark/internal/executor"
+	"github.com/feza-ai/spark/internal/gateway"
 	"github.com/feza-ai/spark/internal/gpu"
 	"github.com/feza-ai/spark/internal/housekeeper"
 	"github.com/feza-ai/spark/internal/lifecycle"
@@ -57,6 +59,8 @@ func main() {
 	failedPodTTL := flag.Duration("failed-pod-ttl", 24*time.Hour, "TTL after which Failed pods are reaped (0 disables)")
 	orphanReapTTL := flag.Duration("orphan-reap-ttl", time.Hour, "TTL after which terminal-state orphan podman pods are reaped (0 disables)")
 	imagePruneInterval := flag.Duration("image-prune-interval", 24*time.Hour, "interval between 'podman image prune -f' runs (0 disables)")
+	githubTokenFile := flag.String("github-token-file", os.Getenv("SPARK_GITHUB_TOKEN_FILE"), "file containing a GitHub token for queue-driven workloads")
+	githubPollInterval := flag.Duration("github-poll-interval", 30*time.Second, "GitHub workflow-job queue polling interval")
 	hostLoadSampleInterval := flag.Duration("host-load-sample-interval", 15*time.Second, "interval between /proc/loadavg samples used for utilization-aware CPU admission (issue #76)")
 	priorityConfigPath := flag.String("priority-config", "", "path to a priority classes config file (see manifest.LoadPriorityClasses); empty uses the built-in default table")
 	cpuOvercommitMarginMillis := flag.Int("cpu-overcommit-margin-millis", 1000, "CPU millicores subtracted from the live headroom estimate before utilization-aware admission (issue #76) will admit a pod over the accounted ceiling; covers the trailing load average's lag")
@@ -311,6 +315,13 @@ func main() {
 	}
 
 	go rec.Run(ctx)
+	go gateway.NewTCPManager(store, rec.Wake).Run(ctx)
+	githubDemand, err := demand.NewGitHubController(store, rec.Wake, *githubTokenFile, *githubPollInterval)
+	if err != nil {
+		slog.Error("configure GitHub demand", "error", err)
+		os.Exit(1)
+	}
+	go githubDemand.Run(ctx)
 	slog.Info("reconciler started", "interval", *reconcileInterval)
 
 	// 12. Read API token.
@@ -358,6 +369,7 @@ func main() {
 		gpuInfoPtr = &gpuInfo
 	}
 	apiServer := api.NewServer(store, tracker, exec, priorityClasses, sqlStore, metricsCollector, cronSched, apiToken, sched, gpuInfoPtr, &sysInfo, version)
+	apiServer.SetWorkloadWake(rec.Wake)
 	apiServer.SetPendingLogTimeout(*pendingLogTimeout)
 	apiServer.SetParseOptions(parseOpts...)
 	httpServer := &http.Server{Addr: *httpAddr, Handler: apiServer}
